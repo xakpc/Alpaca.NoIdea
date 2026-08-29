@@ -367,3 +367,4 @@ build
 
 # Local credentials for compose.dev.yaml. Never commit.
 .env
+data
