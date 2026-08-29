@@ -1,11 +1,14 @@
-# Permanent Alpaca MCP servers for development.
+# The permanent Alpaca MCP server for development.
 #
 #   docker compose -f compose.dev.yaml up -d --build     start and leave running
-#   docker compose -f compose.dev.yaml ps                both must report healthy
+#   docker compose -f compose.dev.yaml ps                must report healthy
 #   docker compose -f compose.dev.yaml logs -f           follow the server logs
 #   docker compose -f compose.dev.yaml down              stop
 #
-# The .NET application runs outside these containers during development and
+# This server exists for the LLM agents. Deterministic C# does not use MCP: it
+# uses the typed Alpaca.Markets SDK, so no MCP server holds an order tool.
+#
+# The .NET application runs outside this container during development and
 # connects over streamable-http. The deployed image starts the same server with
 # the stdio transport instead. See src/Xakpc.Alpaca.NøIdea/Dockerfile.
 #
@@ -13,37 +16,23 @@
 
 name: noidea-dev
 
-x-alpaca-mcp: &alpaca-mcp
-  build:
-    context: .
-    dockerfile: docker/alpaca-mcp.dev.Dockerfile
-  image: noidea/alpaca-mcp:dev
-  env_file:
-    - path: .env
-      required: true
-  restart: unless-stopped
-  stop_grace_period: 5s
-
 services:
   # Research data only. The LLM agents connect here.
   # It exposes no order tool, no position tool, and no account tool.
   mcp-readonly:
-    <<: *alpaca-mcp
+    build:
+      context: .
+      dockerfile: docker/alpaca-mcp.dev.Dockerfile
+    image: noidea/alpaca-mcp:dev
     container_name: noidea-mcp-readonly
+    env_file:
+      - path: .env
+        required: true
     environment:
       ALPACA_PAPER_TRADE: "true"
       ALPACA_TOOLSETS: "assets,stock-data,options-data,news,corporate-actions"
     ports:
       # 127.0.0.1 only. The port has no authentication.
       - "127.0.0.1:8100:8000"
-
-  # Account and orders. Deterministic C# connects here. No LLM may reach it.
-  mcp-trading:
-    <<: *alpaca-mcp
-    container_name: noidea-mcp-trading
-    environment:
-      ALPACA_PAPER_TRADE: "true"
-      ALPACA_TOOLSETS: "account,trading,assets"
-    ports:
-      # 127.0.0.1 only. This port can place orders.
-      - "127.0.0.1:8101:8000"
+    restart: unless-stopped
+    stop_grace_period: 5s

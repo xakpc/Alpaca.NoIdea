@@ -2,9 +2,10 @@
 #
 # The deployed image. It holds the trading host AND the pinned Alpaca MCP server.
 #
-# The host starts two MCP servers as stdio child processes, one read-only and one
-# for trading. A container cannot start a sibling container without the Docker
-# socket, so the server lives in this image instead.
+# The host starts ONE MCP server as a stdio child process, read-only, for the LLM
+# agents. Deterministic C# uses the typed Alpaca.Markets SDK instead, so no MCP
+# server holds an order tool. A container cannot start a sibling container without
+# the Docker socket, so the server lives in this image instead.
 #
 # The build context is the REPOSITORY ROOT, not `src/`:
 #
@@ -64,7 +65,6 @@ COPY --from=publish /app/publish .
 # the HTTP transport (development only). Set one, never both.
 ENV Alpaca__Mcp__ServerCommand=/opt/alpaca-mcp/.venv/bin/alpaca-mcp-server \
     Alpaca__Mcp__ReadOnlyToolsets=assets,stock-data,options-data,news,corporate-actions \
-    Alpaca__Mcp__TradingToolsets=account,trading,assets \
     ALPACA_PAPER_TRADE=true
 
 USER $APP_UID

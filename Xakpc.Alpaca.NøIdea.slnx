@@ -1,3 +1,7 @@
 <Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/tests/">
+    <Project Path="tests/Trader.Tests/Trader.Tests.csproj" />
+  </Folder>
   <Project Path="src/Xakpc.Alpaca.NøIdea/Xakpc.Alpaca.NøIdea.csproj" />
 </Solution>

@@ -368,3 +368,9 @@ build
 # Local credentials for compose.dev.yaml. Never commit.
 .env
 data
+
+# Market data and models. Large, regenerable, and never committed.
+data/
+
+# The Alpaca CLI binary. For humans and offline scripts; no code calls it (ADR-001).
+cli_*_windows_amd64/

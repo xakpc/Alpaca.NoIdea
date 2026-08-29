@@ -1,7 +1,8 @@
 {
   "profiles": {
     "Xakpc.Alpaca.NøIdea": {
-      "commandName": "Project"
+      "commandName": "Project",
+      "commandLineArgs": "--smoke"
     },
     "Container (Dockerfile)": {
       "commandName": "Docker"
