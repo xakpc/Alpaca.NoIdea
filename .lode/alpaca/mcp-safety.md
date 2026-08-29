@@ -87,17 +87,41 @@ unnecessary risk.
 
 ## Process lifetime
 
-The host owns both child processes.
+The lifetime depends on the run mode. See [MCP run modes](mcp-run-modes.md).
 
-- The host starts them at startup and stops them at shutdown.
-- A `docker run` child uses `--rm`, so a crash does not leave a container.
+**Development.** `compose.dev.yaml` owns the two containers. `restart: unless-stopped` starts
+them again after a crash or a reboot. The containers publish their ports to `127.0.0.1`
+**only**, because the servers have no authentication and the trading server can place orders.
+A port on `0.0.0.0` gives every machine on the network the power to trade.
+
+**Deployed.** The host owns both child processes. It starts them at startup and stops them at
+shutdown.
+
+In both modes:
+
 - A server exit is a **stop new trading** event. See
   [fault handling](../operations/fault-handling.md).
 - A failure test must kill each server and confirm the behavior.
 
+## What the read-only server really exposes
+
+A `tools/list` on the read-only server returns read tools only. No order tool, no position
+tool, and no account tool is present. Two groups of extra tools do appear:
+
+- Crypto read tools (`get_crypto_bars`, `get_crypto_quotes`, `get_crypto_trades`). The server
+  registers them together with the stock data tools.
+- Alpaca documentation tools (`search_alpaca_docs`, `fetch_alpaca_doc`,
+  `list_alpaca_api_endpoints`, `search_alpaca_api_specs`, `get_alpaca_endpoint_docs`). The
+  server always registers them. They make outbound requests to the Alpaca documentation
+  site.
+
+They are read-only, but they are not useful for the strategy. `McpToolCatalog` (control 2)
+must remove them before the host gives the tool list to an agent.
+
 ## Related
 
 - [MCP integration](mcp-integration.md)
+- [MCP run modes](mcp-run-modes.md)
 - [LLM tool policy](../llm/tool-policy.md)
 - [Risk guardrails](../trading/risk-guardrails.md)
 - [Fault handling](../operations/fault-handling.md)

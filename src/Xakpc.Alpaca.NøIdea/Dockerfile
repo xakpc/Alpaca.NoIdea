@@ -1,28 +1,71 @@
-# See https://aka.ms/customizecontainer to learn how to customize your debug container and how Visual Studio uses this Dockerfile to build your images for faster debugging.
+# syntax=docker/dockerfile:1
+#
+# The deployed image. It holds the trading host AND the pinned Alpaca MCP server.
+#
+# The host starts two MCP servers as stdio child processes, one read-only and one
+# for trading. A container cannot start a sibling container without the Docker
+# socket, so the server lives in this image instead.
+#
+# The build context is the REPOSITORY ROOT, not `src/`:
+#
+#   docker build -f src/Xakpc.Alpaca.NøIdea/Dockerfile -t noidea/trader:dev .
+#
+# Development uses long-running HTTP servers instead. See compose.dev.yaml.
 
-# This stage is used when running from VS in fast mode (Default for Debug configuration)
-FROM mcr.microsoft.com/dotnet/runtime:10.0 AS base
-USER $APP_UID
-WORKDIR /app
+# --- Alpaca MCP server, from the pinned submodule -----------------------------
+# uv installs its own CPython, so the image does not depend on the Python version
+# of the .NET base image. Both directories move to the final stage at the same
+# paths, because the virtual environment points at the interpreter by path.
+FROM python:3.11-slim AS mcp
+COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /uvx /bin/
 
+ENV UV_PYTHON=3.11 \
+    UV_PYTHON_PREFERENCE=only-managed \
+    UV_PYTHON_INSTALL_DIR=/opt/python \
+    UV_LINK_MODE=copy
 
-# This stage is used to build the service project
+WORKDIR /opt/alpaca-mcp
+COPY external/alpaca-mcp-server/pyproject.toml \
+     external/alpaca-mcp-server/uv.lock \
+     external/alpaca-mcp-server/README.md ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv python install 3.11 && uv sync --frozen --no-dev --no-install-project
+
+COPY external/alpaca-mcp-server/src/ ./src/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev \
+ && chmod -R a+rX /opt/python /opt/alpaca-mcp \
+ && /opt/alpaca-mcp/.venv/bin/alpaca-mcp-server --version
+
+# --- .NET build ---------------------------------------------------------------
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
-COPY ["Xakpc.Alpaca.NøIdea/Xakpc.Alpaca.NøIdea.csproj", "Xakpc.Alpaca.NøIdea/"]
-RUN dotnet restore "./Xakpc.Alpaca.NøIdea/Xakpc.Alpaca.NøIdea.csproj"
-COPY . .
-WORKDIR "/src/Xakpc.Alpaca.NøIdea"
+COPY ["src/Xakpc.Alpaca.NøIdea/Xakpc.Alpaca.NøIdea.csproj", "src/Xakpc.Alpaca.NøIdea/"]
+RUN dotnet restore "./src/Xakpc.Alpaca.NøIdea/Xakpc.Alpaca.NøIdea.csproj"
+COPY Directory.Build.props ./
+COPY src/ src/
+WORKDIR "/src/src/Xakpc.Alpaca.NøIdea"
 RUN dotnet build "./Xakpc.Alpaca.NøIdea.csproj" -c $BUILD_CONFIGURATION -o /app/build
 
-# This stage is used to publish the service project to be copied to the final stage
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
 RUN dotnet publish "./Xakpc.Alpaca.NøIdea.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
 
-# This stage is used in production or when running from VS in regular mode (Default when not using the Debug configuration)
-FROM base AS final
+# --- final --------------------------------------------------------------------
+FROM mcr.microsoft.com/dotnet/runtime:10.0 AS final
 WORKDIR /app
+
+COPY --from=mcp /opt/python /opt/python
+COPY --from=mcp /opt/alpaca-mcp /opt/alpaca-mcp
 COPY --from=publish /app/publish .
+
+# The host reads these. A command selects the stdio transport; a URL would select
+# the HTTP transport (development only). Set one, never both.
+ENV Alpaca__Mcp__ServerCommand=/opt/alpaca-mcp/.venv/bin/alpaca-mcp-server \
+    Alpaca__Mcp__ReadOnlyToolsets=assets,stock-data,options-data,news,corporate-actions \
+    Alpaca__Mcp__TradingToolsets=account,trading,assets \
+    ALPACA_PAPER_TRADE=true
+
+USER $APP_UID
 ENTRYPOINT ["dotnet", "Xakpc.Alpaca.NøIdea.dll"]

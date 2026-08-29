@@ -364,3 +364,6 @@ FodyWeavers.xsd
 .lode/tmp
 example
 build
+
+# Local credentials for compose.dev.yaml. Never commit.
+.env

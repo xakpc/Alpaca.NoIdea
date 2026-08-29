@@ -42,7 +42,7 @@ The AVD is the source of this lode.
 | [component-model.md](architecture/component-model.md) | Internal components and the three replacement seams. |
 | [application-structure.md](architecture/application-structure.md) | Current and target folder layout. |
 | [technology-stack.md](architecture/technology-stack.md) | The approved and rejected technology. |
-| [decisions.md](architecture/decisions.md) | ADR-001 to ADR-011. |
+| [decisions.md](architecture/decisions.md) | ADR-001 to ADR-012. |
 
 ## experts/
 
@@ -71,7 +71,8 @@ The AVD is the source of this lode.
 | File | Content |
 |---|---|
 | [summary.md](alpaca/summary.md) | The two connections, the gateway seams, and the source-of-truth rule. |
-| [mcp-integration.md](alpaca/mcp-integration.md) | The two connections, Docker and stdio, tool discovery, the two typed gateways. |
+| [mcp-integration.md](alpaca/mcp-integration.md) | The two connections, tool discovery, the two typed gateways. |
+| [mcp-run-modes.md](alpaca/mcp-run-modes.md) | Permanent HTTP servers in development, stdio children when deployed. Toolsets and configuration keys. |
 | [mcp-safety.md](alpaca/mcp-safety.md) | Defence in depth, forbidden tools, credentials, version pinning. |
 | [market-data-policy.md](alpaca/market-data-policy.md) | What the free Basic plan gives in real time, and what it does not. |
 
@@ -104,6 +105,7 @@ The AVD is the source of this lode.
 | File | Content |
 |---|---|
 | [summary.md](operations/summary.md) | Deployment and the two paper accounts. |
+| [local-development.md](operations/local-development.md) | The compose servers, the ports, the endpoint, and the manual `.http` tests. It mirrors `DEVELOPMENT.md` in the repository root. |
 | [competition-constraints.md](operations/competition-constraints.md) | Official FAQ rules, the Thursday-EOD finish line, judging, submission, requirement mapping. |
 | [restart-recovery.md](operations/restart-recovery.md) | The startup sequence and reconciliation. |
 | [fault-handling.md](operations/fault-handling.md) | The failure table and the three severity levels. |
@@ -133,6 +135,8 @@ The AVD is the source of this lode.
   [live cycle](trading/live-cycle.md) → [risk guardrails](trading/risk-guardrails.md).
 - **Write agent code:** [tool policy](llm/tool-policy.md) →
   [output contracts](llm/output-contracts.md) → [research agent](experts/research-agent.md).
+- **Run it locally:** [local development](operations/local-development.md) →
+  [MCP run modes](alpaca/mcp-run-modes.md).
 - **Write Alpaca code:** [mcp integration](alpaca/mcp-integration.md) →
   [mcp safety](alpaca/mcp-safety.md) → [market data policy](alpaca/market-data-policy.md).
 - **Plan the next step:** [MVP roadmap](plans/mvp-roadmap.md) →

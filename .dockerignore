@@ -1,30 +1,46 @@
-**/.classpath
-**/.dockerignore
-**/.env
-**/.git
-**/.gitignore
-**/.project
-**/.settings
-**/.toolstarget
-**/.vs
-**/.vscode
+# The build context of every image in this repository is the repository root,
+# because both images need `external/alpaca-mcp-server/`.
+# Keep `external/`, `src/`, and `docker/` in the context.
+
+# Build output and IDE state
+build/
+**/bin/
+**/obj/
+.vs/
+.vscode/
 **/*.*proj.user
 **/*.dbmdl
 **/*.jfm
-**/azds.yaml
-**/bin
-**/charts
-**/docker-compose*
-**/Dockerfile*
-**/node_modules
-**/npm-debug.log
-**/obj
+
+# Version control
+**/.git
+**/.gitignore
+**/.gitattributes
+.github/
+
+# Secrets. Credentials reach the containers as environment variables.
+**/.env
 **/secrets.dev.yaml
 **/values.dev.yaml
+
+# Project memory and documents. No image needs them.
+.lode/
+*.md
 LICENSE
-README.md
-!**/.gitignore
-!.git/HEAD
-!.git/config
-!.git/packed-refs
-!.git/refs/heads/**
+
+# The old Alpaca CLI. It is a fallback only. No code calls it.
+cli_0.0.14_windows_amd64/
+
+# Alpaca MCP server parts that the runtime does not need
+external/alpaca-mcp-server/tests/
+external/alpaca-mcp-server/assets/
+external/alpaca-mcp-server/charts/
+external/alpaca-mcp-server/scripts/
+
+# Docker files themselves
+**/.dockerignore
+**/Dockerfile*
+compose*.yaml
+
+# `uv sync` reads the readme that pyproject.toml declares.
+!external/alpaca-mcp-server/README.md

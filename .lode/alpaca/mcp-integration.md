@@ -75,40 +75,18 @@ flowchart LR
 **The read-only server instance must not receive a trading toolset.** The trading tools are
 never added to an LLM tool list. See [MCP safety](mcp-safety.md).
 
-## Server deployment
+## Two run modes
 
-The Alpaca MCP server is a **local dependency**. The repository holds it as a git submodule
-and runs it in Docker.
+One pinned server source runs in two ways (ADR-012).
 
-```bash
-git submodule add https://github.com/alpacahq/alpaca-mcp-server external/alpaca-mcp-server
-docker build -t mcp/alpaca:<pinned-tag> external/alpaca-mcp-server
-```
+| Mode | Transport | Who starts the server |
+|---|---|---|
+| Development | `streamable-http` on `127.0.0.1:8100` and `127.0.0.1:8101` | `docker compose -f compose.dev.yaml up -d`. It stays up across debug runs. |
+| Deployed | `stdio` | The .NET host, as two child processes inside the application image. |
 
-The .NET host starts each server instance as a child process with `StdioClientTransport`.
-The child process is the `docker run` command. Docker passes the container standard input
-and standard output to the transport.
-
-```text
-docker run -i --rm \
-  -e ALPACA_API_KEY=... \
-  -e ALPACA_SECRET_KEY=... \
-  -e ALPACA_PAPER_TRADE=true \
-  mcp/alpaca:<pinned-tag>
-```
-
-Rules:
-
-- Use `-i`. The transport needs standard input.
-- Use `--rm`. A stopped cycle must not leave containers.
-- **Pin the image tag and the submodule commit** (ADR-011). Do not upgrade during the
-  official trading window.
-- Pass credentials as environment variables. Do not write them to disk.
-- Start the process with `ProcessStartInfo` and `ArgumentList`. Never build one command
-  string. Never use a shell.
-
-The exact server flag that selects the toolset comes from the pinned server version. The
-host must confirm the selection with `ListToolsAsync()` at startup.
+The toolset split, the configuration keys, and the rules are in
+[MCP run modes](mcp-run-modes.md). The development procedure is in
+[local development](../operations/local-development.md).
 
 ## Research tool integration
 
@@ -176,10 +154,20 @@ tools directly. The deterministic ML code and the Options Evaluator use
 
 ## Current repository state
 
-The submodule and the Docker image do not exist yet. Phase 1 of the
-[MVP roadmap](../plans/mvp-roadmap.md) creates them. The folder
-`cli_0.0.14_windows_amd64/` still holds the old Alpaca CLI binary. The CLI is a fallback
-only. No code may call it.
+| Item | State |
+|---|---|
+| `external/alpaca-mcp-server` | Present. Submodule at commit `872abbf`, package version `2.3.0`. |
+| `docker/alpaca-mcp.dev.Dockerfile` | Present. It builds `noidea/alpaca-mcp:dev`. |
+| `compose.dev.yaml` | Present. Two services, ports 8100 and 8101. |
+| `src/Xakpc.Alpaca.NøIdea/Dockerfile` | Present. It holds the server and the .NET host. |
+| `alpaca-mcp.http` | Present. Manual tests for both servers. |
+| C# MCP client code | Not written. Phase 1 continues with `AlpacaMcpClients`. |
+
+The server answers `serverInfo.name = "Alpaca MCP Server"` with `version 3.1.0`, while the
+Python package version is `2.3.0`. Log both values at startup.
+
+The folder `cli_0.0.14_windows_amd64/` still holds the old Alpaca CLI binary. The CLI is a
+fallback only. No code may call it.
 
 ## Related
 

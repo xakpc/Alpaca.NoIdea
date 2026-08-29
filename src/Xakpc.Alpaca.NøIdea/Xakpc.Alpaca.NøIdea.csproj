@@ -6,6 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+    <!-- Both images need external/alpaca-mcp-server, so the build context is the repository root. -->
+    <DockerfileContext>..\..</DockerfileContext>
   </PropertyGroup>
 
   <ItemGroup>

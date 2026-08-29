@@ -1,0 +1,49 @@
+# Permanent Alpaca MCP servers for development.
+#
+#   docker compose -f compose.dev.yaml up -d --build     start and leave running
+#   docker compose -f compose.dev.yaml ps                both must report healthy
+#   docker compose -f compose.dev.yaml logs -f           follow the server logs
+#   docker compose -f compose.dev.yaml down              stop
+#
+# The .NET application runs outside these containers during development and
+# connects over streamable-http. The deployed image starts the same server with
+# the stdio transport instead. See src/Xakpc.Alpaca.NøIdea/Dockerfile.
+#
+# Credentials come from .env in the repository root. Copy .env.example to .env.
+
+name: noidea-dev
+
+x-alpaca-mcp: &alpaca-mcp
+  build:
+    context: .
+    dockerfile: docker/alpaca-mcp.dev.Dockerfile
+  image: noidea/alpaca-mcp:dev
+  env_file:
+    - path: .env
+      required: true
+  restart: unless-stopped
+  stop_grace_period: 5s
+
+services:
+  # Research data only. The LLM agents connect here.
+  # It exposes no order tool, no position tool, and no account tool.
+  mcp-readonly:
+    <<: *alpaca-mcp
+    container_name: noidea-mcp-readonly
+    environment:
+      ALPACA_PAPER_TRADE: "true"
+      ALPACA_TOOLSETS: "assets,stock-data,options-data,news,corporate-actions"
+    ports:
+      # 127.0.0.1 only. The port has no authentication.
+      - "127.0.0.1:8100:8000"
+
+  # Account and orders. Deterministic C# connects here. No LLM may reach it.
+  mcp-trading:
+    <<: *alpaca-mcp
+    container_name: noidea-mcp-trading
+    environment:
+      ALPACA_PAPER_TRADE: "true"
+      ALPACA_TOOLSETS: "account,trading,assets"
+    ports:
+      # 127.0.0.1 only. This port can place orders.
+      - "127.0.0.1:8101:8000"

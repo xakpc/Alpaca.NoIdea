@@ -3,7 +3,7 @@
 Eight phases. Each phase has an exit condition. Do not start a phase before the previous
 exit condition is true.
 
-**Current position: before Phase 1.** `Program.cs` prints `Hello, World!`.
+**Current position: inside Phase 1.** The MCP servers run. `Program.cs` prints `Hello, World!`.
 
 ```mermaid
 flowchart LR
@@ -18,21 +18,27 @@ flowchart LR
 
 ## Phase 1: Alpaca MCP access
 
+**Current position: inside Phase 1.** Steps 1 to 5 are complete.
+
 1. Create the .NET 10 console project. *(Done.)*
-2. Add the C# MCP SDK (`ModelContextProtocol`).
-3. Add the Alpaca MCP server as a git submodule at `external/alpaca-mcp-server`. Pin the
-   commit.
-4. Build and tag the Docker image. Pin the tag.
-5. Configure a development paper account.
-6. Start the read-only Alpaca MCP server from C# with `StdioClientTransport`.
-7. Connect a read-only `McpClient`. List and filter the research tools.
-8. Start a separate trading Alpaca MCP server. Connect a trading `McpClient`.
-9. Confirm that the read-only connection exposes no trading tool.
-10. Implement `IMarketDataGateway`.
-11. Implement `ITradingGateway`.
-12. Read the account state, bars, news, and option chains.
-13. Submit one controlled test option order in the development paper account.
-14. Read and close that position.
+2. Add the Alpaca MCP server as a git submodule at `external/alpaca-mcp-server`. Pin the
+   commit. *(Done.)*
+3. Build the development MCP image and run the two permanent servers with
+   `compose.dev.yaml`. *(Done. Ports 8100 and 8101.)*
+4. Put the same pinned server into the application image for the deployed stdio mode.
+   *(Done.)*
+5. Confirm with `alpaca-mcp.http` that the read-only server exposes no order, position, or
+   account tool. *(Done.)*
+6. Configure a development paper account and put the keys in `.env`.
+7. Add the C# MCP SDK (`ModelContextProtocol`).
+8. Connect a read-only `McpClient`. List and filter the research tools.
+9. Connect a trading `McpClient` on the second connection.
+10. Fail startup if the read-only connection exposes a forbidden tool.
+11. Implement `IMarketDataGateway`.
+12. Implement `ITradingGateway`.
+13. Read the account state, bars, news, and option chains.
+14. Submit one controlled test option order in the development paper account.
+15. Read and close that position.
 
 > **Exit:** C# can read research data through the read-only MCP connection and can perform
 > the required paper-trading actions through the separate trading MCP connection.

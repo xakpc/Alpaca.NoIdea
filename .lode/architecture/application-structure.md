@@ -2,24 +2,44 @@
 
 ## Current state
 
-The solution has one project and one file of code.
+The solution has one project. The Alpaca MCP server is present as a submodule, and both
+container images exist.
 
 ```text
 Xakpc.Alpaca.NøIdea.slnx
 Directory.Build.props
-alpaca-autonomous-options-agent-avd.md   # source AVD, revision 2 (MCP)
+alpaca-autonomous-options-agent-avd.md   # source AVD, revision 3 (MCP)
+DEVELOPMENT.md            # human quickstart: setup, compose, manual tests
+alpaca-mcp.http           # manual MCP tests for both development servers
+compose.dev.yaml          # the two permanent development MCP servers
+.env.example              # copy to .env, which is git-ignored
+.dockerignore             # written for the repository-root build context
+
+docker/
+    alpaca-mcp.dev.Dockerfile   # development MCP image, streamable-http
+    mcp-healthcheck.py          # container healthcheck
+
+external/
+    alpaca-mcp-server/    # git submodule, pinned commit
+
 src/Xakpc.Alpaca.NøIdea/
     Program.cs            # Console.WriteLine("Hello, World!") only
-    Dockerfile            # Visual Studio default, Linux container, .NET 10 runtime
+    Dockerfile            # .NET host + the pinned MCP server, stdio children
     Properties/launchSettings.json
+
 build/                    # bin and obj output (set by Directory.Build.props)
 cli_0.0.14_windows_amd64/ # old Alpaca CLI binary. Fallback only. No code calls it.
 .lode/                    # project memory
 ```
 
-The `Dockerfile` copies from a `Xakpc.Alpaca.NøIdea/` path. This assumes that the build
-context is `src/`. Visual Studio sets this context. Check this if a command-line
-`docker build` fails.
+**The Docker build context is the repository root** for both images, because both need
+`external/alpaca-mcp-server/`. The project sets `<DockerfileContext>..\..</DockerfileContext>`
+so that Visual Studio uses the same context.
+
+```bash
+docker build -f src/Xakpc.Alpaca.NøIdea/Dockerfile -t noidea/trader:dev .
+docker compose -f compose.dev.yaml up -d --build
+```
 
 ## Target structure
 

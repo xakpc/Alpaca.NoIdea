@@ -32,8 +32,11 @@ LLM agents are the one exception: they call approved read-only MCP tools directl
 ## The MCP server
 
 The Alpaca MCP server (https://github.com/alpacahq/alpaca-mcp-server) is a git submodule at
-`external/alpaca-mcp-server`. The host runs it in Docker as a stdio child process. The
-submodule commit and the image tag are pinned (ADR-011).
+`external/alpaca-mcp-server`. The submodule commit is pinned (ADR-011).
+
+It runs in two ways (ADR-012). Development uses two permanent containers over
+`streamable-http`. The deployed image holds the same server and starts two `stdio` child
+processes. See [MCP run modes](mcp-run-modes.md).
 
 ## The old CLI
 
@@ -44,5 +47,6 @@ code may call it. The architecture must not use both paths at the same time.
 ## Related
 
 - [MCP integration](mcp-integration.md)
+- [MCP run modes](mcp-run-modes.md)
 - [MCP safety](mcp-safety.md)
 - [Market data policy](market-data-policy.md)

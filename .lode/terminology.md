@@ -69,6 +69,11 @@ Short definitions of the domain language of this project. Keep the lines short.
   option tools. The LLM agents use this connection only.
 - **Trading connection** — The Alpaca MCP client that exposes account and order tools. Only
   deterministic C# uses it.
+- **Toolset** — A named group of Alpaca MCP tools. `ALPACA_TOOLSETS` selects them, for
+  example `account,trading,assets`. It is the server-side half of the read-only rule.
+- **Streamable-http** — The MCP transport that the development servers use. The endpoint is
+  `/mcp`. The answer is a `text/event-stream`, and the session id arrives in the
+  `mcp-session-id` header.
 - **Tool allowlist** — `McpToolCatalog`. It filters the discovered MCP tools before the host
   gives them to an LLM agent.
 - **Guardrail** — A hard risk rule in C#. An LLM cannot change a guardrail.

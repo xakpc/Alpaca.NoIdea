@@ -11,10 +11,14 @@ market is closed.
 The operator starts the program. **After startup the system does not require trade
 approval.**
 
-The process can run on the developer workstation, an existing server, or a small VM. The
-host needs **Docker**, because it starts both Alpaca MCP servers in containers. The host
-owns the two child processes and stops them at shutdown. A paid deployment platform is not
-required.
+The deployed image holds the .NET host **and** the pinned Alpaca MCP server. The host starts
+two `stdio` server children inside its own container, so the deployment needs no Docker
+socket and no second container. The process can run on the developer workstation, an existing
+server, or a small VM. A paid deployment platform is not required.
+
+Development is different: two permanent MCP containers serve `streamable-http` on
+`127.0.0.1:8100` and `127.0.0.1:8101`. See [local development](local-development.md) and
+[MCP run modes](../alpaca/mcp-run-modes.md).
 
 ## Submission
 
@@ -46,6 +50,7 @@ The official Q&A permits a separate development account.
 ## Related
 
 - [Competition constraints](competition-constraints.md)
+- [Local development](local-development.md)
 - [Restart and recovery](restart-recovery.md)
 - [Fault handling](fault-handling.md)
 - [Testing strategy](testing-strategy.md)

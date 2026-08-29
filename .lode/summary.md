@@ -18,19 +18,21 @@ deterministic C# uses.**
 
 ## Current state of the code
 
-The repository has an architecture vision document and an empty application skeleton.
+The repository has an architecture vision document, an empty application skeleton, and a
+working Alpaca MCP container setup.
 
 | Item | State |
 |---|---|
 | `alpaca-autonomous-options-agent-avd.md` | Complete, revision 3 (MCP + latest FAQ). It is the source document for this lode. |
 | `src/Xakpc.Alpaca.NøIdea/Program.cs` | `Console.WriteLine("Hello, World!")` only. |
-| `src/Xakpc.Alpaca.NøIdea/Dockerfile` | Visual Studio default for a Linux container. |
-| `external/alpaca-mcp-server` submodule | Not added yet. Phase 1 adds it. |
-| Alpaca MCP Docker image | Not built yet. Phase 1 builds and pins it. |
-| Alpaca CLI `0.0.14` (Windows amd64) | Still in `cli_0.0.14_windows_amd64/`. Fallback only. No code calls it. |
-| SQLite schema, experts, trading loop, TUI | Not implemented. |
+| `src/Xakpc.Alpaca.NøIdea/Dockerfile` | Builds the .NET host together with the pinned MCP server. The host starts stdio children. |
+| `external/alpaca-mcp-server` submodule | Present, pinned. Package version `2.3.0`. |
+| `compose.dev.yaml` + `docker/alpaca-mcp.dev.Dockerfile` | Two permanent development servers on `127.0.0.1:8100` and `127.0.0.1:8101`. |
+| `alpaca-mcp.http` | Manual `initialize`, `tools/list`, and `tools/call` tests for both servers. |
+| C# MCP clients, SQLite schema, experts, trading loop, TUI | Not implemented. |
 
-No phase of the [MVP roadmap](plans/mvp-roadmap.md) is complete.
+Phase 1 of the [MVP roadmap](plans/mvp-roadmap.md) is in progress. The MCP servers run; the
+C# client code does not exist.
 
 ## Competition window
 

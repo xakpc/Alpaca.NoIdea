@@ -92,15 +92,29 @@ bars and trades. See [market data policy](../alpaca/market-data-policy.md).
 
 ## ADR-011: Pin the Alpaca MCP server version
 
-**Decision:** Pin the `external/alpaca-mcp-server` submodule commit and the Docker image tag
-for development and for the competition.
+**Decision:** Pin the `external/alpaca-mcp-server` submodule commit. Both images build from
+that commit, for development and for the competition.
 
 **Reason:** MCP tool names and schemas can change. A silent upgrade during the official
 trading window is an unnecessary risk.
 
 **Effect:** The host logs the pinned version and validates the required tool names at
-startup. Do not upgrade during the official window. See
-[MCP safety](../alpaca/mcp-safety.md).
+startup. Pin the base image tags too (`python:3.11-slim`, `ghcr.io/astral-sh/uv:0.9`). Do not
+upgrade during the official window. See [MCP safety](../alpaca/mcp-safety.md).
+
+## ADR-012: Two MCP run modes
+
+**Decision:** Development runs the Alpaca MCP servers as permanent containers over
+`streamable-http`. The deployed image holds the same pinned server and starts it as two
+`stdio` child processes.
+
+**Reason:** A deployed container cannot start a sibling container without the Docker socket,
+and the Docker socket gives the application root control of the host. Development needs a
+server that stays up between debug runs, so a per-run child process is wrong there.
+
+**Effect:** The host selects the transport from configuration: a URL selects HTTP, a command
+selects stdio. One pinned submodule feeds both images. See
+[MCP run modes](../alpaca/mcp-run-modes.md).
 
 ## Related
 
