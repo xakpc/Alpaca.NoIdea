@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Xakpc.Alpaca.NøIdea": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}
