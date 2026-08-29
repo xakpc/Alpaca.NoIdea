@@ -1,12 +1,19 @@
 # Forecast Combination and Expert Reliability
 
-The `ForecastCombiner` combines three probabilities into one. The
+The `ForecastCombiner` combines the weighted expert probabilities into one.
+
+> **Two forecasters, not three (ADR-013).** The Historical ML Expert was measured against the
+> option price and lost in every period, so it carries no weight. See
+> [model against the market](../replay/model-vs-market.md). The diagram below keeps the ML
+> input greyed out because the combiner code still supports an arbitrary set of forecasters.
+
+The
 [Options Evaluator](options-evaluator.md) is not part of this combination. It gives the
 external reference.
 
 ```mermaid
 flowchart LR
-    ML[ML probability] --> C[Weighted combination]
+    ML["ML probability<br/>EXCLUDED, ADR-013"] -.-> C[Weighted combination]
     R[Research probability] --> C
     K[Critic probability] --> C
     W[(expert_scores<br/>weights)] --> C

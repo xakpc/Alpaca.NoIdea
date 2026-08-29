@@ -9,8 +9,8 @@ appear in a C# file. It belongs in `TradingOptions`, `RiskOptions`, or `AgentOpt
 {
   "CycleMinutes": 30,
   "TrackedSymbols": [
-    "SPY", "QQQ", "AAPL", "MSFT", "NVDA",
-    "AMZN", "META", "GOOGL", "TSLA", "AMD"
+    "SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA", "AMZN",
+    "META", "GOOGL", "TSLA", "AMD", "MU", "INTC"
   ],
   "MaxConcurrentPositions": 4,
   "MaxNewPositionsPerDay": 4,
@@ -20,6 +20,10 @@ appear in a C# file. It belongs in `TradingOptions`, `RiskOptions`, or `AgentOpt
 
 `MaxConcurrentPositions`, `MaxNewPositionsPerDay`, and `CycleMinutes` are development
 defaults. They are not final strategy values.
+
+`TrackedSymbols` is **measured**, not chosen. It is the output of the four admission rules in
+[universe](universe.md). Rebuild it with `scripts/screen-universe.sh`; do not edit the list
+by hand.
 
 Trailing stop is **not** a valid order type for options. See
 [MCP integration](../alpaca/mcp-integration.md).
@@ -50,6 +54,13 @@ configuration.**
 
 The open design questions behind these values are in
 [open strategy questions](../plans/open-strategy-questions.md).
+
+> **The minimum probability edge and the cheap-filter threshold have no valid signal yet.**
+> A historical market reference now exists, from the call-ladder slope. But the measurement
+> showed the ML model loses to that reference in every period, and that the wider the two
+> disagree the more wrong the model is. Setting a threshold on that gap would select for the
+> model's own errors. Both values stay TBD until a forecaster that beats the price exists.
+> See [model against the market](../replay/model-vs-market.md).
 
 ## Rule
 

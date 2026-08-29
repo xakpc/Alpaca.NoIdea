@@ -8,7 +8,7 @@ flowchart TD
     A[Start cycle] --> B[Sync account and orders]
     B --> C[Manage open positions]
     C --> D[Read tracked symbols and option data]
-    D --> E[Historical ML Expert]
+    D --> E[Cheap filter<br/>quality, band, news]
     E --> F{Potential edge large enough?}
     F -- No --> G[Skip candidate]
     F -- Yes --> H[Research Agent]
@@ -52,16 +52,28 @@ evaluates. The exact selection rule is **TBD**, but it must require a valid bid 
 acceptable quote age, a supported expiration, a supported option type, and no obviously bad
 or missing data.
 
-### 4. Historical ML Expert
+### 4. Historical ML Expert — removed
 
-The ML model evaluates the candidate event. See
-[Historical ML Expert](../experts/historical-ml-expert.md).
+**This step no longer exists (ADR-013).** The model was measured against the option price and
+lost in every period, so it gives no forecast and no gate. See
+[model against the market](../replay/model-vs-market.md).
 
 ### 5. Cheap filter
 
-Compare the ML probability with the approximate market reference. If the difference is too
-small, skip the candidate. **This step prevents unnecessary LLM calls.** The filter
-threshold is a strategy parameter.
+The filter still has to exist, because the system must not call an LLM for every contract.
+What it can no longer do is key on a **model-versus-market gap**: that gap was measured and
+tracks the model's own error, so filtering on it would select the candidates the model
+understands least.
+
+The replacement gates are deterministic and need no forecast:
+
+- **Contract quality.** Valid two-sided quote, acceptable age and spread, greeks present.
+- **A tradeable market-probability band.** From the option ladder. A contract that is nearly
+  certain either way is not worth an LLM call.
+- **Fresh news for the symbol.** The remaining alpha hypothesis is the LLM agents reading
+  text, so spend the budget where text exists.
+
+The exact thresholds are **TBD**. See [strategy parameters](strategy-parameters.md).
 
 ### 6. Research Agent
 

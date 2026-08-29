@@ -1,14 +1,18 @@
 # MVP Roadmap
 
-Eight phases. Each phase has an exit condition. Do not start a phase before the previous
-exit condition is true.
+Eight phases. Each phase has an exit condition. Do not start a phase before the previous exit
+condition is true, **unless the phase needs nothing from it**. Phase 3 needs no live Alpaca
+connection, so it ran beside Phase 1.
 
-**Current position: inside Phase 1.** The MCP servers run. `Program.cs` prints `Hello, World!`.
+**Current position: Phase 1 is the work.** Phase 3 is finished and its expert is excluded. The MCP servers run and the trading
+host is still a hello-world. **Phase 3 is complete:** the model is trained and measured.
+
+Phase 3 needs no live connection, so it did not wait for Phase 1. The rest of the roadmap does.
 
 ```mermaid
 flowchart LR
     P1[1 Alpaca MCP access] --> P2[2 SQLite and data]
-    P2 --> P3[3 ML.NET]
+    P2 --> P3[3 ML.NET - DONE]
     P3 --> P4[4 Research Agent]
     P4 --> P5[5 Critic Agent]
     P5 --> P6[6 Combine and score]
@@ -54,16 +58,31 @@ flowchart LR
 
 > **Exit:** The program can replay a past market period with no live MCP call.
 
-## Phase 3: ML.NET
+## Phase 3: ML.NET — complete, and the expert is excluded
 
-1. Implement feature generation.
-2. Generate the historical labels.
-3. Split the data by time.
-4. Train the SDCA logistic regression model.
-5. Save the model.
-6. Evaluate the probability quality.
+> Built and measured on branch `phase-3-historical-ml-expert`. That code is **not on this branch**; only the finding is.
 
-> **Exit:** The Historical ML Expert returns a probability for a candidate event.
+1. Implement feature generation. *(Done. `FeatureGenerator` shared library.)*
+2. Download the expired option contract catalog. *(Done. `scripts/acquire-contracts.sh`.)*
+3. Generate the historical labels. *(Done. 1,361,525 rows from real strikes and expirations.)*
+4. Split the data by time. *(Done. On decision dates, 70/15/15.)*
+5. Train the SDCA logistic regression model. *(Done.)*
+6. Save the model. *(Done. `data/historical-model.zip`.)*
+7. Evaluate the probability quality. *(Done. `data/model-metrics.md`.)*
+
+> **Exit reached.** The Historical ML Expert returns a calibrated probability for a candidate
+> event. Test Brier 0.13988 against a 0.24959 base-rate baseline. The calibration is monotonic
+> but under-confident in the middle of the range.
+
+8. Compare the model with the option price. *(Done. `scripts/acquire-option-bars.sh` and the
+   `market` step.)*
+
+**The measured answer is negative.** The model beats ignorance and loses to the option price
+in every period. The cheap filter cannot key on a model-versus-market gap, because that gap
+tracks the model's own error. See [model against the market](../replay/model-vs-market.md).
+
+The ladder-slope market probability is validated and survives as a reference. The minimum edge
+and the cheap-filter threshold stay TBD, and now need a different signal to key on.
 
 ## Phase 4: Research Agent
 
@@ -120,7 +139,17 @@ flowchart LR
 
 > **Exit:** [Definition of done](definition-of-done.md) is complete.
 
+## What Phase 3 changed for the rest of the plan
+
+Phase 6 combines three expert probabilities with reliability weights. One of the three is now
+known to carry no information the option price does not already hold. The combiner still
+works, but the alpha, if any exists, has to come from the Research and Critic agents, which
+read news text rather than price history. That is a different information channel and is the
+only remaining candidate.
+
 ## Related
 
+- [Model against the market](../replay/model-vs-market.md)
+- [ML hypotheses](ml-hypotheses.md)
 - [Open strategy questions](open-strategy-questions.md)
 - [Main risks](main-risks.md)

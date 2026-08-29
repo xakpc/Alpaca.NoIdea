@@ -13,6 +13,10 @@ deterministic C# control every account-changing action.
 **Change condition:** Return to the CLI only if a required MCP capability is missing or
 unstable. Do not use both paths at the same time.
 
+**Scope:** this decision governs the **running system**. The offline acquisition scripts in
+`scripts/` use the CLI to download training data before a session. That is not a trading
+path, and the two never run at the same time.
+
 **Supersedes:** Revision 1 of the AVD chose the CLI. That decision is no longer current.
 
 ## ADR-002: Do not use Semantic Kernel
@@ -65,6 +69,10 @@ probability model.
 
 **Change condition:** Move to LightGBM only after replay tests show a clear improvement.
 
+**Outcome:** The model was built and measured. It beats ignorance and loses to the option
+price. The trainer choice was never the problem, so a different trainer does not fix it. See
+ADR-013.
+
 ## ADR-008: Start with a fixed symbol list
 
 **Decision:** Start with about 10 liquid symbols.
@@ -78,17 +86,20 @@ system does not ask an LLM to discover which companies exist.
 
 **Reason:** The official trading window is too short to learn everything from live results.
 
-## ADR-010: Free data only
+## ADR-010: Free data only, at the default feed
 
-**Decision:** Use the free Alpaca Basic plan with the Indicative options feed.
+**Decision:** Buy no data upgrade. Use the feeds that the account gives by default, and pass
+no `feed` argument in any request.
 
-**Reason:** The project will not pay for OPRA access. The FAQ confirms that the latest option
-quote and the latest option chain are **real time** on Basic, so the free tier is sufficient
-for live decisions.
+**Reason:** The project will not pay for an upgrade. A measurement on 2026-08-29 shows that
+the development account already returns **SIP** stock data, not IEX only. The earlier
+assumption of an IEX and Indicative limit was wrong. Taking the default keeps replay data and
+live data on one feed.
 
-**Effect:** The strategy must not depend on small pricing differences, because Indicative is
-not consolidated OPRA. Replay must account for the 15-minute restriction on historical option
-bars and trades. See [market data policy](../alpaca/market-data-policy.md).
+**Effect:** The code never names a feed. The account entitlement must be measured again on the
+official competition account, because a difference between the two accounts changes the scale
+of every volume feature without an error. See
+[market data policy](../alpaca/market-data-policy.md).
 
 ## ADR-011: Pin the Alpaca MCP server version
 
@@ -116,7 +127,51 @@ server that stays up between debug runs, so a per-run child process is wrong the
 selects stdio. One pinned submodule feeds both images. See
 [MCP run modes](../alpaca/mcp-run-modes.md).
 
+## ADR-013: The Historical ML Expert is not a forecaster
+
+**Decision:** `HistoricalMlExpert` carries **no weight in the forecast combiner** and **no gate
+in the live cycle**. The market probability from the option ladder replaces it as the
+reference. The ML code and the shared library stay in the repository.
+
+**Reason:** It was measured against the option price on 149,838 questions and lost in every
+period, including the period it was fitted on.
+
+| Period | Model | Market |
+|---|---:|---:|
+| Train | 0.14276 | 0.13155 |
+| Validation | 0.14599 | 0.14234 |
+| Test | 0.17142 | 0.15345 |
+
+Three facts make this a decision rather than a tuning problem:
+
+- **An equal blend of the two is worse than the market alone** (0.13842 against 0.13787), so
+  the model holds no information the price does not already carry.
+- **Disagreement tracks model error, not opportunity.** Where the two differ by more than
+  0.20, the model said 54%, the market said 63%, and 67% happened. A cheap filter keyed on
+  that gap would select the candidates the model understands least.
+- **The comparison favours the model and it still loses.** An option price is risk-neutral, so
+  it understates the real-world chance slightly; the handicap runs the model's way.
+
+**Effect:** The [cheap filter](../trading/live-cycle.md) step 5 cannot key on a
+model-versus-market gap. Candidate reduction must come from contract quality, a tradeable
+market-probability band, and the presence of fresh news. The minimum edge and the
+cheap-filter threshold stay TBD, because no forecaster that beats the price yet exists.
+
+**What is kept, and why:** on branch `phase-3-historical-ml-expert` the shared library holds bar reading, the market calendar, the
+contract catalog, `OptionPriceBook` (the validated market reference) and the Brier and
+calibration scoring. Phase 1 and every later phase need all of it. Only the trained model has
+no consumer.
+
+**Change condition:** Reinstate the expert only if a formulation beats the option price on a
+period that includes a falling market, by a margin exceeding the bid/ask spread. The ideas
+already considered and rejected are in [ML hypotheses](../plans/ml-hypotheses.md).
+
+**Supersedes:** It does not reverse ADR-007. The trainer choice was sound; the target was the
+problem.
+
 ## Related
 
+- [Model against the market](../replay/model-vs-market.md)
+- [ML hypotheses](../plans/ml-hypotheses.md)
 - [Technology stack](technology-stack.md)
 - [Risk guardrails](../trading/risk-guardrails.md)

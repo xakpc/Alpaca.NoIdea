@@ -18,21 +18,43 @@ deterministic C# uses.**
 
 ## Current state of the code
 
-The repository has an architecture vision document, an empty application skeleton, and a
-working Alpaca MCP container setup.
+> Phase 3 was built and measured on branch `phase-3-historical-ml-expert`. **That code is not on this branch**: the
+> model lost to the option price, so only the finding was brought across. The library it
+> leaves behind (the option ladder, the market calendar, the Brier scoring) is worth
+> recovering from that branch when Phase 1 needs it.
+
+The repository has an architecture vision document, a working Alpaca MCP container setup, a
+trained Historical ML Expert, and an empty trading host.
 
 | Item | State |
 |---|---|
-| `alpaca-autonomous-options-agent-avd.md` | Complete, revision 3 (MCP + latest FAQ). It is the source document for this lode. |
-| `src/Xakpc.Alpaca.NøIdea/Program.cs` | `Console.WriteLine("Hello, World!")` only. |
+| `alpaca-autonomous-options-agent-avd.md` | Revision 3. **Seeded this lode; no longer a source of truth.** It still describes a weighted ML expert, which measurement retired (ADR-013). |
+| `src/Xakpc.Alpaca.NøIdea/Program.cs` | Hello-world only. The trading host is not started. |
+| `src/…FeatureGenerator` (branch `phase-3-historical-ml-expert`) | **Done.** Shared library: bar reading, the regular-hours calendar, the contract catalog, the 14 features, and `HistoricalMlExpert`. |
+| `src/…Trainer` (branch `phase-3-historical-ml-expert`) | **Done.** Console: builds 1.36M labelled rows, splits by time, trains SDCA, evaluates, writes the report. |
+| `tests/Trader.Tests` (branch `phase-3-historical-ml-expert`) | **Done.** 46 xUnit tests, including the no-future-leak checks. |
+| `data/historical-model.zip` | **Trained, and measured against the market: it loses.** Test Brier 0.13988 against a 0.24959 base rate, but 0.17142 against the option price's 0.15345 on the same questions. |
+| `data/raw/option-bars/` | 416 files, 94 MB. Near-money call ladders, 2024-01-18 to 2026-08-28. |
 | `src/Xakpc.Alpaca.NøIdea/Dockerfile` | Builds the .NET host together with the pinned MCP server. The host starts stdio children. |
 | `external/alpaca-mcp-server` submodule | Present, pinned. Package version `2.3.0`. |
 | `compose.dev.yaml` + `docker/alpaca-mcp.dev.Dockerfile` | Two permanent development servers on `127.0.0.1:8100` and `127.0.0.1:8101`. |
 | `alpaca-mcp.http` | Manual `initialize`, `tools/list`, and `tools/call` tests for both servers. |
-| C# MCP clients, SQLite schema, experts, trading loop, TUI | Not implemented. |
+| `scripts/*.sh` (branch `phase-3-historical-ml-expert`) | Universe screening, history, contracts, and option bars. Deterministic, no LLM. |
+| `data/raw/` | 133 MB of bars and news, 2023-01-03 to 2026-08-28, plus 370 MB of expired option contracts, 2024-01-18 to 2026-08-28. Git-ignored. |
+| C# MCP clients, SQLite schema, Research and Critic agents, Options Evaluator, trading loop, TUI | Not implemented. |
 
-Phase 1 of the [MVP roadmap](plans/mvp-roadmap.md) is in progress. The MCP servers run; the
-C# client code does not exist.
+Phase 3 of the [MVP roadmap](plans/mvp-roadmap.md) is complete: the Historical ML Expert
+returns a calibrated probability. Phase 1 is still open, because the C# MCP client code does
+not exist. The two phases are independent, and the model was built first because it needs no
+live connection.
+
+> **The Historical ML Expert does not beat the option price (ADR-013).** It beats ignorance easily, but
+> the market wins in every period, and the wider the two disagree the more wrong the model is.
+> So the cheap filter cannot key on a model-versus-market gap, and the ML expert is not a
+> source of edge. See [model against the market](replay/model-vs-market.md).
+>
+> What survives: the ladder-slope market probability (Brier 0.13787, well calibrated) and the
+> measurement machinery that will score the remaining three experts.
 
 ## Competition window
 

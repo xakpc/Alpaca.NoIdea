@@ -19,13 +19,22 @@ flowchart LR
 
 | Expert | Technology | Output | Weighted |
 |---|---|---|---|
-| Historical ML Expert | ML.NET logistic regression | Probability | Yes |
+| ~~Historical ML Expert~~ | ML.NET logistic regression | Probability | **No (ADR-013)** |
 | Research Agent | LLM through `IChatClient` | Probability, confidence, evidence | Yes |
 | Critic Agent | LLM through `IChatClient` | Probability, confidence, risks | Yes |
 | Options Evaluator | Deterministic C# | Market reference and a quote-quality verdict | No |
 
-The first three experts give **forecasts**. The Options Evaluator gives the **external
-market reference** and rejects a bad contract. It is not part of the weighted combination.
+**The Historical ML Expert is excluded.** It was measured against the option price and lost in
+every period, so it carries no weight and no gate. See
+[model against the market](../replay/model-vs-market.md) and ADR-013.
+
+That leaves **two** weighted forecasters, the Research Agent and the Critic Agent. The Options
+Evaluator gives the **external market reference** and rejects a bad contract; it is not part of
+the weighted combination.
+
+> The remaining alpha hypothesis rests entirely on the two LLM agents, because they read news
+> text. That is a different information channel from price history, which is the channel that
+> was just measured and found to hold nothing the option price does not already carry.
 
 ## The hypothesis under test
 

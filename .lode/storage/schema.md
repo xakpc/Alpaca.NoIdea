@@ -224,8 +224,8 @@ CREATE TABLE equity_snapshots (
 );
 ```
 
-`forecaster` in `forecasts` and in `expert_scores` uses the same value set: the three
-weighted experts. See [forecast combination](../experts/forecast-combination.md).
+`forecaster` in `forecasts` and in `expert_scores` uses the same value set: the weighted
+experts, which are now the Research Agent and the Critic Agent. See [forecast combination](../experts/forecast-combination.md).
 
 ## Startup
 
