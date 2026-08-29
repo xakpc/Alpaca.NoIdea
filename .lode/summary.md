@@ -29,7 +29,11 @@ trained Historical ML Expert, and an empty trading host.
 | Item | State |
 |---|---|
 | `alpaca-autonomous-options-agent-avd.md` | Revision 3. **Seeded this lode; no longer a source of truth.** It still describes a weighted ML expert, which measurement retired (ADR-013). |
-| `src/Xakpc.Alpaca.NøIdea/Program.cs` | Hello-world only. The trading host is not started. |
+| `src/Xakpc.Alpaca.NøIdea/Program.cs` | Two check modes. `--smoke` runs the full order path; `--check-mcp` proves the read-only tool isolation. The trading loop is not started. |
+| `src/…/Alpaca/AlpacaClients.cs` | **Done.** Three typed `Alpaca.Markets` clients on `Environments.Paper`. |
+| `src/…/Alpaca/AlpacaMcpClient.cs` + `McpToolCatalog.cs` | **Done.** One read-only MCP connection; 34 tools discovered, 25 approved, forbidden tools fail startup. |
+| `src/…/Storage/TradingStore.cs` | **Done.** The `orders` table and the idempotency lookup. |
+| `tests/Trader.Tests` | **Done.** 30 tests covering the paper guarantee and the tool policy. |
 | `src/…FeatureGenerator` (branch `phase-3-historical-ml-expert`) | **Done.** Shared library: bar reading, the regular-hours calendar, the contract catalog, the 14 features, and `HistoricalMlExpert`. |
 | `src/…Trainer` (branch `phase-3-historical-ml-expert`) | **Done.** Console: builds 1.36M labelled rows, splits by time, trains SDCA, evaluates, writes the report. |
 | `tests/Trader.Tests` (branch `phase-3-historical-ml-expert`) | **Done.** 46 xUnit tests, including the no-future-leak checks. |
@@ -37,11 +41,10 @@ trained Historical ML Expert, and an empty trading host.
 | `data/raw/option-bars/` | 416 files, 94 MB. Near-money call ladders, 2024-01-18 to 2026-08-28. |
 | `src/Xakpc.Alpaca.NøIdea/Dockerfile` | Builds the .NET host together with the pinned MCP server. The host starts stdio children. |
 | `external/alpaca-mcp-server` submodule | Present, pinned. Package version `2.3.0`. |
-| `compose.dev.yaml` + `docker/alpaca-mcp.dev.Dockerfile` | Two permanent development servers on `127.0.0.1:8100` and `127.0.0.1:8101`. |
-| `alpaca-mcp.http` | Manual `initialize`, `tools/list`, and `tools/call` tests for both servers. |
+| `compose.dev.yaml` + `docker/alpaca-mcp.dev.Dockerfile` | **One** permanent development server on `127.0.0.1:8100`. The trading server was deleted (ADR-001). |
 | `scripts/*.sh` (branch `phase-3-historical-ml-expert`) | Universe screening, history, contracts, and option bars. Deterministic, no LLM. |
 | `data/raw/` | 133 MB of bars and news, 2023-01-03 to 2026-08-28, plus 370 MB of expired option contracts, 2024-01-18 to 2026-08-28. Git-ignored. |
-| C# MCP clients, SQLite schema, Research and Critic agents, Options Evaluator, trading loop, TUI | Not implemented. |
+| Full SQLite schema, Research and Critic agents, Options Evaluator, trading loop, TUI | Not implemented. |
 
 Phase 3 of the [MVP roadmap](plans/mvp-roadmap.md) is complete: the Historical ML Expert
 returns a calibrated probability. Phase 1 is still open, because the C# MCP client code does

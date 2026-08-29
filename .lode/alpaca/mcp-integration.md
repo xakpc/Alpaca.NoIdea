@@ -1,48 +1,6 @@
-# Alpaca MCP Integration
+# Alpaca Integration
 
-The system reaches Alpaca through the **Alpaca MCP server** (ADR-001). It does not use the
-Alpaca CLI. It does not call the Alpaca REST API directly.
-
-## Why MCP
-
-- The C# MCP SDK (`ModelContextProtocol`) manages the client connection.
-- `Microsoft.Extensions.AI` can put MCP tools into `ChatOptions.Tools` directly.
-- The Research Agent and the Critic Agent get Alpaca data tools without a custom C# wrapper
-  for each data operation.
-- One connection stays open for many calls. No process starts for each operation.
-- Deterministic C# can use a separate connection for account and order actions.
-- The server toolset selection can keep the LLM read-only.
-
-## Confirmed option capabilities
-
-The hackathon FAQ confirms that the official Alpaca MCP server can:
-
-```text
-Fetch option contracts
-Fetch option chains
-Retrieve option quotes
-Retrieve option Greeks
-Place single-leg option orders
-Place multi-leg option orders
-```
-
-Supported option order types through MCP:
-
-| Type | Options |
-|---|---|
-| Market | Yes |
-| Limit | Yes |
-| Stop | Yes |
-| Stop-limit | Yes |
-| Trailing stop | **No.** Alpaca supports trailing stops for stocks, not options. |
-
-**The strategy must not depend on a trailing-stop option order.** A stop-loss exit must use
-a stop, a stop-limit, or a Position Manager check that submits a market or limit close
-order.
-
-## Two connections
-
-The host creates **two** MCP clients and **two** MCP server instances.
+The system reaches Alpaca two ways, split by **caller**, not by protocol (ADR-001).
 
 ```mermaid
 flowchart LR
@@ -50,124 +8,103 @@ flowchart LR
         RA[Research Agent]
         CA[Critic Agent]
         ENG[Deterministic Trading Engine]
-        ROClient[Read-only McpClient]
-        TradeClient[Trading McpClient]
-        RA --> ROClient
-        CA --> ROClient
-        ENG --> TradeClient
+        MCP[Read-only McpClient]
+        SDK[AlpacaClients<br/>Alpaca.Markets]
+        RA --> MCP
+        CA --> MCP
+        ENG --> SDK
     end
 
-    ROServer[Alpaca MCP Server: read-only toolsets]
-    TradeServer[Alpaca MCP Server: trading toolsets]
+    ROServer[Alpaca MCP Server<br/>read-only toolsets]
     Alpaca[Alpaca Paper Platform]
 
-    ROClient -->|stdio| ROServer
-    TradeClient -->|stdio| TradeServer
+    MCP -->|http or stdio| ROServer
     ROServer -->|HTTPS| Alpaca
-    TradeServer -->|HTTPS| Alpaca
+    SDK -->|HTTPS| Alpaca
 ```
 
-| Connection | User | Toolsets |
+| Caller | Path | Reaches |
 |---|---|---|
-| Read-only | Research Agent, Critic Agent, `IMarketDataGateway` | Bars, quotes, news, option chains, option snapshots, Greeks, asset metadata |
-| Trading | `ITradingGateway` only | Account, positions, orders, option order submission, cancel, close |
+| Research Agent, Critic Agent | Read-only MCP, filtered by `McpToolCatalog` | bars, quotes, news, option chains, greeks |
+| Deterministic C# | `Alpaca.Markets` SDK | account, positions, orders, market data, option chains |
 
-**The read-only server instance must not receive a trading toolset.** The trading tools are
-never added to an LLM tool list. See [MCP safety](mcp-safety.md).
+**There is no trading MCP connection.** No MCP server this host runs holds an order tool, so
+there is no toolset split that a server upgrade could widen. See ADR-006.
 
-## Two run modes
+## Why the SDK for deterministic code
 
-One pinned server source runs in two ways (ADR-012).
+MCP returns text shaped for a model to read. Parsing that in money code is where fail-closed
+defects hide: a missing bid that silently becomes `0m` is a defect no test catches until it
+costs money.
 
-| Mode | Transport | Who starts the server |
-|---|---|---|
-| Development | `streamable-http` on `127.0.0.1:8100` and `127.0.0.1:8101` | `docker compose -f compose.dev.yaml up -d`. It stays up across debug runs. |
-| Deployed | `stdio` | The .NET host, as two child processes inside the application image. |
+`Alpaca.Markets` returns `IAccount`, `IOrder`, `IOptionSnapshot`, `IQuote` and `IGreeks`
+already typed, with `decimal` prices and nullable fields for genuinely absent values. The whole
+validation layer collapses to a null check at the call site:
 
-The toolset split, the configuration keys, and the rules are in
-[MCP run modes](mcp-run-modes.md). The development procedure is in
-[local development](../operations/local-development.md).
+```csharp
+var candidate = chain.Items
+    .Where(entry => entry.Value.Quote is { BidPrice: > 0, AskPrice: > 0 })
+    .Where(entry => entry.Value.Quote!.AskPrice >= entry.Value.Quote.BidPrice)
+    .OrderBy(entry => entry.Value.Quote!.AskPrice - entry.Value.Quote.BidPrice)
+    .FirstOrDefault();
+```
+
+## The clients
+
+`Alpaca/AlpacaClients.cs` holds three, all built from `Environments.Paper`:
+
+| Client | Use |
+|---|---|
+| `IAlpacaTradingClient` | account, clock, positions, orders. The only write path. |
+| `IAlpacaDataClient` | stock bars, quotes, trades, snapshots |
+| `IAlpacaOptionsDataClient` | `OptionChainRequest`, snapshots, quotes, greeks |
+
+**`Environments.Paper` is a compile-time guarantee.** No configuration value, environment
+variable, or argument can move the process to a live account; it takes a source edit. A unit
+test pins it.
+
+Pass no market-data feed anywhere (ADR-010). `OptionChainRequest.OptionsFeed` exists and must
+stay unset, so the account default applies.
+
+## Order identity and idempotency
+
+`NewOrderRequest.ClientOrderId` carries the idempotency key, and
+`GetOrderAsync(string clientOrderId, ct)` reads the order back by it. A missing order raises
+`RestClientErrorException` rather than returning null, so the not-found case is a `catch`.
+
+The order of operations is fixed:
+
+1. Check the store for the client order id. **If it is already reserved, resolve that order.**
+2. Only if it is new: select the contract, write the `orders` row, then submit.
+
+Selecting a contract first and checking second defeats the guard: a re-run after a crash would
+pick a fresh contract at a new price instead of resolving the order that may already exist.
 
 ## Research tool integration
 
-At startup:
-
-1. Start the read-only server.
-2. Connect with `McpClient`.
-3. Call `ListToolsAsync()`.
-4. Filter the result with the approved allowlist.
-5. Add the approved tools to `ChatOptions.Tools` for both LLM agents.
+At startup the host connects the read-only MCP client, lists the tools, logs every discovered
+name, asserts none can reach the account, and keeps the approved subset for the agents.
 
 ```csharp
-var readOnlyMcp = await McpClient.CreateAsync(readOnlyTransport, cancellationToken: ct);
-
-var approvedTools = (await readOnlyMcp.ListToolsAsync(cancellationToken: ct))
-    .Where(McpToolCatalog.IsApprovedResearchTool)
-    .ToArray();
-
-var chatOptions = new ChatOptions { Tools = [.. approvedTools] };
+var discovered = await client.ListToolsAsync(cancellationToken: ct);
+McpToolCatalog.AssertNoForbiddenTool(discovered);
+var approved = discovered.Where(McpToolCatalog.IsApprovedResearchTool).ToArray();
 ```
 
-The exact API can change with the package version. The requirement does not change:
-
-> The LLM receives only approved read-only Alpaca MCP tools.
-
-## Two typed gateways
-
-Strategy code must not depend on an MCP tool name or on a raw MCP result object. Two typed
-facades hold that knowledge.
-
-```csharp
-public interface IMarketDataGateway
-{
-    Task<IReadOnlyList<Bar>> GetBarsAsync(
-        string symbol, TimeFrame timeframe,
-        DateTimeOffset from, DateTimeOffset to, CancellationToken ct);
-
-    Task<IReadOnlyList<NewsItem>> GetNewsAsync(
-        string symbol, DateTimeOffset from, CancellationToken ct);
-
-    Task<OptionChain> GetOptionChainAsync(string symbol, CancellationToken ct);
-}
-
-public interface ITradingGateway
-{
-    Task<AccountSnapshot> GetAccountAsync(CancellationToken ct);
-    Task<MarketClock> GetClockAsync(CancellationToken ct);
-    Task<IReadOnlyList<Position>> GetPositionsAsync(CancellationToken ct);
-    Task<IReadOnlyList<Order>> GetOpenOrdersAsync(CancellationToken ct);
-
-    Task<OrderResult> SubmitOptionOrderAsync(OptionOrderRequest request, CancellationToken ct);
-    Task<OrderResult> CancelOrderAsync(string orderId, CancellationToken ct);
-    Task<OrderResult> ClosePositionAsync(string optionSymbol, CancellationToken ct);
-}
-```
-
-| Interface | Live | Replay |
-|---|---|---|
-| `IMarketDataGateway` | `AlpacaMcpMarketDataGateway` | `ReplayMarketDataGateway` |
-| `ITradingGateway` | `AlpacaMcpTradingGateway` | `ReplayTradingGateway` |
-
-The Research Agent does not use `ITradingGateway`. The LLM agents use the discovered MCP
-tools directly. The deterministic ML code and the Options Evaluator use
-`IMarketDataGateway`, because they need stable typed data structures.
+The approved set becomes `ChatOptions.Tools`. `McpClientTool` derives from `AIFunction`, so no
+adapter is needed. **Never pass the discovered list unfiltered** — that would delete control 2.
 
 ## Current repository state
 
 | Item | State |
 |---|---|
-| `external/alpaca-mcp-server` | Present. Submodule at commit `872abbf`, package version `2.3.0`. |
-| `docker/alpaca-mcp.dev.Dockerfile` | Present. It builds `noidea/alpaca-mcp:dev`. |
-| `compose.dev.yaml` | Present. Two services, ports 8100 and 8101. |
-| `src/Xakpc.Alpaca.NøIdea/Dockerfile` | Present. It holds the server and the .NET host. |
-| `alpaca-mcp.http` | Present. Manual tests for both servers. |
-| C# MCP client code | Not written. Phase 1 continues with `AlpacaMcpClients`. |
-
-The server answers `serverInfo.name = "Alpaca MCP Server"` with `version 3.1.0`, while the
-Python package version is `2.3.0`. Log both values at startup.
-
-The folder `cli_0.0.14_windows_amd64/` still holds the old Alpaca CLI binary. The CLI is a
-fallback only. No code may call it.
+| `external/alpaca-mcp-server` | Submodule at commit `872abbf`, package version `2.3.0`. `serverInfo.version` reports `3.1.0`; log both. |
+| `compose.dev.yaml` | One service, `noidea-mcp-readonly`, on `127.0.0.1:8100`. |
+| `src/Xakpc.Alpaca.NøIdea/Dockerfile` | Holds the server and the .NET host. One stdio child. |
+| `Alpaca/AlpacaClients.cs` | Written. Three typed clients on `Environments.Paper`. |
+| `Alpaca/AlpacaMcpClient.cs`, `McpToolCatalog.cs` | Written. 34 tools discovered, 25 approved. |
+| `Storage/TradingStore.cs` | Written. `orders` table only. |
+| `alpaca-mcp.http` | **Does not exist.** Earlier lode revisions claimed it did. Use `--check-mcp`. |
 
 ## Related
 

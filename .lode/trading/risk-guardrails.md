@@ -5,17 +5,20 @@ the `RiskGuard` can allow an order.
 
 ## 1. Paper mode only
 
-The process must fail at startup if it detects live trading mode. The project must use a
-competition paper account.
+**The guarantee is compile-time.** `AlpacaClients` builds every client from
+`Environments.Paper`, which is a static property, not configuration. No environment variable,
+configuration key, or command-line argument can move the process to a live account; it takes a
+source edit. A unit test in `tests/Trader.Tests/SafetyTests.cs` pins it.
 
-The trading MCP server gets paper credentials only. The application must confirm paper mode
-with an account read after it connects. **Startup fails if paper mode cannot be confirmed.**
-See [MCP safety](../alpaca/mcp-safety.md).
+`AlpacaOptions.FromEnvironment` additionally rejects `ALPACA_PAPER_TRADE` set to anything other
+than `true`, so the MCP server half cannot be pointed at live trading while the SDK half stays
+on paper.
 
 ## 2. LLM write isolation (ADR-005, ADR-006)
 
-The LLM agents see only the read-only MCP connection. The trading MCP tools live in a
-separate server process. An LLM agent must never have a tool that can:
+The LLM agents see only the read-only MCP connection. **No MCP server this host runs holds an
+order tool at all**, because deterministic C# uses the `Alpaca.Markets` SDK (ADR-001). An LLM
+agent must never have a tool that can:
 
 - Submit an order.
 - Cancel an order.
@@ -44,13 +47,18 @@ The system must skip a trade when:
 
 ## 4. Order idempotency
 
-Every new order must have a unique `client_order_id`. The system must save the ID before or
-with the order attempt.
+Every new order must have a unique `client_order_id`. The system must save the ID **before**
+the order attempt, never after.
 
-If the MCP order call fails after an uncertain network result, the system must **query the
-order by the client ID before it sends another order**.
+If the order call fails with an uncertain result, the system must **query the order by the
+client ID before it sends another order**. `IAlpacaTradingClient.GetOrderAsync(string, ct)` is
+that lookup; a missing order raises `RestClientErrorException` rather than returning null.
 
-The `orders` table enforces this with `client_order_id TEXT NOT NULL UNIQUE`.
+**The idempotency check must run before contract selection.** Checking afterwards would let a
+re-run pick a fresh contract at a new price instead of resolving the order that may already
+exist, which defeats the guard entirely.
+
+The `orders` table enforces uniqueness with `client_order_id TEXT NOT NULL UNIQUE`.
 
 ## 5. No arbitrary execution tool
 

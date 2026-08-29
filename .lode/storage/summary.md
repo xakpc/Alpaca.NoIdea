@@ -49,7 +49,33 @@ that SQLite has the latest position state. See
 ## Money and precision
 
 SQLite has no decimal type. Prices and P&L are stored as `REAL`, which is a 64-bit float.
-Dapper converts `REAL` to `decimal` when the record property is `decimal`.
+
+**Dapper converts `REAL` to `decimal` through a property setter, but not through constructor
+matching.** A positional record fails to materialize with
+`"A parameterless default constructor or one matching signature ... is required"`, because
+SQLite hands back `Double` for `REAL` and `Int64` for `INTEGER` and the constructor overload
+must match exactly. Declare storage records with **init-only properties**, not as positional
+records:
+
+```csharp
+public sealed record OrderRecord
+{
+    public decimal? LimitPrice { get; init; }   // maps from REAL
+    public int Quantity { get; init; }          // maps from INTEGER
+}
+```
+
+**Do not compute a money result by summing `REAL` values in SQL.** Read the rows, then do
+the arithmetic in `decimal` in C#. The audit trail is the record of what happened; Alpaca
+remains the source of truth for the account value.
+
+## Culture
+
+Parse and format money with an explicit culture. The development machine formats decimals with
+a comma, so `decimal.Parse("5.00")` throws under the ambient culture. Use
+`CultureInfo.InvariantCulture` for parsing. Note that `ILogger` formats structured values with
+the invariant culture regardless of the thread culture, so a `:C` format specifier renders the
+placeholder `¤` symbol rather than `$`; use `:N2` and name the currency in the message.
 
 **Do not compute a money result by summing `REAL` values in SQL.** Read the rows, then do
 the arithmetic in `decimal` in C#. The audit trail is the record of what happened; Alpaca

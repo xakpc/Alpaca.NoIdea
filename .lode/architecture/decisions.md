@@ -2,22 +2,30 @@
 
 These decisions are stable. Change one only after an explicit discussion.
 
-## ADR-001: Use Alpaca MCP, not Alpaca CLI
+## ADR-001: MCP serves the LLM agents; deterministic C# uses the Alpaca SDK
 
-**Decision:** Use the Alpaca MCP server. Use two separate connections.
+**Decision:** The LLM agents reach Alpaca through **one read-only MCP connection**.
+Deterministic C# reaches Alpaca through the typed **`Alpaca.Markets`** NuGet SDK. The Alpaca
+CLI is not called by application code.
 
-**Reason:** The C# MCP SDK and `Microsoft.Extensions.AI` let the LLM agents use Alpaca tools
-directly. One connection stays open for many calls. A separate trading connection lets
-deterministic C# control every account-changing action.
+**Reason:** MCP and the CLI are both LLM-facing wrappers over the same REST API. Nothing
+deterministic benefits from either: MCP returns text shaped for a model to read, and parsing
+that in money code is where fail-closed defects hide. The SDK returns `IAccount`, `IOrder`,
+`IOptionSnapshot` and `IGreeks` already typed with `decimal`, which removes the parsing layer
+rather than organising it.
 
-**Change condition:** Return to the CLI only if a required MCP capability is missing or
-unstable. Do not use both paths at the same time.
+The hackathon requirement to use Alpaca MCP or the Alpaca CLI is met by the agents, which use
+MCP for every research call.
 
-**Scope:** this decision governs the **running system**. The offline acquisition scripts in
-`scripts/` use the CLI to download training data before a session. That is not a trading
-path, and the two never run at the same time.
+**Effect:** There is **no trading MCP connection**. The second server was deleted from
+`compose.dev.yaml` and from the deployed image. See ADR-012.
 
-**Supersedes:** Revision 1 of the AVD chose the CLI. That decision is no longer current.
+**Scope:** the offline acquisition scripts in `scripts/` may use the CLI to download training
+data before a session. That is not a trading path, and the two never run at the same time.
+
+**Supersedes:** Revision 1 of the AVD chose the CLI. The earlier form of this ADR chose MCP
+for everything and forbade using both paths at once; the split is now by **caller**, not by
+protocol.
 
 ## ADR-002: Do not use Semantic Kernel
 
@@ -56,9 +64,21 @@ prompt-only protection.
 
 ## ADR-006: C# owns money
 
-**Decision:** Only deterministic C# code can use the trading MCP connection.
+**Decision:** Only deterministic C# code can submit, replace, cancel, or close an order, and it
+does so through the `Alpaca.Markets` SDK.
 
 **Reason:** The model can reason, but it cannot bypass hard limits or submit an order.
+
+**The isolation is now absolute, not layered.** Under the earlier two-connection design this
+rule depended on the `ALPACA_TOOLSETS` split holding across server upgrades. Since ADR-001,
+**no MCP server this host runs holds an order tool at all**, so there is no toolset to
+misconfigure and no write tool for an allowlist to miss. `McpToolCatalog.AssertNoForbiddenTool`
+remains as the check that proves this at startup rather than assuming it: it fails the process
+if the connection ever exposes an account or order tool.
+
+**Measured:** adding `account,trading` to the read-only toolset makes the host refuse to start,
+listing all 20 forbidden tools. The normal configuration exposes 34 tools, of which 25 are
+approved for agents and none can reach the account.
 
 ## ADR-007: Start with logistic regression
 
@@ -113,18 +133,22 @@ trading window is an unnecessary risk.
 startup. Pin the base image tags too (`python:3.11-slim`, `ghcr.io/astral-sh/uv:0.9`). Do not
 upgrade during the official window. See [MCP safety](../alpaca/mcp-safety.md).
 
-## ADR-012: Two MCP run modes
+## ADR-012: One MCP server, two run modes
 
-**Decision:** Development runs the Alpaca MCP servers as permanent containers over
-`streamable-http`. The deployed image holds the same pinned server and starts it as two
-`stdio` child processes.
+**Decision:** There is **one** Alpaca MCP server, read-only. Development runs it as a permanent
+container over `streamable-http` on `127.0.0.1:8100`. The deployed image holds the same pinned
+server and starts it as a single `stdio` child process.
 
-**Reason:** A deployed container cannot start a sibling container without the Docker socket,
-and the Docker socket gives the application root control of the host. Development needs a
-server that stays up between debug runs, so a per-run child process is wrong there.
+**Reason:** A deployed container cannot start a sibling container without the Docker socket, and
+the Docker socket gives the application root control of the host. Development needs a server
+that stays up between debug runs, so a per-run child process is wrong there.
 
-**Effect:** The host selects the transport from configuration: a URL selects HTTP, a command
-selects stdio. One pinned submodule feeds both images. See
+The second server is gone because ADR-001 moved deterministic C# to the `Alpaca.Markets` SDK,
+leaving the trading connection with no consumer.
+
+**Effect:** The host selects the transport from configuration: `Alpaca__Mcp__ReadOnlyUrl`
+selects HTTP, `Alpaca__Mcp__ServerCommand` selects stdio. **Both set, or neither, is a startup
+failure.** `Alpaca__Mcp__TradingUrl` and `Alpaca__Mcp__TradingToolsets` no longer exist. See
 [MCP run modes](../alpaca/mcp-run-modes.md).
 
 ## ADR-013: The Historical ML Expert is not a forecaster

@@ -26,10 +26,9 @@ Day P&L:       +2.43%
 CURRENT CANDIDATE
 NVDA  Call  Strike 185  Exp 2026-09-02
 
-Historical ML:  63%
 Research:       59%
 Critic:         46%
-Combined:       56%
+Combined:       53%
 Market ref:     39%
 Edge:          +17 pp
 

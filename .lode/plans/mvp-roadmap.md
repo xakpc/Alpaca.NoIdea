@@ -4,8 +4,8 @@ Eight phases. Each phase has an exit condition. Do not start a phase before the 
 condition is true, **unless the phase needs nothing from it**. Phase 3 needs no live Alpaca
 connection, so it ran beside Phase 1.
 
-**Current position: Phase 1 is the work.** Phase 3 is finished and its expert is excluded. The MCP servers run and the trading
-host is still a hello-world. **Phase 3 is complete:** the model is trained and measured.
+**Current position: Phase 2 is the work.** Phase 1 is complete: the host reads the account,
+submits a paper option order, and reads it back by client order id. Phase 3 is finished and its expert is excluded (ADR-013).
 
 Phase 3 needs no live connection, so it did not wait for Phase 1. The rest of the roadmap does.
 
@@ -20,32 +20,37 @@ flowchart LR
     P7 --> P8[8 Full rehearsal]
 ```
 
-## Phase 1: Alpaca MCP access
-
-**Current position: inside Phase 1.** Steps 1 to 5 are complete.
+## Phase 1: Alpaca access — complete
 
 1. Create the .NET 10 console project. *(Done.)*
 2. Add the Alpaca MCP server as a git submodule at `external/alpaca-mcp-server`. Pin the
-   commit. *(Done.)*
-3. Build the development MCP image and run the two permanent servers with
-   `compose.dev.yaml`. *(Done. Ports 8100 and 8101.)*
+   commit. *(Done. `872abbf`.)*
+3. Build the development MCP image and run the permanent server with `compose.dev.yaml`.
+   *(Done. One service on port 8100.)*
 4. Put the same pinned server into the application image for the deployed stdio mode.
    *(Done.)*
-5. Confirm with `alpaca-mcp.http` that the read-only server exposes no order, position, or
-   account tool. *(Done.)*
-6. Configure a development paper account and put the keys in `.env`.
-7. Add the C# MCP SDK (`ModelContextProtocol`).
-8. Connect a read-only `McpClient`. List and filter the research tools.
-9. Connect a trading `McpClient` on the second connection.
-10. Fail startup if the read-only connection exposes a forbidden tool.
-11. Implement `IMarketDataGateway`.
-12. Implement `ITradingGateway`.
-13. Read the account state, bars, news, and option chains.
-14. Submit one controlled test option order in the development paper account.
-15. Read and close that position.
+5. Confirm the read-only server exposes no order, position, or account tool. *(Done, and
+   automated: `--check-mcp`.)*
+6. Configure a development paper account and put the keys in `.env`. *(Done.)*
+7. Add `ModelContextProtocol` and `Alpaca.Markets`. *(Done.)*
+8. Connect the read-only `McpClient`. List and filter the research tools. *(Done. 34
+   discovered, 25 approved.)*
+9. ~~Connect a trading `McpClient`.~~ **Removed (ADR-001).** Deterministic C# uses the SDK.
+10. Fail startup if the connection exposes a forbidden tool. *(Done, and measured: adding
+    `account,trading` to the toolset makes the host refuse to start with 20 named tools.)*
+11. ~~Implement `IMarketDataGateway`.~~ **Not built.** The SDK is already typed, and the
+    interface existed to let a replay implementation substitute. Extract it when replay is
+    actually built.
+12. ~~Implement `ITradingGateway`.~~ Same reason. `AlpacaClients` exposes the three SDK
+    clients directly.
+13. Read the account state, bars, and option chains. *(Done.)*
+14. Submit one controlled test option order in the development paper account. *(Done.)*
+15. Read and close that position. *(Done. Read back by client order id.)*
 
-> **Exit:** C# can read research data through the read-only MCP connection and can perform
-> the required paper-trading actions through the separate trading MCP connection.
+> **Exit reached.** `--smoke` reads the account, selects a near-money call with a valid
+> two-sided quote, reserves the client order id, submits, reads the order back by that id, and
+> closes or cancels. Re-running with the same id resolves the existing order instead of
+> submitting a second one. `--check-mcp` proves the tool isolation.
 
 ## Phase 2: SQLite and historical data
 
