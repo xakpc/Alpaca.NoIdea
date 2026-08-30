@@ -57,7 +57,7 @@ C4Container
 | Part | Responsibility | Lode |
 |---|---|---|
 | Alpaca MCP gateways | All broker and market data access. Two connections. | [mcp-integration](../alpaca/mcp-integration.md) |
-| ML.NET | The numerical historical probability expert. | [historical-ml-expert](../experts/historical-ml-expert.md) |
+| ML.NET | The numerical historical probability expert. | [historical-ml-expert](../replay/model-vs-market.md) |
 | Microsoft.Extensions.AI | The Research Agent and the Critic Agent with read-only MCP tools. | [llm-stack](../llm/llm-stack.md) |
 | Deterministic C# | Combiner, Options Evaluator, Risk Guard, Position Manager. | [live-cycle](../trading/live-cycle.md) |
 | SQLite | The complete audit trail. | [schema](../storage/schema.md) |

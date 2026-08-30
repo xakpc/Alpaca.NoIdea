@@ -3,7 +3,7 @@
 > **The Trainer is not on this branch.** It lives on `phase-3-historical-ml-expert`, together with the shared
 > feature library. This file records what was built, how it was measured, and the outcome.
 
-The model is the [Historical ML Expert](../experts/historical-ml-expert.md).
+The model is the [Historical ML Expert](../replay/model-vs-market.md).
 `src/Xakpc.Alpaca.NøIdea.Trainer` builds it. The features live in the shared library
 `src/Xakpc.Alpaca.NøIdea.FeatureGenerator`, which the trading host also references, so the
 training schema and the prediction schema are one declaration.
@@ -195,8 +195,8 @@ condition asks for.
 
 ## Related
 
-- [Historical ML Expert](../experts/historical-ml-expert.md)
+- [Historical ML Expert](../replay/model-vs-market.md)
 - [Model against the market](model-vs-market.md)
 - [Option data availability](option-data-availability.md)
 - [Historical dataset](historical-dataset.md)
-- [Forecast combination](../experts/forecast-combination.md)
+- [Forecast combination](../war-room/summary.md)

@@ -28,44 +28,71 @@ by hand.
 Trailing stop is **not** a valid order type for options. See
 [MCP integration](../alpaca/mcp-integration.md).
 
-## Open values (TBD)
+## The agent owns the strategy values (ADR-016)
 
-Replay tests must set every value below. **Do not guess a value only to complete the
-configuration.**
+**There is no TBD list waiting on replay any more.** ADR-013 left the project with no
+forecaster that beats the option price, so there was no signal to calibrate a threshold
+against. Rather than freeze guessed constants, the agent owns these values in
+`StrategyPolicy`, rewrites them from its own measured results, and `ClampTo` bounds every
+revision.
 
-| Parameter | Used by |
+These are the **opening defaults**. They are chosen, not measured.
+
+```json
+{
+  "MinDaysToExpiration": 2,
+  "MaxDaysToExpiration": 10,
+  "MinMarketProbability": 0.20,
+  "MaxMarketProbability": 0.80,
+  "TakeProfitFraction": 0.50,
+  "StopLossFraction": 0.40,
+  "MaxContractsPerTrade": 1,
+  "RequireFreshNews": true,
+  "FreshNewsWithinHours": 48
+}
+```
+
+## The hard bounds the agent cannot cross
+
+`RiskOptions` is C# only. No model output can change a value here.
+
+```json
+{
+  "MaxRiskPerTradeFraction": 0.02,
+  "MaxTotalRiskFraction": 0.10,
+  "MaxDailyLossFraction": 0.05,
+  "MaxConcurrentPositions": 4,
+  "MaxNewPositionsPerDay": 4,
+  "HardMinDaysToExpiration": 1,
+  "HardMaxDaysToExpiration": 21,
+  "HardMaxContractsPerTrade": 5,
+  "MaxSpreadFraction": 0.15,
+  "MaxQuoteAge": "00:10:00",
+  "CompetitionFlattenUtc": "2026-09-03T19:30:00Z"
+}
+```
+
+**These are chosen, not measured, and that is correct.** Risk appetite is a decision, not a
+prediction; no amount of history measures how much of the account to put at risk.
+
+A long option cannot lose more than its premium, so the premium paid **is** the risk. That
+makes `MaxRiskPerTradeFraction` exact rather than an estimate.
+
+## What still cannot be measured offline
+
+| Value | Why |
 |---|---|
-| Minimum probability edge | [Forecast combination](../experts/forecast-combination.md) |
-| Cheap-filter threshold | [Live cycle](live-cycle.md) step 5 |
-| Maximum risk for each trade | [Risk guardrails](risk-guardrails.md) |
-| Maximum total account risk | Risk guardrails |
-| Maximum daily loss | Risk guardrails |
-| Take-profit threshold | [Position lifecycle](position-lifecycle.md) |
-| Loss threshold | Position lifecycle |
-| Maximum bid/ask spread | [Options Evaluator](../experts/options-evaluator.md) |
-| Maximum quote age | Options Evaluator |
-| Minimum time to expiration | Options Evaluator |
-| Maximum time to expiration | Options Evaluator |
-| Exact strike-selection rule | `OptionCandidateSelector` |
-| Exact call/put selection rule | `OptionCandidateSelector` |
-| Exact order type (market, limit, stop, or stop-limit) | `TradingLoop` step 11 |
-| Single-leg or multi-leg execution (start single-leg) | `OptionCandidateSelector` |
-| Thursday exit / expiration policy | Position lifecycle |
+| `MaxSpreadFraction` | Alpaca serves no historical option quote. Replay reports `UnknownHistorical` and skips the rule. |
+| `MaxQuoteAge` | Same reason. |
 
-The open design questions behind these values are in
-[open strategy questions](../plans/open-strategy-questions.md).
-
-> **The minimum probability edge and the cheap-filter threshold have no valid signal yet.**
-> A historical market reference now exists, from the call-ladder slope. But the measurement
-> showed the ML model loses to that reference in every period, and that the wider the two
-> disagree the more wrong the model is. Setting a threshold on that gap would select for the
-> model's own errors. Both values stay TBD until a forecaster that beats the price exists.
-> See [model against the market](../replay/model-vs-market.md).
+Both are testable in live paper trading only. See
+[option data availability](../replay/option-data-availability.md).
 
 ## Rule
 
-A parameter moves from **TBD** to **decided** only when replay evidence or an official
-competition answer supports it. Record the evidence with the value.
+A **hard bound** changes only by an explicit human decision, recorded here.
+A **policy value** may change whenever the agent justifies it; the rationale is written to
+the audit trail.
 
 ## Related
 

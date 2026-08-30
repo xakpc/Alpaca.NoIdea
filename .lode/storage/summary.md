@@ -52,7 +52,7 @@ SQLite has no decimal type. Prices and P&L are stored as `REAL`, which is a 64-b
 
 **Dapper converts `REAL` to `decimal` through a property setter, but not through constructor
 matching.** A positional record fails to materialize with
-`"A parameterless default constructor or one matching signature ... is required"`, because
+`"A parameterless default constructor or one matching signature experts/options-evaluator.md. is required"`, because
 SQLite hands back `Double` for `REAL` and `Int64` for `INTEGER` and the constructor overload
 must match exactly. Declare storage records with **init-only properties**, not as positional
 records:

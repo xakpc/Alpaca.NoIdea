@@ -31,7 +31,7 @@ public sealed record OrderRecord
 /// so the recovery path can ask Alpaca what happened instead of sending a second
 /// order. The <c>UNIQUE</c> constraint on <c>client_order_id</c> enforces this.
 /// </remarks>
-public sealed class TradingStore(string connectionString)
+public sealed partial class TradingStore(string connectionString)
 {
     private readonly string _connectionString = connectionString
         ?? throw new ArgumentNullException(nameof(connectionString));

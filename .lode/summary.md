@@ -3,18 +3,18 @@
 `Xakpc.Alpaca.NøIdea` is an autonomous AI options trading agent for the Alpaca AI Trading
 Agents Hackathon. One .NET 10 console application finds, evaluates, opens, monitors, and
 closes option positions in an Alpaca **paper** account without human approval for each
-trade. Four experts give independent opinions: an ML.NET logistic regression model, an LLM
-Research Agent, an LLM Critic Agent, and a deterministic C# Options Evaluator. The system
-combines the first three probabilities with reliability weights, compares the result with a
-market probability reference from current option data, and trades only when the difference
-(the *edge*) is large enough and all hard C# risk rules pass. The application reaches Alpaca
-through **two separate Alpaca MCP connections**, and uses SQLite for the full audit trail of
-forecasts, tool calls, decisions, and orders. The build follows **KISS and YAGNI**: the
-window is four days, so the system builds the simplest thing that meets each requirement.
-The core design rule is: **AI can research and forecast, deterministic C# controls risk and
-money.** The MCP security rule is: **LLMs see
-only a read-only Alpaca MCP toolset; trading tools exist only on a separate connection that
-deterministic C# uses.**
+trade. Decisions come from a **war room** of agents running on three different model
+providers: a proposer searches the allowed universe and puts one operation forward, reviewers
+analyse it independently, the room debates, the proposer defends or modifies or withdraws, and
+everyone votes privately. Confidence-weighted votes set the position size, and a deterministic
+`RiskGuard` validates again immediately before submission. The application reaches Alpaca
+through **one read-only MCP connection** for the agents and the typed `Alpaca.Markets` SDK for
+anything that moves money, and it uses SQLite for the full audit trail of proposals, analyses,
+votes, decisions, and orders. The build follows **KISS and YAGNI**: the window is four days, so
+the system builds the simplest thing that meets each requirement. The core design rule is:
+**agents decide what they want to do; deterministic C# decides what they are permitted to do.**
+The MCP security rule is: **LLMs see only a read-only Alpaca MCP toolset, and no MCP server
+this host runs holds an order tool at all.**
 
 ## Current state of the code
 
@@ -28,12 +28,16 @@ trained Historical ML Expert, and an empty trading host.
 
 | Item | State |
 |---|---|
-| `alpaca-autonomous-options-agent-avd.md` | Revision 3. **Seeded this lode; no longer a source of truth.** It still describes a weighted ML expert, which measurement retired (ADR-013). |
-| `src/Xakpc.Alpaca.NøIdea/Program.cs` | Two check modes. `--smoke` runs the full order path; `--check-mcp` proves the read-only tool isolation. The trading loop is not started. |
+| `alpaca-autonomous-options-agent-avd.md` | Revision 4. **Seeded this lode; no longer a source of truth.** Revision 4 records that the war room replaced the weighted combiner (ADR-019) and that the ML expert is excluded (ADR-013). |
+| `src/Xakpc.Alpaca.NøIdea/Program.cs` | Five modes. `--live` runs the war room against the paper account; `--smoke` runs the full order path; `--check-mcp` proves the read-only tool isolation; `--import-history` loads `data/raw` into SQLite; `--replay` runs the offline replay. The trading loop runs. |
 | `src/…/Alpaca/AlpacaClients.cs` | **Done.** Three typed `Alpaca.Markets` clients on `Environments.Paper`. |
 | `src/…/Alpaca/AlpacaMcpClient.cs` + `McpToolCatalog.cs` | **Done.** One read-only MCP connection; 34 tools discovered, 25 approved, forbidden tools fail startup. |
-| `src/…/Storage/TradingStore.cs` | **Done.** The `orders` table and the idempotency lookup. |
-| `tests/Trader.Tests` | **Done.** 30 tests covering the paper guarantee and the tool policy. |
+| `src/…/Alpaca/Gateways/` | **Done.** `IMarketDataGateway` and `ITradingGateway` over project-owned records, with the two live SDK implementations and `OccOptionSymbol` (ADR-014). |
+| `src/…/Storage/` | **Done.** The full schema, `TradingStore` (audit and cache), `RawJsonPages`, `HistoryImporter`, and `BarAvailability` (ADR-015). |
+| `src/…/Replay/` | **Done.** `ReplayClock`, `ReplayMarketDataGateway`, `ReplayTradingGateway`, `ReplayRunner`, `MarketCalendar`, and `OptionLadder`. |
+| `data/trader.db` | **Populated.** 122,444 bars, 16,088 news items, 195,824 contracts, 151,718 option bars, for 2026-02-01 to 2026-08-28. |
+| `scripts/acquire-news.sh` | **Done.** The paginated news backfill. 25,187 items. The old script captured one page per symbol. |
+| `tests/Trader.Tests` | **Done.** 98 tests: the paper guarantee, the tool policy, the no-leak rule, bar availability, the ladder, the OCC parser, the risk limits, and the war-room flow with mock personas. |
 | `src/…FeatureGenerator` (branch `phase-3-historical-ml-expert`) | **Done.** Shared library: bar reading, the regular-hours calendar, the contract catalog, the 14 features, and `HistoricalMlExpert`. |
 | `src/…Trainer` (branch `phase-3-historical-ml-expert`) | **Done.** Console: builds 1.36M labelled rows, splits by time, trains SDCA, evaluates, writes the report. |
 | `tests/Trader.Tests` (branch `phase-3-historical-ml-expert`) | **Done.** 46 xUnit tests, including the no-future-leak checks. |
@@ -44,12 +48,29 @@ trained Historical ML Expert, and an empty trading host.
 | `compose.dev.yaml` + `docker/alpaca-mcp.dev.Dockerfile` | **One** permanent development server on `127.0.0.1:8100`. The trading server was deleted (ADR-001). |
 | `scripts/*.sh` (branch `phase-3-historical-ml-expert`) | Universe screening, history, contracts, and option bars. Deterministic, no LLM. |
 | `data/raw/` | 133 MB of bars and news, 2023-01-03 to 2026-08-28, plus 370 MB of expired option contracts, 2024-01-18 to 2026-08-28. Git-ignored. |
-| Full SQLite schema, Research and Critic agents, Options Evaluator, trading loop, TUI | Not implemented. |
+| `src/…/Trading/` | **Done.** `TradingLoop`, `RiskGuard`, `RiskOptions`, `StrategyPolicy`, `TradingOptions`, `LiveSession`, `PositionReviewTriggers`. |
+| `src/…/Agents/Room/` | **Done.** `WarRoomSession`, `IPersona`, five persona classes, `VoteTally`, `TokenLedger`, `ProposalPreValidator`, `ChatClientFactory` (Anthropic, OpenAI, Grok). |
+| `src/…/Agents/` | **Done.** The typed action space and `StubStrategyAgent`. |
+| Options Evaluator as a separate class, TUI | Not implemented. The evaluator's checks live in `RiskGuard.CheckContract`. |
 
-Phase 3 of the [MVP roadmap](plans/mvp-roadmap.md) is complete: the Historical ML Expert
-returns a calibrated probability. Phase 1 is still open, because the C# MCP client code does
-not exist. The two phases are independent, and the model was built first because it needs no
-live connection.
+**The strategy is decided by a war room (ADR-019).** A proposer searches the allowed universe
+and puts one operation forward. Reviewers analyse it **independently**, then debate, then the
+proposer may defend, modify or withdraw, then everyone votes **privately**. Confidence-weighted
+votes set the position size; `RiskGuard` then validates again immediately before submission and
+cannot be outvoted.
+
+One class, `WarRoomSession`, serves both new trades and position reviews. A persona is a class
+rather than a configuration row, and the seats run on **three different models**  --  Claude, GPT
+and Grok  --  because a room of one model arguing with itself shares that model's blind spots. One
+seat, `exposure`, is plain C#: it computes portfolio arithmetic, costs nothing, and cannot
+hallucinate.
+
+`TokenLedger` reports what each sitting cost. Token counts are fact; the dollar figure is an
+estimate and a floor.
+
+`--live` runs the loop against the paper account. `--replay --agent llm` runs the same room over
+stored history with **no research tools at all**, because a live tool in a historical run reads
+the present and is a future-data leak.
 
 > **The Historical ML Expert does not beat the option price (ADR-013).** It beats ignorance easily, but
 > the market wins in every period, and the wider the two disagree the more wrong the model is.

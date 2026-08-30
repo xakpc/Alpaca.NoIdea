@@ -67,7 +67,7 @@ The planned source structure is in
 
 - Target framework is `net10.0`. `ImplicitUsings` and `Nullable` are enabled.
 - Use `record` types for data contracts. Example:
-  `public sealed record ResearchForecast(decimal Probability, ...)`.
+  `public sealed record ResearchForecast(decimal Probability, experts/research-agent.md.)`.
 - Use `decimal` for money, prices, and probabilities in contracts. Use `double` only inside
   ML.NET feature vectors and model output.
 - Pass a `CancellationToken` to every asynchronous method.

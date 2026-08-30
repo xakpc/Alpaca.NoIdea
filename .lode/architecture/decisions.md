@@ -193,9 +193,303 @@ already considered and rejected are in [ML hypotheses](../plans/ml-hypotheses.md
 **Supersedes:** It does not reverse ADR-007. The trainer choice was sound; the target was the
 problem.
 
+## ADR-014: Gateway contracts use project records, not SDK types
+
+**Decision:** `IMarketDataGateway` and `ITradingGateway` return records that this project owns.
+They do not return `Alpaca.Markets` interfaces such as `IOrder`, `IPosition`, or
+`IOptionSnapshot`.
+
+**Reason:** The replay implementation cannot construct an SDK type. The SDK interfaces have
+internal implementations only. An SDK type in the signature makes the seam impossible to
+implement, and it forces replay onto a second code path. The seam exists to prevent exactly
+that.
+
+**Effect:** `Alpaca/Gateways/` holds `AccountState`, `PositionState`, `OrderState`,
+`OrderRequest`, `PriceBar`, `NewsItem`, `LatestTrade`, `MarketClock`, and `OptionCandidate`.
+`LiveMarketDataGateway` and `LiveTradingGateway` are the only classes that convert an SDK type.
+`OccOptionSymbol` parses a contract symbol, because the SDK exposes no parser and both the
+live chain and the replay chain need one.
+
+**`OptionCandidate.Quality` is part of this decision.** It has four values: `TwoSided`,
+`OneSided`, `Missing`, and `UnknownHistorical`. A replayed contract always carries
+`UnknownHistorical`, a null bid, a null ask, and a null delta. Alpaca serves no historical
+quote and no historical greek, so a nullable bid alone would let a spread rule read a default
+and pass. `IsTradeableQuote` is false for every historical candidate. Quote-quality rules are
+testable in live paper trading only.
+
+## ADR-015: Replay filters on bar availability, never on the bar timestamp
+
+**Decision:** The `bars` and `option_bars` tables carry an `available_utc` column. It holds the
+instant the bar became knowable. Every replay read filters on that column.
+`Storage/BarAvailability` is the only place that computes it.
+
+**Reason:** A bar timestamp is the **start** of its interval, and the bar carries the **close**
+of that interval. A daily bar stamped `05:00Z` holds the 16:00 ET price. A filter on the
+timestamp therefore gives a 09:30 cycle more than six hours of the future.
+
+**Measured:** the first replay run did filter on the timestamp. It reported a market
+probability of 0% to 10% where about 50% was correct, because each cycle read the closing
+premium of the session it was still inside. The numbers looked wrong enough to notice. A
+smaller leak would not have.
+
+**The rule is deliberately late.** A daily equity bar becomes available at 20:00 Eastern, after
+extended trading. A daily option bar becomes available at 16:15 Eastern. An intraday bar
+becomes available when its interval ends. Where the true end of an interval is uncertain, the
+rule rounds later. A late rule costs one session of information. An early rule invalidates
+every measurement the run produces.
+
+**Effect:** replay steps one cycle per session by default. Historical option prices are daily
+closes, so more cycles in one session give the strategy no new option data.
+
+## ADR-016: The agent directs the strategy; C# bounds it
+
+> **Superseded by ADR-019.** The principle stands â agents decide what they want, C# decides
+> what they are permitted â but the single decider became a room.
+
+**Decision:** The LLM chooses what to trade **and rewrites the strategy parameters**. It
+answers with a `StrategyDecision`: a list of typed actions, and optionally a new
+`StrategyPolicy`. Deterministic C# executes, and `RiskGuard` checks every action against
+`RiskOptions`, which no agent output can modify.
+
+**Reason:** ADR-013 left the project with **no forecaster that beats the option price**. The
+minimum edge and the cheap-filter threshold had no signal to key on, so the TBD numbers in
+[strategy parameters](../trading/strategy-parameters.md) could not be calibrated. The choice
+was between freezing guessed constants and letting the agent own them and revise them from
+measured results. Guessed constants carry no more evidence and do not adapt.
+
+**The action space is closed.** `StrategyActionKind` is `Hold`, `OpenCall`, `OpenPut`, or
+`ClosePosition`. The agent emits no code, no SQL, and no shell command. An action outside the
+enum cannot be expressed, so it cannot be executed.
+
+**Three limits make this safe:**
+
+1. **The agent may only name a contract the harness offered that cycle.** A hallucinated
+   symbol is rejected before it reaches the broker.
+2. **`StrategyPolicy.ClampTo` bounds every revision.** A policy may narrow the strategy; it
+   can never widen the risk. The clamp lives in the `TradingLoop.Policy` setter, so no caller
+   can install an unclamped policy either.
+3. **`RiskOptions` is C# only.** Per-trade risk, total exposure, position counts, the daily
+   loss halt, and the Thursday flatten are unreachable from any model output.
+
+**The cycle order is part of the decision.** Deterministic exits run **before** the agent is
+called, so a hung or malfunctioning agent cannot prevent a stop-loss. The risk guard runs
+**after** it, on every action. An agent exception is a skipped cycle, never an open position.
+
+**Effect:** `.lode/trading/strategy-parameters.md` no longer holds a TBD list waiting on
+replay. The values are policy defaults the agent owns. The hard bounds are chosen, not
+measured, and are recorded as chosen.
+
+## ADR-017: The agent gets read-only research tools, including web search
+
+> **Superseded by ADR-019 and ADR-020.** Tools and web search are unchanged and still
+> read-only; they now belong to each persona rather than to one agent.
+
+**Decision:** The strategy agent receives the 25 approved read-only Alpaca MCP tools **and**
+a hosted web-search tool. It also receives `submit_decision`, which is its output channel.
+
+**Reason:** ADR-013 removed price history as a source of edge, leaving **the agent reading
+text** as the only remaining alpha hypothesis. Before this decision the agent read Alpaca
+news headlines and nothing else, and it could not investigate at all: the approved MCP tools
+were discovered at startup and then discarded. An agent that cannot look anything up is not a
+research agent.
+
+**`submit_decision` is not an action.** It is a schema. It executes nothing, reaches no
+broker, and everything it returns still passes `RiskGuard`. It replaced free-text JSON
+because a parse failure degraded to a silent hold: a drifted field name produced an agent
+that quietly did nothing, which in a four-day run is indistinguishable from an agent that
+chose not to trade. A tool call is schema-validated by the API, so a bad answer is a visible
+error.
+
+**This does not weaken ADR-005 or ADR-006.** Every tool is read-only. No MCP server this host
+runs holds an order tool, and `McpToolCatalog.AssertNoForbiddenTool` still fails startup if
+one appears.
+
+### The prompt-injection surface, and why it is acceptable
+
+Web search puts text that this project does not control in front of the model. A hostile or
+low-quality page can influence a decision. **The exposure is bounded, not removed:**
+
+- The agent cannot place an order. It returns data.
+- It can only name a contract the harness offered that cycle.
+- `RiskGuard` still caps the position at 2% of equity, the account at 10%, four positions, and
+  a 5% daily loss halt.
+
+So the worst case is a bad trade inside the caps, not an unbounded loss. The system prompt
+also tells the agent to treat tool output, and web content in particular, as untrusted
+information rather than as instruction.
+
+### Replay gets no research tools, structurally
+
+**A live tool in a replay run is a future-data leak.** An Alpaca MCP call reads today's
+market. A web search returns everything that has happened since the replay instant. Either
+would make a historical run look brilliant for the wrong reason.
+
+`--replay --agent llm` therefore passes an empty tool list. This is a code path, not a
+setting. The replay tool substitutes described in
+[replay mode](../replay/replay-mode.md) are the proper fix and are not built.
+
+## ADR-018: The agent room, and the decider always has the final word
+
+> **Superseded by ADR-019.** One round of proposer-and-critic became the five-phase war room.
+> Two rules survived intact: no participant may veto, and a failed seat is never an approval.
+
+**Decision:** `AgentRoom` runs a discussion between any number of agents and then asks the
+**decider** to close it. Participants speak in the order configured, each reading the market
+context and everything said before it. The decider is the only agent that can produce a
+`StrategyDecision`, it always speaks last, and its answer may be to do nothing. `RiskGuard`
+bounds whatever it decides.
+
+**Reason:** the proposer-and-critic pair was one arrangement of a more general idea. A room
+that does not know what its participants are can seat a critic, a risk analyst, a macro reader,
+a contrarian or a quant in any order, and a new voice becomes a new role prompt rather than new
+code. `RoomRoles` holds the presets; `--room critic,quant,macro` seats them in that order.
+
+**No participant can veto.** This is the rule the whole arrangement rests on, and it is
+inherited from the original Critic design in
+[critic agent](../war-room/summary.md): **a veto is not testable.** There is no way to tell
+a participant that saves money from one that is merely timid, and a timid participant that
+blocks everything produces a four-day run that holds cash and returns nothing.
+
+**Every participant commits to a probability** on any contract it has a view about, so whether
+a seat earns its tokens is settled by measurement rather than by taste. A speaker who only
+narrates risk cannot be wrong: risks always exist, and naming them always sounds astute.
+
+### The decider is not a vote-counter
+
+Participants advise. They do not vote, and a unanimous room does not overrule the decider — a
+majority veto is still a veto, and a uniformly cautious room would stop all trading. The prompt
+tells the decider to weigh the speakers rather than count them, and that several speakers
+repeating one another is still one argument.
+
+### The two silent failure modes
+
+| Failure | What it looks like | What catches it |
+|---|---|---|
+| The decider capitulates to every objection | The system stops trading and returns nothing | `RoomRecord.DeciderChangedItsMind`, and the prompt says dropping every challenged trade is a loss, not safety |
+| Participants rubber-stamp | Cost multiplies, nothing changes | Every contribution is recorded with its stance and probability |
+
+### Calls are not spent on a discussion that cannot matter
+
+- An opening proposal that **trades nothing** does not convene the room. Holding has no
+  downside for a participant to find.
+- A participant that **fails, throws, or says nothing** is recorded, skipped, and the
+  discussion continues.
+- Rounds are capped at `AgentRoomOptions.MaximumRounds`, so a configuration mistake cannot burn
+  the budget.
+
+The second one is a guardrail rather than politeness. Without it a participant exception would
+reach the loop, the loop would skip the cycle, and any broken seat would silently cancel every
+trade — the exact veto power this ADR denies. Tests pin it.
+
+**Cost scales with the room.** One cycle costs one decider call per participant round plus the
+opening and closing decider calls, each possibly with research tool calls behind it. A room of
+three over two rounds is roughly eight model calls per cycle before tools.
+
+**Effect:** `--room none` runs the decider alone. `--room critic` is the default.
+`--no-opening-proposal` suits a room of analysts reading the market rather than critiquing a
+proposal, and saves one decider call per cycle.
+
+## ADR-019: The war room, and it is one class for both jobs
+
+**Supersedes ADR-016, ADR-017 and ADR-018,** which described a single decider, then a decider
+with tools, then a decider and one critic. The shape is now a room.
+
+**Decision:** `WarRoomSession` runs five phases: the proposer proposes, C# pre-validates,
+reviewers analyse **independently**, the room debates, the proposer rebuts, and everyone votes
+**privately**. `RiskGuard` then validates again immediately before submission.
+
+**One class serves both callers.** A new trade and a position review differ only in the
+`WarRoomRequest`: the purpose, the allowed actions, and whether a position is attached. The
+process is identical, which is what stops the two paths drifting apart.
+
+### Independence is the reason a room beats one agent
+
+Analyses are formed in parallel and each reviewer sees nothing from the others. Sharing
+opinions first lets the earliest speaker anchor everyone, and a room that agrees because it
+was anchored is pure cost. Initial votes are recorded before the debate, so a later change of
+mind is visible rather than invisible.
+
+### Privacy is a property of the type
+
+`RoomContext` **has no votes field**. The spec requires final votes to stay hidden until every
+vote is in, and leaving the field out means no future edit can leak one vote into another
+persona's prompt. A test asserts the type has no such property.
+
+### Nothing that fails may decide anything
+
+A seat that throws is recorded as a fault, counted as an abstention, and **never as an
+approval**. A failed proposer becomes NO_TRADE. A failed rebuttal leaves the original proposal
+standing, so a broken proposer cannot silently withdraw a trade it already justified. A failed
+position review leaves the position alone, still covered by the hard exits.
+
+## ADR-020: A persona is a class, and the diversity that matters is the model
+
+**Decision:** `IPersona` is an interface with a class for each seat. A persona owns its
+provider, model, temperature, prompt and tools. Every LLM seat gets the **same** read-only
+tools; they differ by model.
+
+**Reason:** a room of one model arguing with itself shares that model's blind spots. Prompt
+variety is cheap and shallow; independent errors are what make a second opinion worth its
+tokens. The seats run on Claude, GPT and Grok, reached through one `IChatClient` by
+`ChatClientFactory`. The xAI API is OpenAI-compatible, so Grok is the OpenAI adapter with an
+endpoint override.
+
+**`IPersona` mentions no model.** `ExposureRiskPersona` is plain C#: it computes exposure,
+concentration and remaining capacity, votes on the numbers, costs nothing, and cannot
+hallucinate. It covers the arithmetic half of the Risk Analyst role, which a language model
+should not have been doing.
+
+**Missing keys fail at startup**, not mid-cycle. A seat without a key is a dead seat at 09:31
+on the first trading morning.
+
+| Seat | Provider | Purpose |
+|---|---|---|
+| `proposer` | Claude Opus 5 | Searches and proposes. Carries the full Alpaca toolset. |
+| `skeptic` | Claude Sonnet 5 | Assumes the proposal is wrong. |
+| `quant` | GPT-5 | Judges the contract and the numbers. |
+| `market` | Grok 4 | Price action, context, news and events. |
+| `exposure` | none | Portfolio arithmetic in C#. Free. |
+
+## ADR-021: Votes size the position above a threshold
+
+**Decision:** `VoteTally` weights each vote by its confidence, divides by every voter
+including the faulted ones, and compares the result with `ApproveThreshold`. At or below the
+threshold the proposal is rejected. Above it, the same number becomes the size multiplier.
+
+**`ApproveThreshold` starts at 0** — more weighted conviction for than against. Raising it
+approaches the four-of-five recommendation in the flow specification.
+
+> **This is the single number most likely to decide whether the system ever trades.** A room
+> that rejects everything produces a four-day run holding cash, which is a loss and not
+> safety.
+
+An approved proposal always trades at least one contract. Rounding a positive conviction down
+to zero would turn an approval into a rejection wearing the same name.
+
+A faulted voter dilutes conviction rather than vanishing, so a room that half broke cannot
+look unanimous. Under `RequireEveryVoter` a fault rejects outright, which is the conservative
+reading and the correct one for money.
+
+## ADR-022: The room reports what it costs
+
+**Decision:** `TokenLedger` records `ChatResponse.Usage` per persona and model.
+`ModelPricing` turns tokens into an estimated figure in US dollars.
+
+**Token counts are fact; dollars are an estimate.** No provider reports money, so the rate
+table is hardcoded and will go stale. Two silent undercounts are recorded with every figure: a
+model with no rate is excluded from the total and named in `UnpricedModels`, and hosted web
+search normally bills per call outside token counts. **Treat the number as a floor.**
+
+A failed call is still recorded, because a failed call is still billed.
+
 ## Related
 
+- [Critic agent](../war-room/summary.md)
 - [Model against the market](../replay/model-vs-market.md)
 - [ML hypotheses](../plans/ml-hypotheses.md)
 - [Technology stack](technology-stack.md)
 - [Risk guardrails](../trading/risk-guardrails.md)
+- [Replay mode](../replay/replay-mode.md)
+- [Storage schema](../storage/schema.md)
+- [Strategy parameters](../trading/strategy-parameters.md)
+- [War room](../war-room/summary.md)

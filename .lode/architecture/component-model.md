@@ -1,124 +1,92 @@
-# Internal Component Model
+# Component Model
 
-All application components run inside one .NET process. Two Alpaca MCP servers run beside it
-as child processes.
+What runs inside the one .NET host, and where the boundaries are.
 
 ```mermaid
 flowchart TB
-    subgraph TraderHost[".NET Trader Host"]
+    subgraph Host[".NET Trader Host"]
         Loop[TradingLoop]
-        Positions[PositionManager]
-        Selector[OptionCandidateSelector]
-        Ml[HistoricalMlExpert]
-        Research[ResearchAgent]
-        Critic[CriticAgent]
-        Combiner[ForecastCombiner]
-        Options[OptionsEvaluator]
-        Risk[RiskGuard]
+        Session[LiveSession]
+        Triggers[PositionReviewTriggers]
 
-        MarketGateway[IMarketDataGateway]
-        TradingGateway[ITradingGateway]
+        subgraph Deterministic["Deterministic C# -- owns money"]
+            Guard[RiskGuard]
+            Options[RiskOptions]
+            Store[TradingStore]
+        end
 
-        ResearchMcp[Read-only McpClient]
-        TradingMcp[Trading McpClient]
+        subgraph Room["War room -- owns judgement"]
+            Proposer[ProposerPersona]
+            Skeptic[SkepticPersona]
+            Quant[QuantPersona]
+            Market[MarketPersona]
+            Exposure[ExposureRiskPersona]
+            War[WarRoomSession]
+            Tally[VoteTally]
+            Pre[ProposalPreValidator]
+        end
 
-        ReplayMarket[ReplayMarketDataGateway]
-        ReplayTrade[ReplayTradingGateway]
-
-        Store[TradingStore]
-        UI[Spectre.Console TUI]
-        Clock[TimeProvider]
+        subgraph Seam["Gateways -- the replaceable seam"]
+            MD[IMarketDataGateway]
+            TG[ITradingGateway]
+        end
     end
 
-    ROServer[Read-only Alpaca MCP Server]
-    TradeServer[Trading Alpaca MCP Server]
-    Alpaca[Alpaca Paper Platform]
-    LLM[LLM Provider]
-    DB[(SQLite)]
-
-    Loop --> Positions
-    Loop --> Selector
-    Selector --> Ml
-    Selector --> Research
-    Research --> Critic
-
-    Ml --> Combiner
-    Research --> Combiner
-    Critic --> Combiner
-    Combiner --> Options
-    Options --> Risk
-    Risk --> TradingGateway
-
-    Research --> ResearchMcp
-    Critic --> ResearchMcp
-    MarketGateway --> ResearchMcp
-    TradingGateway --> TradingMcp
-
-    ResearchMcp --> ROServer
-    TradingMcp --> TradeServer
-    ROServer --> Alpaca
-    TradeServer --> Alpaca
-
-    Research --> LLM
-    Critic --> LLM
-
+    Loop --> Triggers
+    Loop --> War
+    War --> Proposer
+    War --> Skeptic
+    War --> Quant
+    War --> Market
+    War --> Exposure
+    War --> Pre
+    War --> Tally
+    Loop --> Guard
+    Guard --> Options
     Loop --> Store
-    Store --> DB
-    ReplayMarket --> DB
-    ReplayTrade --> DB
+    Loop --> MD
+    Loop --> TG
 
-    UI --> Loop
-    Clock --> Loop
+    MD --> Live[Live gateways -> Alpaca SDK]
+    MD --> Rep[Replay gateways -> SQLite]
+    TG --> Live
+    TG --> Rep
+
+    Proposer -.read-only tools.-> Mcp[Alpaca MCP, read-only]
+    Skeptic -.-> Mcp
+    Quant -.-> Mcp
+    Market -.-> Mcp
 ```
 
-## Responsibilities
+## The one boundary that matters
 
-| Component | Responsibility |
-|---|---|
-| `TradingLoop` | Runs one cycle. Calls each step in order. Waits for the next cycle. |
-| `PositionManager` | Reviews open positions. Applies exit rules. |
-| `OptionCandidateSelector` | Selects a small set of option contracts from the chain. |
-| `HistoricalMlExpert` | Returns a numerical probability from ML.NET. |
-| `ResearchAgent` | LLM expert. Reads news and market data with read-only MCP tools. |
-| `CriticAgent` | LLM expert. Challenges the candidate. Returns its own probability. |
-| `ForecastCombiner` | Combines three probabilities with reliability weights. |
-| `OptionsEvaluator` | Deterministic C#. Gives the market probability reference and checks quote quality. |
-| `RiskGuard` | Applies the hard risk rules. Only this component allows an order. |
-| `IMarketDataGateway` | Typed read path to Alpaca. Live and replay implementations. |
-| `ITradingGateway` | Typed write path to Alpaca. Live and replay implementations. |
-| `McpToolCatalog` | The approved read-only tool allowlist. Filters `ListToolsAsync()`. |
-| `TradingStore` | All SQLite reads and writes. |
-| `TraderConsole` | Read-only Spectre.Console TUI. |
-| `TimeProvider` | Live time or replay time. |
+> **Agents decide what they want to do. Deterministic C# decides what they are permitted to
+> do.**
 
-## Three key seams
+The war room produces a `ProposedOperation` and a set of votes. That is data. Nothing in the
+room can submit, cancel or close an order: `ITradingGateway` is reached only from
+`TradingLoop`, and no MCP server this host runs holds an order tool at all (ADR-001, ADR-005,
+ADR-006).
 
-The architecture has three replacement seams. All must stay clean.
+`ExposureRiskPersona` sits inside the room but computes in C#. It votes on whether a legal
+trade is a sensible use of capacity; it does **not** replace `RiskGuard`, which enforces the
+hard limits and cannot be outvoted.
 
-1. **`IMarketDataGateway`** — `AlpacaMcpMarketDataGateway` for live,
-   `ReplayMarketDataGateway` for replay.
-2. **`ITradingGateway`** — `AlpacaMcpTradingGateway` for live, `ReplayTradingGateway` for
-   replay. Replay simulates an order. It never sends one.
-3. **`TimeProvider`** — live time or replay time. The same strategy code runs in both modes.
+## The three replacement seams
 
-```mermaid
-flowchart LR
-    A[Trading Engine] --> B{Mode}
-    B -->|Live| C[Alpaca MCP gateways]
-    C --> D[Local Alpaca MCP servers]
-    D --> E[Alpaca Paper APIs]
-    B -->|Replay| F[Replay gateways]
-    F --> G[(SQLite Historical Data)]
-    H[TimeProvider] --> A
-```
+| Seam | Live | Replay |
+|---|---|---|
+| `IMarketDataGateway` | Alpaca SDK | SQLite, clamped to the replay clock |
+| `ITradingGateway` | Alpaca SDK, the only write path | Simulated; holds no Alpaca client |
+| `TimeProvider` | `TimeProvider.System` | `ReplayClock`, moves forward only |
 
-The LLM agents do not use the gateways. They call approved MCP tools directly through
-`ChatOptions.Tools`. In replay mode the agents receive replay tool implementations, not live
-MCP tools. See [replay mode](../replay/replay-mode.md).
+`TradingLoop` has no mode flag. A branch on mode is how two paths drift apart, so the loop is
+given different gateways instead.
 
 ## Related
 
 - [Application structure](application-structure.md)
-- [MCP integration](../alpaca/mcp-integration.md)
-- [Live cycle](../trading/live-cycle.md)
+- [War room](../war-room/summary.md)
+- [Risk guardrails](../trading/risk-guardrails.md)
 - [Replay mode](../replay/replay-mode.md)
+- [Architecture decisions](decisions.md)

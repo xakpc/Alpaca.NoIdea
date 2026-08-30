@@ -4,7 +4,8 @@ Eight phases. Each phase has an exit condition. Do not start a phase before the 
 condition is true, **unless the phase needs nothing from it**. Phase 3 needs no live Alpaca
 connection, so it ran beside Phase 1.
 
-**Current position: Phase 2 is the work.** Phase 1 is complete: the host reads the account,
+**Current position: Phase 2 is mostly built.** The offline replay stack runs. The agent
+toolset and the calibration sweep remain. Phase 1 is complete: the host reads the account,
 submits a paper option order, and reads it back by client order id. Phase 3 is finished and its expert is excluded (ADR-013).
 
 Phase 3 needs no live connection, so it did not wait for Phase 1. The rest of the roadmap does.
@@ -38,11 +39,9 @@ flowchart LR
 9. ~~Connect a trading `McpClient`.~~ **Removed (ADR-001).** Deterministic C# uses the SDK.
 10. Fail startup if the connection exposes a forbidden tool. *(Done, and measured: adding
     `account,trading` to the toolset makes the host refuse to start with 20 named tools.)*
-11. ~~Implement `IMarketDataGateway`.~~ **Not built.** The SDK is already typed, and the
-    interface existed to let a replay implementation substitute. Extract it when replay is
-    actually built.
-12. ~~Implement `ITradingGateway`.~~ Same reason. `AlpacaClients` exposes the three SDK
-    clients directly.
+11. Implement `IMarketDataGateway`. **Deferred here, built in Phase 2.** The interface existed
+    to let a replay implementation substitute, so it waited until replay was real.
+12. Implement `ITradingGateway`. Same reason, and also built in Phase 2 (ADR-014).
 13. Read the account state, bars, and option chains. *(Done.)*
 14. Submit one controlled test option order in the development paper account. *(Done.)*
 15. Read and close that position. *(Done. Read back by client order id.)*
@@ -52,16 +51,32 @@ flowchart LR
 > closes or cancels. Re-running with the same id resolves the existing order instead of
 > submitting a second one. `--check-mcp` proves the tool isolation.
 
-## Phase 2: SQLite and historical data
+## Phase 2: SQLite and replay — the offline half is done
 
-1. Create the SQLite schema. Add `Microsoft.Data.Sqlite` and Dapper.
-2. Download historical bars through the market-data gateway.
-3. Download historical news through the market-data gateway.
-4. Cache the data.
-5. Implement replay time.
-6. Implement the replay market and trading gateways.
+1. Create the full SQLite schema. *(Done. Audit, cache, score, and `llm_cache` tables.)*
+2. Backfill the news history. *(Done. `scripts/acquire-news.sh`, 25,187 items,
+   2026-02-01 to 2026-08-28. The old script did not paginate.)*
+3. Import `data/raw` into SQLite. *(Done. `--import-history`, deterministic and idempotent.)*
+4. Extract the gateway seam. *(Done. `IMarketDataGateway`, `ITradingGateway`, and the two live
+   implementations over the SDK. ADR-014.)*
+5. Implement replay time. *(Done. `ReplayClock`. It refuses to move backwards.)*
+6. Implement the replay market and trading gateways. *(Done. `ReplayMarketDataGateway` clamps
+   every read to the clock; `ReplayTradingGateway` simulates and holds no Alpaca client.)*
+7. Rebuild the market probability reference. *(Done. `OptionLadder`, the validated ladder
+   slope.)*
+8. Implement replay tool substitutes for the agents. **Not built.**
+9. Calibrate the strategy parameters. **Not built.**
 
-> **Exit:** The program can replay a past market period with no live MCP call.
+> **Partly reached.** `--replay` runs 63 real sessions offline, rebuilds an option chain of
+> about 73 strikes, and produces a market probability on 61 of them. It opens no MCP connection
+> and no Alpaca client.
+
+Steps 8 and 9 remain. Step 9 depends on Phase 4 and Phase 5: the minimum edge must be measured
+from real agent forecasts, never from a proxy forecaster (ADR-013).
+
+**One defect was found and fixed by running it.** The first run filtered on the bar timestamp
+rather than on bar availability, which let each cycle read the closing premium of the session
+it was inside. See ADR-015.
 
 ## Phase 3: ML.NET — complete, and the expert is excluded
 

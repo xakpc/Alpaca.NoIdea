@@ -21,7 +21,6 @@ C4Context
 ## Operator
 
 The operator starts the program and watches the terminal user interface. The operator does
-**not** approve each trade. This is a hackathon requirement. See [TUI](../trading/tui.md).
 
 ## Alpaca platform
 

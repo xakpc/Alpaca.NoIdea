@@ -1,7 +1,7 @@
 using Alpaca.Markets;
 using Xakpc.Alpaca.NøIdea.Alpaca;
 
-namespace Trader.Tests;
+namespace Xakpc.Alpaca.NøIdea.Tests;
 
 /// <summary>
 /// The guardrails that must not regress. Each test here corresponds to a rule in

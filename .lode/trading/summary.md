@@ -43,4 +43,3 @@ flowchart LR
 - [Position lifecycle](position-lifecycle.md)
 - [Risk guardrails](risk-guardrails.md)
 - [Strategy parameters](strategy-parameters.md)
-- [TUI](tui.md)

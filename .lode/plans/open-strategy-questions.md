@@ -30,7 +30,7 @@ not exact.** The project must validate this approach against historical results 
 relies on it. A later implementation can use a better option-pricing probability
 calculation.
 
-See [Options Evaluator](../experts/options-evaluator.md).
+See [Options Evaluator](../trading/risk-guardrails.md).
 
 ## 5. Thursday exit policy
 

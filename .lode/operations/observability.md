@@ -48,5 +48,4 @@ did not trade proves that the guardrails work.
 
 ## Related
 
-- [TUI](../trading/tui.md)
 - [Storage summary](../storage/summary.md)

@@ -69,7 +69,7 @@ and costs no new download.
 by payoff against risk, rather than trying to out-forecast it.
 
 **Why it is not ML.** It is arithmetic over the ladder and the risk rules. It belongs in
-`OptionCandidateSelector` and the [Options Evaluator](../experts/options-evaluator.md), not in
+`OptionCandidateSelector` and the [Options Evaluator](../trading/risk-guardrails.md), not in
 a model. Recorded here only so the idea is not confused with a forecasting hypothesis.
 
 ## What was decided instead
@@ -86,6 +86,6 @@ a different information channel from price history, and it is the only one left 
 ## Related
 
 - [Model against the market](../replay/model-vs-market.md)
-- [Historical ML Expert](../experts/historical-ml-expert.md)
+- [Historical ML Expert](../replay/model-vs-market.md)
 - [Option data availability](../replay/option-data-availability.md)
 - [MVP roadmap](mvp-roadmap.md)

@@ -96,30 +96,87 @@ erDiagram
 
 ## Cache tables
 
+Five tables hold the history that replay reads. `--import-history` fills them from
+`data/raw/`. The composite primary keys make the import idempotent: a second run writes the
+same rows and reports the same counts.
+
 ```sql
 CREATE TABLE bars (
     symbol          TEXT NOT NULL,
-    timestamp_utc   INTEGER NOT NULL,
     timeframe       TEXT NOT NULL,
-    open            REAL NOT NULL,
-    high            REAL NOT NULL,
-    low             REAL NOT NULL,
-    close           REAL NOT NULL,
-    volume          REAL NOT NULL,
+    timestamp_utc   INTEGER NOT NULL,
+    available_utc   INTEGER NOT NULL,
+    open REAL, high REAL, low REAL, close REAL, volume REAL,
+    trade_count     REAL,
+    vwap            REAL,
     PRIMARY KEY (symbol, timeframe, timestamp_utc)
 );
 
 CREATE TABLE news (
-    id              TEXT PRIMARY KEY,
+    id              INTEGER PRIMARY KEY,   -- Alpaca sends a number, not a string
     published_utc   INTEGER NOT NULL,
     headline        TEXT NOT NULL,
-    summary         TEXT,
-    source          TEXT,
+    summary TEXT, source TEXT, author TEXT, url TEXT,
     symbols_json    TEXT NOT NULL
+);
+
+-- One news item names many symbols. This gives the per-symbol lookup.
+CREATE TABLE news_symbols (
+    news_id INTEGER NOT NULL, symbol TEXT NOT NULL,
+    PRIMARY KEY (symbol, news_id)
+);
+
+CREATE TABLE option_contracts (
+    contract_symbol TEXT PRIMARY KEY,
+    underlying      TEXT NOT NULL,
+    expiration      TEXT NOT NULL,   -- ISO date, a contract identity
+    strike          REAL NOT NULL,
+    option_type     TEXT NOT NULL,
+    style TEXT, multiplier INTEGER
+);
+
+CREATE TABLE option_bars (
+    contract_symbol TEXT NOT NULL,
+    session_utc     INTEGER NOT NULL,
+    available_utc   INTEGER NOT NULL,
+    open REAL, high REAL, low REAL, close REAL, volume REAL,
+    trade_count REAL, vwap REAL,
+    PRIMARY KEY (contract_symbol, session_utc)
+);
+
+-- Replay must not pay twice for the same historical question.
+CREATE TABLE llm_cache (
+    cache_key       TEXT PRIMARY KEY,   -- hash of agent, model, instant, and prompt
+    agent TEXT NOT NULL, model TEXT NOT NULL,
+    as_of_utc       INTEGER NOT NULL,
+    response_json   TEXT NOT NULL,
+    created_utc     INTEGER NOT NULL
 );
 ```
 
-The composite primary key on `bars` makes the historical download idempotent.
+### `available_utc` is the no-leak column
+
+**Every replay read filters on `available_utc`. No replay read filters on `timestamp_utc` or
+on `session_utc`** (ADR-015).
+
+A bar timestamp is the **start** of its interval. The bar carries the **close** of that
+interval. A daily bar stamped `05:00Z` therefore holds the 16:00 ET price, and a filter on the
+timestamp gives a 09:30 cycle six hours of the future.
+
+`Storage/BarAvailability` computes the column at import time:
+
+| Bar | Available at |
+|---|---|
+| Daily equity bar | 20:00 Eastern, after extended trading |
+| Daily option bar | 16:15 Eastern; options do not trade in extended hours |
+| Intraday bar | The end of its interval |
+
+### `option_bars` has no bid, ask, or delta
+
+The columns are absent on purpose. Alpaca serves no historical option quote and no historical
+greek. A nullable column would invite code to treat a missing quote as a passing one. Replay
+reports `QuoteQuality.UnknownHistorical` instead. See
+[option data availability](../replay/option-data-availability.md).
 
 ## Audit tables
 
@@ -204,6 +261,14 @@ database, not at the broker.
 
 `alpaca_order_id` is nullable because the row can exist before Alpaca confirms the order.
 
+**`decision_id` is nullable in the code and carries no foreign key.** The `--smoke` path
+reserves an order with no decision behind it. A synthetic `decisions` row would put a decision
+the agent never made into the audit trail. A NULL `decision_id` means an operator check, not an
+agent decision.
+
+The `orders` and `equity_snapshots` tables also carry a `mode` column. It separates `live` rows
+from `replay` rows, the same way `evaluation_runs.mode` does.
+
 ## Score tables
 
 ```sql
@@ -225,7 +290,7 @@ CREATE TABLE equity_snapshots (
 ```
 
 `forecaster` in `forecasts` and in `expert_scores` uses the same value set: the weighted
-experts, which are now the Research Agent and the Critic Agent. See [forecast combination](../experts/forecast-combination.md).
+experts, which are now the Research Agent and the Critic Agent. See [forecast combination](../war-room/summary.md).
 
 ## Startup
 

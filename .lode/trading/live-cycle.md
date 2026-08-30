@@ -1,178 +1,113 @@
 # Live Trading Cycle
 
-The target cycle time is about 30 minutes during regular US market hours. The exact interval
-is configuration. The loop uses the Alpaca market clock.
+One cycle every 30 minutes during regular US market hours. The interval is configuration and
+the loop reads the Alpaca market clock. `TradingLoop.RunCycleAsync` is the code.
+
+> **Existing positions are handled first. New trades are considered only after the current
+> positions are safe.**
 
 ```mermaid
 flowchart TD
-    A[Start cycle] --> B[Sync account and orders]
-    B --> C[Manage open positions]
-    C --> D[Read tracked symbols and option data]
-    D --> E[Cheap filter<br/>quality, band, news]
-    E --> F{Potential edge large enough?}
-    F -- No --> G[Skip candidate]
-    F -- Yes --> H[Research Agent]
-    H --> I[Critic Agent]
-    I --> J[Combine expert probabilities]
-    J --> K[Options Evaluator]
-    K --> L{Trade candidate still valid?}
-    L -- No --> G
-    L -- Yes --> M[Hard Risk Guardrails]
+    A[Start cycle] --> B[Sync account and positions]
+    B --> C{Account healthy?}
+    C -- No --> Z[Skip the cycle]
+    C -- Yes --> D[Hard exits: no agent is asked]
+    D --> E{Review trigger fired?}
+    E -- Yes --> F[Position war room]
+    E -- No --> G[Leave the position]
+    F --> H[Recalculate capacity]
+    G --> H
+    H --> I{Capacity and candidates?}
+    I -- No --> Y[Record and wait]
+    I -- Yes --> J[Cheap filter builds candidates]
+    J --> K[New-trade war room]
+    K --> L{Approved?}
+    L -- No --> Y
+    L -- Yes --> M[RiskGuard, immediately before submission]
     M --> N{Allowed?}
-    N -- No --> O[Reject and record reason]
-    N -- Yes --> P[Submit paper option order]
-    G --> Q[Save cycle data]
-    O --> Q
-    P --> Q
-    Q --> R[Wait until next cycle]
-    R --> A
+    N -- No --> Y
+    N -- Yes --> O[Reserve client order id, then submit]
+    O --> Y
 ```
 
-## The twelve steps
+## The order is the safety property
 
-### 1. Sync account
+1. **Hard exits run before anything is asked of an agent.** A stop-loss, a take-profit and the
+   competition flatten are deterministic and consult nobody, so a hung or broken model can
+   never delay one.
+2. **The war room sits in the middle.** It only ever produces data.
+3. **`RiskGuard` runs last, immediately before submission.** The market moves during a debate,
+   so a proposal that passed pre-validation can still fail here. That is the design, not a
+   redundancy.
 
-Deterministic. Read the current equity, the cash, the open positions, the open orders, and
-the Alpaca market clock. Alpaca is the source of truth. The LLM takes no part in this step.
+## 1. Sync
 
-### 2. Manage existing positions
+Read equity, cash, positions, open orders and the market clock. **Alpaca is the source of
+truth**; SQLite holds what the agent thought and did. A blocked account skips the cycle.
 
-Primarily deterministic. The policy checks the profit target, the loss limit, the time to
-expiration, the quote validity, strategy invalidation, and the competition close rules.
+## 2. Hard exits
 
-An LLM re-check runs only when the system has a reason. Possible triggers: important new
-news, a large price change, a large change in the numerical forecast, or a scheduled
-long-interval review. **The system must not call the LLM for every position on every
-cycle.** See [position lifecycle](position-lifecycle.md).
+`RiskGuard.MandatoryExitReason` closes a position on the take-profit level, the stop-loss
+level, or the competition flatten time. The first two come from the `StrategyPolicy` the agent
+writes; the flatten time does not, because missing the measurement point cannot be recovered
+from.
 
-### 3. Read candidate option contracts
+A position with no current price is **held**, not closed blindly.
 
-Get the option chain for each tracked symbol. Limit the number of contracts that the system
-evaluates. The exact selection rule is **TBD**, but it must require a valid bid and ask, an
-acceptable quote age, a supported expiration, a supported option type, and no obviously bad
-or missing data.
+## 3. Position review
 
-### 4. Historical ML Expert — removed
+`PositionReviewTriggers` decides whether a position needs judgement. A trigger does not close
+anything — it asks whether the original thesis still holds. Five are built:
 
-**This step no longer exists (ADR-013).** The model was measured against the option price and
-lost in every period, so it gives no forecast and no gate. See
-[model against the market](../replay/model-vs-market.md).
+| Trigger | Fires when |
+|---|---|
+| Expiration | Two days or fewer remain |
+| Profit milestone | Up 30% |
+| Loss milestone | Down 20%, short of the hard stop |
+| New news | Three or more fresh headlines since the last review |
+| Scheduled | 90 minutes since the last review |
 
-### 5. Cheap filter
+A triggered position goes to the **same** `WarRoomSession` a new trade goes to, with
+`AllowedActions = [ClosePosition]`. `ADJUST` stays disabled until adjustment code is
+validated.
 
-The filter still has to exist, because the system must not call an LLM for every contract.
-What it can no longer do is key on a **model-versus-market gap**: that gap was measured and
-tracks the model's own error, so filtering on it would select the candidates the model
-understands least.
+A review that fails leaves the position alone. It is still covered by the hard exits.
 
-The replacement gates are deterministic and need no forecast:
+## 4. Recalculate capacity
 
-- **Contract quality.** Valid two-sided quote, acceptable age and spread, greeks present.
-- **A tradeable market-probability band.** From the option ladder. A contract that is nearly
-  certain either way is not worth an LLM call.
-- **Fresh news for the symbol.** The remaining alpha hypothesis is the LLM agents reading
-  text, so spend the budget where text exists.
+Position count, positions opened today, exposure against equity, the daily loss state, and
+the remaining position slots.
 
-The exact thresholds are **TBD**. See [strategy parameters](strategy-parameters.md).
+## 5. Cheap filter
 
-### 6. Research Agent
+The filter decides what is **worth an agent call**. Whether a trade could legally exist is a
+different question, answered by `ProposalPreValidator` inside the room.
 
-The [Research Agent](../experts/research-agent.md) receives the candidate question and
-chooses which read-only tools to call.
+For each tracked symbol the loop reads the spot price, requires fresh news when the policy
+asks for it, pulls the call and put chains inside the policy expiration window and a strike
+band around spot, computes the ladder market probability, drops anything already held, and
+keeps the 40 cheapest that fall inside the tradeable probability band.
 
-### 7. Critic Agent
+## 6. The war room
 
-The [Critic Agent](../experts/critic-agent.md) receives the question, the ML result, the
-research result, and the research evidence. It returns its own probability.
+See [war room](../war-room/summary.md). Propose, pre-validate, analyse independently, debate,
+rebut, vote privately, tally to a verdict and a size.
 
-### 8. Combine forecasts
+## 7. Risk and submission
 
-Combine the three probabilities with reliability weights, or with equal weights during the
-cold start. See [forecast combination](../experts/forecast-combination.md).
+`RiskGuard.CanOpen` checks per-trade risk, total exposure, position counts, the daily limit,
+contract quality, and the expiration window. Then the loop **reserves the client order id in
+SQLite before submitting**, so an uncertain result can be resolved by asking the broker
+instead of sending a second order.
 
-### 9. Options Evaluator
+## 8. Persist
 
-Revalidate the contract: the current quote, the spread, the quote age, the market
-probability proxy, the type, the strike, the expiration, and the data quality. The evaluator
-can reject a contract because the contract is poor even when the forecast is good.
-
-### 10. Hard risk guardrails
-
-C# rules. An LLM cannot change them. See [risk guardrails](risk-guardrails.md).
-
-### 11. Submit order
-
-Only deterministic C# can submit an order. The order goes through the typed
-[trading gateway](../alpaca/mcp-integration.md). The system must create a unique
-`client_order_id` and save it before or with the order attempt. This protects the system
-from a duplicate order after an uncertain retry.
-
-Alpaca MCP supports market, limit, stop, and stop-limit option orders. It supports single-leg
-and multi-leg option orders. **It does not support a trailing stop for options.** The exact
-order type is a [strategy parameter](strategy-parameters.md).
-
-### 12. Persist result
-
-Record the input data, the expert outputs, the tool calls, the market reference, the
-combined probability, the final decision, the risk decision, the order ID, the position
-result, and the equity snapshot. See [storage schema](../storage/schema.md).
-
-## Sequence
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Loop as TradingLoop
-    participant Trade as Trading MCP
-    participant Market as Read-only MCP
-    participant ML as ML.NET Expert
-    participant Research as Research Agent
-    participant Critic as Critic Agent
-    participant Eval as Options Evaluator
-    participant Risk as Risk Guard
-    participant DB as SQLite
-
-    Loop->>Trade: Get account, positions, orders, clock
-    Trade-->>Loop: Current state
-    Loop->>Market: Get option chain and market data
-    Market-->>Loop: Quotes and option data
-    Loop->>ML: Predict price event probability
-    ML-->>Loop: Probability
-    Loop->>Eval: Get initial market probability reference
-    Eval-->>Loop: Market reference
-
-    alt Difference is too small
-        Loop->>DB: Record SKIP
-    else Candidate needs research
-        Loop->>Research: Investigate candidate
-        Research->>Market: Select read-only tools as required
-        Market-->>Research: Market and news data
-        Research-->>Loop: Probability and evidence
-        Loop->>Critic: Challenge candidate
-        Critic->>Market: Select read-only tools as required
-        Market-->>Critic: Market and news data
-        Critic-->>Loop: Probability and risks
-        Loop->>Loop: Combine expert probabilities
-        Loop->>Eval: Validate option and market reference
-        Eval-->>Loop: Valid or invalid
-        alt Candidate is invalid
-            Loop->>DB: Record SKIP
-        else Candidate is valid
-            Loop->>Risk: Apply hard limits
-            alt Risk fails
-                Risk-->>Loop: Reject
-                Loop->>DB: Record rejection
-            else Risk passes
-                Risk-->>Loop: Allow
-                Loop->>Trade: Submit paper option order
-                Trade-->>Loop: Order result
-                Loop->>DB: Save forecasts, decision, and order
-            end
-        end
-    end
-```
+Every cycle writes an equity snapshot. Rejections are recorded with their reason: the
+rejected path matters as much as the executed one.
 
 ## Related
 
-- [Trading summary](summary.md)
-- [Restart and recovery](../operations/restart-recovery.md)
+- [War room](../war-room/summary.md)
+- [Risk guardrails](risk-guardrails.md)
+- [Position lifecycle](position-lifecycle.md)
+- [Strategy parameters](strategy-parameters.md)

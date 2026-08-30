@@ -23,21 +23,70 @@ flowchart LR
 `ReplayRunner` drives the replay. `ReplayClock` gives the replay `TimeProvider`.
 `ReplayMarketDataGateway` implements `IMarketDataGateway` over the SQLite tables.
 `ReplayTradingGateway` implements `ITradingGateway`. It simulates an order. **It never sends
-one.**
+one.** It holds no Alpaca client at all, so it cannot reach a broker even if a defect tried.
 
 The replay path does not start an Alpaca MCP server.
 
+`ReplayRunner` owns time and nothing else. It steps the clock through the sessions that hold
+data, and it calls one delegate at each step. It does not know what a cycle does, so the
+trading loop can be given to it unchanged when Phase 7 builds it.
+
+**A session comes from the data, not from a calendar.** A market holiday is a day with no
+bars, so the project needs no holiday table.
+
 ## Replay data
 
-Historical data can include stock bars, ETF bars, option bars when available, news, and
-stored option snapshots when available.
+`--import-history` loads `data/raw/` into the SQLite cache tables. The import is deterministic,
+offline, and idempotent. **The replay process does not call Alpaca.**
 
-The system must cache historical data in SQLite. **The replay process must not call Alpaca
-for the same historical data on each run.**
+| Table | Content | Measured for 2026-02-01 to 2026-08-28 |
+|---|---|---|
+| `bars` | 15Min and 1Day equity bars | 122,444 rows |
+| `news` | Deduplicated news items | 16,088 rows |
+| `option_contracts` | The expired contract catalog | 195,824 rows |
+| `option_bars` | Daily option OHLCV | 151,718 rows |
+
+### The step is one session
+
+Historical option prices are daily closes. More than one cycle inside a session gives the
+strategy no new option data, so `stepsPerSession` is 1 by default.
+
+### Replay cannot see a quote
+
+Alpaca serves no historical option quote and no historical greek. Every replayed candidate
+carries `QuoteQuality.UnknownHistorical`, a null bid, a null ask, and a null delta, and
+`IsTradeableQuote` is false (ADR-014). **The spread rule and the quote-age rule cannot be
+tested offline.** They are live-only.
+
+### A fill is optimistic
+
+`ReplayTradingGateway` fills at the daily close and pays no spread. A live fill would be worse
+by roughly the bid/ask on every trade. **Replay P&L is evidence about the logic. It is not a
+forecast of live P&L.**
+
+An order with no cached price at the replay instant is **rejected**, not filled at a guess.
 
 ## No future-data leak
 
 > At replay time `T`, every expert must see only data that was available at or before `T`.
+
+### The clamp is the clock, not the caller
+
+Every query in `ReplayMarketDataGateway` carries `available_utc <= @asOf`, and `asOf` comes
+from `ReplayClock.UtcNow`. A caller that asks for a range ending next week still sees nothing
+past `T`. A leak cannot be introduced by passing a wider argument.
+
+### Available, not stamped
+
+**A bar is knowable when its interval ends, not when it starts** (ADR-015). The `bars` and
+`option_bars` tables carry `available_utc` for this, and replay filters on that column only.
+
+This is a measured fault, not a theory. The first replay run filtered on the bar timestamp. It
+reported a market probability of 0% to 10% where about 50% was correct, because each cycle read
+the closing premium of the session it was still inside. After the fix the same run reported 62%
+to 71%, and 61 of 63 sessions produced a probability instead of 52.
+
+`BarAvailabilityTests` holds the regression test.
 
 This rule is mandatory. It applies to:
 

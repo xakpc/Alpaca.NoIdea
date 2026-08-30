@@ -94,7 +94,7 @@ Delta is 0.5467 at the strike nearest to spot. This is correct behavior.
 
 **Therefore `OptionCandidateSelector` must reject a contract with delta 0.** A zero delta
 means no usable quote, not a zero probability. See
-[options evaluator](../experts/options-evaluator.md).
+[options evaluator](../trading/risk-guardrails.md).
 
 ## How to rebuild this file
 
@@ -107,6 +107,6 @@ Change `EXP_FROM` and `EXP_TO` when the window moves. The rules stay the same.
 ## Related
 
 - [Strategy parameters](strategy-parameters.md)
-- [Options evaluator](../experts/options-evaluator.md)
+- [Options evaluator](../trading/risk-guardrails.md)
 - [Market data policy](../alpaca/market-data-policy.md)
 - [Competition constraints](../operations/competition-constraints.md)

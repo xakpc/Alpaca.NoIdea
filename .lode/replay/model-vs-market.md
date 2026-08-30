@@ -4,7 +4,7 @@
 > the acquisition scripts live on `phase-3-historical-ml-expert`. This file records the finding and the method,
 > which stand on their own.
 
-The measurement that decides whether the [Historical ML Expert](../experts/historical-ml-expert.md)
+The measurement that decides whether the [Historical ML Expert](../replay/model-vs-market.md)
 has an edge. **It does not.**
 
 Run it with the `market` step of the Trainer. The report is `data/market-comparison.md`.
@@ -111,12 +111,12 @@ record the finding and do not keep the model because it exists.
 
 The model beats ignorance easily (0.149 against 0.247). It does not beat the price. Since the
 system trades against the price, not against ignorance, **the Historical ML Expert must not be
-treated as a source of edge.** See [historical ML expert](../experts/historical-ml-expert.md)
+treated as a source of edge.** See [historical ML expert](../replay/model-vs-market.md)
 for what its role becomes.
 
 ## Related
 
 - [Model training](model-training.md)
 - [Option data availability](option-data-availability.md)
-- [Historical ML Expert](../experts/historical-ml-expert.md)
-- [Forecast combination](../experts/forecast-combination.md)
+- [Historical ML Expert](../replay/model-vs-market.md)
+- [Forecast combination](../war-room/summary.md)

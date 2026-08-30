@@ -32,7 +32,7 @@ The limit that remains is quality, not freshness:
 > The Indicative feed is not the full consolidated OPRA feed. Do not assume that the two are
 > identical.
 
-The [Options Evaluator](../experts/options-evaluator.md) must therefore:
+The [Options Evaluator](../trading/risk-guardrails.md) must therefore:
 
 - Require a **meaningful** pricing difference. Do not trade a very small quote difference.
 - Reject a stale quote.
@@ -64,5 +64,5 @@ submission. This is an honesty requirement, not an optional item.
 ## Related
 
 - [MCP integration](mcp-integration.md)
-- [Options Evaluator](../experts/options-evaluator.md)
+- [Options Evaluator](../trading/risk-guardrails.md)
 - [Main risks](../plans/main-risks.md)

@@ -6,7 +6,7 @@
 **Language:** ASD-STE100-style Simplified Technical English  
 **Primary implementation language:** C# / .NET  
 **Trading environment:** Alpaca paper trading only
-**Architecture revision:** 3 — Updated for the latest Alpaca / LabLab FAQ
+**Architecture revision:** 4 -- The war room replaces the weighted four-expert combiner
 
 ---
 
@@ -17,10 +17,37 @@
 | 1 | 2026-08-29 | Initial architecture used Alpaca CLI. |
 | 2 | 2026-08-29 | Replaced Alpaca CLI with two Alpaca MCP connections: read-only research and deterministic trading. |
 | 3 | 2026-08-29 | Updated scoring semantics, Basic option-data timing, MCP option capabilities, option order types, and deployment rules from the latest FAQ. |
+| 4 | 2026-08-30 | **Replaced the four-expert weighted combiner with the war room.** The Historical ML Expert is excluded (ADR-013). Decisions now come from a proposer plus independent reviewers on three model providers, a debate, a rebuttal, and a private confidence-weighted vote that sets position size. See ADR-019 to ADR-022. |
 
 ---
 
+> ## Revision 4 note: read the lode first
+>
+> This document seeded the project and is **history, not a source of truth**. Where it and
+> `.lode/` disagree, the lode wins; where the lode and the code disagree, the code wins.
+>
+> Two parts of this document have been retired by measurement and by design:
+>
+> **The Historical ML Expert is not a forecaster (ADR-013).** It was trained, measured against
+> the option price on 149,838 questions, and lost in every period including the one it was
+> fitted on. An equal blend with the market was worse than the market alone. It carries no
+> weight and gates nothing. What survives is the ladder-slope market probability, which scores
+> Brier 0.13787 with monotonic calibration.
+>
+> **The weighted combiner is replaced by the war room (ADR-019).** There is no longer a set of
+> experts emitting probabilities that a reliability-weighted average merges. Instead: a
+> proposer searches and proposes, reviewers analyse **independently** so nobody anchors the
+> room, the room debates, the proposer defends or modifies or withdraws, and everyone votes
+> **privately**. Confidence-weighted votes set the position size rather than producing a
+> combined probability.
+>
+> Unchanged, and still the spine of the design: **agents decide what they want to do;
+> deterministic C# decides what they are permitted to do.**
+>
+> See `.lode/experts/war-room.md`.
+
 # 1. Purpose
+
 
 This document defines the architecture vision for an autonomous AI options trading agent.
 
@@ -254,266 +281,79 @@ The system then checks if these sources agree enough to justify an option trade.
 
 ---
 
-# 7. Expert Model
+# 7. The War Room
 
-The system has four experts.
+> Revision 4 replaced the four-expert model with a war room. See ADR-019 to ADR-022 and
+> `.lode/war-room/summary.md`.
 
-Only two experts are LLM agents.
+Decisions come from several agents that argue and then vote. One class, `WarRoomSession`,
+serves both new trades and reviews of open positions: they differ only in the request.
 
-## 7.1 Expert 1: Historical ML Expert
-
-**Technology:** ML.NET logistic regression.
-
-The Historical ML Expert uses numerical market data only.
-
-Example inputs:
-
-- Price return in the last 15 minutes.
-- Price return in the last hour.
-- Price return in the last day.
-- Price return in the last five days.
-- Volume ratio.
-- Recent price volatility.
-- SPY or QQQ movement.
-- Distance from the current price to the strike.
-- Time until option expiration.
-
-Example output:
+## 7.1 The five phases
 
 ```text
-Question:
-Will NVDA finish above $190 at the selected expiration?
-
-Probability: 0.63
+1. PROPOSE            one proposer searches and puts one operation forward, or says NO_TRADE
+2. PRE-VALIDATE       C# checks the proposal can legally exist, before tokens are spent
+3. ANALYSE            reviewers form a first opinion in parallel, seeing nobody else's
+4. DEBATE             every analysis is shared; reviewers challenge each other
+5. REBUT + VOTE       the proposer defends, modifies or withdraws; then everyone votes privately
 ```
 
-The first model is a binary classification model.
+**Independence is the point of phase 3.** Sharing opinions first lets the earliest speaker
+anchor the room, and a room that agrees because it was anchored is pure cost.
 
-The first trainer is:
+**Privacy is the point of phase 5.** `RoomContext` carries no votes field at all, so one
+persona's vote cannot reach another's prompt.
 
-`SdcaLogisticRegressionBinaryTrainer`
+## 7.2 The seats
 
-The model produces a calibrated probability in the range 0 to 1.
+A persona is a class, not a configuration row. Every model-backed seat gets the **same**
+read-only tools and differs by **model**, because a room of one model arguing with itself
+shares that model's blind spots.
 
-The model is a baseline and a numerical expert. The system must not assume that this model is profitable.
+| Seat | Provider | Role |
+|---|---|---|
+| Proposer | Claude Opus 5 | Searches the universe. Carries the full read-only Alpaca toolset. |
+| Skeptic | Claude Sonnet 5 | Assumes the proposal is wrong. |
+| Quant | GPT-5 | Judges the contract: strike, expiration, spread, liquidity, maximum loss. |
+| Market | Grok 4 | Price action, market context, news and scheduled events. |
+| Exposure | **none** | Portfolio arithmetic in plain C#. No tokens, no hallucination. |
 
-If replay tests show that the model has no useful predictive value, the architecture permits replacement of this model.
+The exposure seat proves the persona interface is not an LLM interface. It does not replace
+`RiskGuard`, which enforces the hard limits and cannot be outvoted.
 
-A later model can use LightGBM if there is a clear improvement.
+## 7.3 What a persona can never do
 
-## 7.2 Expert 2: Research Agent
+A persona analyses, discusses and votes. It cannot submit, cancel or close an order, and it
+holds no tool that could. A seat that fails is recorded as a fault, counted as an abstention,
+and **never as an approval**.
 
-**Technology:** LLM through `Microsoft.Extensions.AI.IChatClient`.
+# 8. Votes to Verdict and Size
 
-The Research Agent uses current text and market context.
-
-The Research Agent can choose which read-only Alpaca MCP tools it needs.
-
-Example tools:
-
-- `get_news(symbol, since)`
-- `get_bars(symbol, timeframe, lookback)`
-- `get_quote(symbol)`
-- `get_option_chain(symbol)`
-- `get_reference_bars(symbol, timeframe, lookback)`
-
-The tools come from a read-only Alpaca MCP connection.
-
-The Research Agent can do this:
-
-1. Read recent company news.
-2. Check recent price movement.
-3. Compare the stock with SPY, QQQ, or a related tracked symbol.
-4. Read option chain data if it needs it.
-5. Stop when it has enough information.
-6. Return one structured probability and evidence.
-
-Example output:
-
-```json
-{
-  "probability": 0.59,
-  "confidence": 0.72,
-  "summary": "Positive company news exists, but part of the move is sector-wide.",
-  "evidence": [
-    "Company news item A",
-    "NVDA 1-hour bars",
-    "QQQ 1-hour bars"
-  ]
-}
-```
-
-The Research Agent cannot submit, change, cancel, or close an order.
-
-## 7.3 Expert 3: Critic Agent
-
-**Technology:** LLM through `Microsoft.Extensions.AI.IChatClient`.
-
-The Critic Agent tries to find why the proposed opportunity can be wrong.
-
-It is not a veto.
-
-It produces its own probability.
-
-The Critic Agent can see:
-
-- The target question.
-- The Historical ML Expert result.
-- The Research Agent result.
-- The evidence from the Research Agent.
-- Current read-only market data.
-
-The Critic Agent can also call read-only Alpaca MCP tools.
-
-Example:
-
-```json
-{
-  "probability": 0.46,
-  "confidence": 0.81,
-  "summary": "The positive news is old and the price already moved after publication.",
-  "risks": [
-    "News can already be priced into the stock.",
-    "The sector move explains part of the stock move."
-  ]
-}
-```
-
-The Critic Agent cannot block a trade directly.
-
-Its probability is an input to the combiner.
-
-## 7.4 Expert 4: Options Evaluator
-
-**Technology:** deterministic C#.
-
-The Options Evaluator is not an LLM.
-
-It checks the actual option contract.
-
-It uses data such as:
-
-- Call or put.
-- Strike.
-- Expiration.
-- Bid.
-- Ask.
-- Quote age.
-- Option chain data.
-- Delta, if available.
-- Implied volatility, if available.
-- Spread between bid and ask.
-
-The Options Evaluator answers two questions:
-
-1. What market probability reference can we derive from the option data?
-2. Is this option practical to trade?
-
-The first implementation can use the absolute delta as an approximate probability reference when delta is present.
-
-This is a heuristic.
-
-The document does not claim that delta is an exact probability.
-
-If delta is not available, the system must not invent a value.
-
-The system can skip the contract or use another validated calculation.
-
----
-
-# 8. Expert Combination
-
-The first three experts provide forecasts:
-
-- Historical ML Expert.
-- Research Agent.
-- Critic Agent.
-
-The Options Evaluator provides the external market reference.
-
-Example:
+Deterministic C# in `VoteTally`. No model touches it, because it decides how much money is at
+risk.
 
 ```text
-Historical ML Expert: 63%
-Research Agent:        59%
-Critic Agent:          46%
+net = Σ(+confidence approve, −confidence reject, 0 abstain) ÷ every voter
 
-Combined estimate:     56%
-
-Option market reference: 39%
-
-Difference: +17 percentage points
+net ≤ ApproveThreshold  → rejected
+net >  ApproveThreshold → approved, contracts = max(1, round(desired × net))
 ```
 
-The system can continue only if the difference is large enough.
+Confidence-weighted rather than a head count: a persona that is barely persuaded should not
+cancel one that is certain. Abstentions dilute conviction without opposing. A faulted voter
+divides into the total rather than vanishing, so a half-broken room cannot look unanimous.
 
-The exact trade threshold is a strategy parameter.
+`ApproveThreshold` starts at **0**. Raising it makes the room stricter.
 
-It is not fixed in this architecture document.
+> This is the single number most likely to decide whether the system ever trades. A room that
+> rejects everything produces a four-day run holding cash, which is a loss and not safety.
 
-## 8.1 Expert reliability
+An approved proposal always trades at least one contract: rounding a positive conviction down
+to zero would turn an approval into a rejection wearing the same name.
 
-Each forecast is testable.
-
-After the outcome is known, the system records whether the forecast was good or bad.
-
-The first reliability metric is the **Brier score**.
-
-For one forecast:
-
-```text
-Brier error = (predicted probability - actual outcome)^2
-```
-
-The actual outcome is:
-
-- 1 if the event occurred.
-- 0 if the event did not occur.
-
-Lower Brier score is better.
-
-Example:
-
-```text
-Prediction: 0.80
-Actual: 1
-
-Error: (0.80 - 1)^2 = 0.04
-```
-
-Example:
-
-```text
-Prediction: 0.80
-Actual: 0
-
-Error: (0.80 - 0)^2 = 0.64
-```
-
-## 8.2 Weight update
-
-The first implementation uses a simple reliability weight.
-
-The implementation can use this MVP rule:
-
-```text
-rawWeight = 1 / max(0.05, averageBrierScore)
-weight = rawWeight / sum(allRawWeights)
-```
-
-This rule is simple. It is not a final statistical model.
-
-The system must use a minimum sample count before it changes a weight.
-
-Before that count exists, the system uses equal weights.
-
-The minimum sample count is a configuration value.
-
-Historical replay is the main source for initial reliability values.
-
-A later version can replace this rule with a better calibration or stacking model.
-
----
+**The vote is not permission to trade.** It only lets the proposal reach `RiskGuard`, which
+validates again immediately before submission.
 
 # 9. Tracked Symbols
 
@@ -661,90 +501,32 @@ The rule must include:
 - A supported call or put type.
 - No obvious bad or missing data.
 
-## 11.4 Step 4: Historical ML Expert
+## 11.4 Step 4: Cheap filter
 
-The ML model evaluates the candidate event.
+The filter decides what is **worth an agent call**. Whether a trade could legally exist is a
+different question, answered by `ProposalPreValidator` inside the room.
 
-For a call:
+For each tracked symbol: read the spot price, require fresh news when the policy asks for it,
+pull the call and put chains inside the policy expiration window and a strike band around
+spot, compute the ladder market probability, drop anything already held, and keep the cheapest
+candidates that fall inside the tradeable probability band.
 
-> Probability that the stock price is above the strike at expiration.
+The filter **cannot** key on a model-versus-market gap. That gap was measured and tracks the
+model's own error, so filtering on it would select the candidates the model understands least
+(ADR-013).
 
-For a put:
+## 11.5 Step 5: The war room
 
-> Probability that the stock price is below the strike at expiration.
+The proposer receives the filtered candidates, the portfolio, the remaining capacity and the
+allowed actions. It puts one operation forward or answers `NO_TRADE`.
 
-The model can train one above-strike probability and derive the complementary probability for a below-strike event when this is valid.
+If it proposes something, C# pre-validates the structure, then the reviewers analyse
+independently, debate, hear the proposer's rebuttal, and vote privately. A modified proposal
+re-enters pre-validation.
 
-## 11.5 Step 5: Cheap filter
+See section 7.
 
-The system compares:
-
-- The ML probability.
-- The approximate market reference from current option data.
-
-If the difference is too small, the system skips the candidate.
-
-This step prevents unnecessary LLM calls.
-
-The filter threshold is a strategy parameter.
-
-## 11.6 Step 6: Research Agent
-
-The Research Agent receives the candidate question.
-
-Example:
-
-```text
-NVDA is $180.
-The option strike is $185.
-The option expires in two trading days.
-
-Estimate the probability that NVDA is above $185 at expiration.
-Use the available tools if required.
-Return structured JSON.
-```
-
-The agent decides which read-only tools to call.
-
-## 11.7 Step 7: Critic Agent
-
-The Critic Agent receives:
-
-- The question.
-- Historical ML result.
-- Research Agent result.
-- Research evidence.
-
-The Critic Agent tries to find missing information or bad reasoning.
-
-The Critic returns its own probability.
-
-It does not return only `BLOCK` or `ALLOW`.
-
-## 11.8 Step 8: Combine forecasts
-
-The system combines the three expert probabilities.
-
-The system uses reliability weights.
-
-If there is not enough reliability history, it uses equal weights.
-
-## 11.9 Step 9: Options Evaluator
-
-The Options Evaluator checks:
-
-- Current quote.
-- Bid and ask spread.
-- Quote age.
-- Market probability proxy.
-- Option type.
-- Strike.
-- Expiration.
-- Data quality.
-
-The evaluator can reject a contract because the contract itself is poor even when the price forecast is good.
-
-## 11.10 Step 10: Hard risk guardrails
+## 11.6 Step 6: Hard risk guardrails
 
 Hard risk guardrails are C# rules.
 
@@ -776,7 +558,7 @@ Cycle interval: 30 minutes
 
 Risk per trade, take-profit level, stop level, minimum edge, and expiration rules require replay tests before the official run.
 
-## 11.11 Step 11: Submit order
+## 11.7 Step 7: Submit order
 
 Only deterministic C# code can submit an order.
 
@@ -799,7 +581,7 @@ The system must save this ID before or with the order attempt.
 
 This protects the system from duplicate orders after an uncertain retry.
 
-## 11.12 Step 12: Persist result
+## 11.8 Step 8: Persist result
 
 The system records:
 
@@ -986,7 +768,13 @@ A larger agent framework does not add enough value for this project.
 
 ## 14.3 MCP tool policy
 
-The system uses two separate Alpaca MCP connections.
+> **Superseded by ADR-001.** There is **one** MCP connection and it is read-only.
+> Deterministic C# reaches Alpaca through the typed `Alpaca.Markets` SDK instead, so the
+> trading connection was deleted and has no consumer. The isolation is therefore stronger
+> than described below: no MCP server this host runs holds an order tool at all, so there
+> is no toolset split to misconfigure. The read-only half of this section still applies.
+
+The system originally used two separate Alpaca MCP connections.
 
 ### Read-only research MCP connection
 
@@ -1152,7 +940,7 @@ var approvedTools = (await readOnlyMcp.ListToolsAsync())
 
 var chatOptions = new ChatOptions
 {
-    Tools = [.. approvedTools]
+    Tools = [experts/research-agent.md approvedTools]
 };
 ```
 
@@ -1215,9 +1003,9 @@ Example:
 ```csharp
 public interface IMarketDataGateway
 {
-    Task<IReadOnlyList<Bar>> GetBarsAsync(...);
-    Task<IReadOnlyList<NewsItem>> GetNewsAsync(...);
-    Task<OptionChain> GetOptionChainAsync(...);
+    Task<IReadOnlyList<Bar>> GetBarsAsync(experts/historical-ml-expert.md.);
+    Task<IReadOnlyList<NewsItem>> GetNewsAsync(experts/critic-agent.md.);
+    Task<OptionChain> GetOptionChainAsync(experts/options-evaluator.md.);
 }
 ```
 
@@ -1885,7 +1673,7 @@ Reasons:
 - One local MCP connection can stay open for many calls.
 - The application does not need to start a CLI process for each market-data operation.
 - Server toolsets and client filtering can keep the LLM read-only.
-- Deterministic C# can use a separate trading MCP connection.
+- Deterministic C# uses the typed `Alpaca.Markets` SDK, not a trading MCP connection (ADR-001).
 
 The CLI remains a valid fallback if a required Alpaca MCP capability is missing or unstable.
 
@@ -2003,7 +1791,7 @@ Risk check:     PASS
 Decision:       ORDER SUBMITTED
 
 OPEN POSITIONS
-...
+llm/output-contracts.md.
 ```
 
 The TUI must not be required for system operation.

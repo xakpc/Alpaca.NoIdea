@@ -43,7 +43,7 @@ Short definitions of the domain language of this project. Keep the lines short.
 - **MCP** — Model Context Protocol. The protocol that gives a tool catalog to a model. The
   Alpaca MCP server exposes the Alpaca APIs as MCP tools.
 - **Expert** — One independent source of an opinion. The system has four experts. See
-  [experts](experts/summary.md).
+  [experts](war-room/summary.md).
 - **Forecast** — One probability from one expert for one candidate event.
 - **Market probability reference** — A probability derived from current option market data.
   The first implementation uses the absolute delta as a proxy. Delta is not an exact
@@ -51,7 +51,7 @@ Short definitions of the domain language of this project. Keep the lines short.
 - **Brier score** — The reliability metric. `error = (predicted - actual)^2`. The actual
   value is 1 or 0. A lower score is better.
 - **Reliability weight** — The influence of one expert in the combination. It comes from
-  the average Brier score. See [forecast combination](experts/forecast-combination.md).
+  the average Brier score. See [forecast combination](war-room/summary.md).
 - **Candidate** — One option contract and one price question under evaluation.
 - **Evaluation run** — One row in the `evaluation_runs` table. It is one evaluated option
   event.

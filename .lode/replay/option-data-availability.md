@@ -61,6 +61,26 @@ model-versus-market gap turned out to track model error rather than opportunity.
 or missing quote. None of those checks can run against history. Quote-quality rules are
 testable in live paper trading only.
 
+## The news corpus needed a backfill
+
+`scripts/acquire-history.sh` on branch `phase-3-historical-ml-expert` requests news with
+`--limit 50` and **does not follow `next_page_token`**. It captured one page for each symbol,
+which is between one and eight days of headlines. `SPY` held two days.
+
+The LLM agents read news text, and after ADR-013 that text is the only remaining alpha channel.
+One page is not enough to replay them.
+
+`scripts/acquire-news.sh` on `master` fixes this. It follows the page token and covers
+**2026-02-01 to 2026-08-28**. The result is **25,187 items across the 13 symbols**, which
+deduplicate to 16,088 rows in SQLite.
+
+The script calls the REST API with `curl` rather than the CLI, because the CLI binary is
+git-ignored and absent from a fresh clone. ADR-001 scopes offline acquisition to the
+non-trading path, and no application code calls this script.
+
+> **A `grep` for `next_page_token` is not enough to prove a script paginates.** The bars fetch
+> in the same file loops correctly. Only the news fetch did not.
+
 ## The account also refuses recent SIP bars
 
 A request with an end date at or after the current session fails:
@@ -78,4 +98,4 @@ So every acquisition script must stop at the last completed session. `DATA_END` 
 - [Model against the market](model-vs-market.md)
 - [Model training](model-training.md)
 - [Market data policy](../alpaca/market-data-policy.md)
-- [Options evaluator](../experts/options-evaluator.md)
+- [Options evaluator](../trading/risk-guardrails.md)

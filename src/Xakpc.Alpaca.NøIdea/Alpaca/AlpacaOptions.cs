@@ -39,6 +39,17 @@ public sealed record AlpacaOptions(string ApiKey, string SecretKey)
         return new AlpacaOptions(Get("ALPACA_API_KEY"), Get("ALPACA_SECRET_KEY"));
     }
 
+    /// <summary>
+    /// One value from the environment, falling back to the git-ignored <c>.env</c> file.
+    /// </summary>
+    /// <remarks>
+    /// Secrets belong in <c>.env</c>, never in <c>launchSettings.json</c>, which is tracked.
+    /// </remarks>
+    public static string? Secret(string name) =>
+        Environment.GetEnvironmentVariable(name) is { Length: > 0 } fromEnvironment
+            ? fromEnvironment
+            : ReadEnvFile(null).GetValueOrDefault(name);
+
     private static Dictionary<string, string> ReadEnvFile(string? path)
     {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);

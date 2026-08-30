@@ -9,7 +9,7 @@ flowchart TD
     Root --> T[terminology.md]
     Root --> P[practices.md]
     Root --> AR[architecture/]
-    Root --> EX[experts/]
+    Root --> WR[war-room/]
     Root --> TR[trading/]
     Root --> AL[alpaca/]
     Root --> ST[storage/]
@@ -40,7 +40,7 @@ truth.
 3. The **ADRs**, for decisions taken deliberately.
 4. The **AVD**, as history only.
 
-The AVD still describes a four-expert system with a weighted Historical ML Expert and a cheap
+The AVD described a four-expert system with a weighted Historical ML Expert and a cheap
 filter keyed on a model-versus-market gap. Measurement retired both (ADR-013). Where the AVD
 and this lode disagree, **this lode wins**; where this lode and the code disagree, the code
 wins.
@@ -54,18 +54,13 @@ wins.
 | [component-model.md](architecture/component-model.md) | Internal components and the three replacement seams. |
 | [application-structure.md](architecture/application-structure.md) | Current and target folder layout. |
 | [technology-stack.md](architecture/technology-stack.md) | The approved and rejected technology. |
-| [decisions.md](architecture/decisions.md) | ADR-001 to ADR-013. ADR-013 excludes the ML expert from forecasting. |
+| [decisions.md](architecture/decisions.md) | ADR-001 to ADR-022. ADR-013 excludes the ML expert. ADR-014 owns the gateway records. ADR-015 is the bar-availability rule. ADR-016 makes the agent direct the strategy. ADR-017 gives it read-only research tools and web search. ADR-018 superseded. ADR-019 is the war room, ADR-020 personas as classes, ADR-021 votes size the position, ADR-022 cost reporting. |
 
-## experts/
+## war-room/
 
 | File | Content |
 |---|---|
-| [summary.md](experts/summary.md) | The four experts and the hypothesis under test. |
-| [historical-ml-expert.md](experts/historical-ml-expert.md) | Expert 1. ML.NET logistic regression. |
-| [research-agent.md](experts/research-agent.md) | Expert 2. LLM research with read-only tools. |
-| [critic-agent.md](experts/critic-agent.md) | Expert 3. LLM challenge. Not a veto. |
-| [options-evaluator.md](experts/options-evaluator.md) | Expert 4. Deterministic C#. Market reference and quote quality. |
-| [forecast-combination.md](experts/forecast-combination.md) | Brier score, reliability weights, the edge test. |
+| [summary.md](war-room/summary.md) | **The decision process.** Five phases, the seats, votes to size, cost. |
 
 ## trading/
 
@@ -76,8 +71,7 @@ wins.
 | [live-cycle.md](trading/live-cycle.md) | The twelve steps and the decision sequence. |
 | [position-lifecycle.md](trading/position-lifecycle.md) | States, exit policy, LLM re-check triggers. |
 | [risk-guardrails.md](trading/risk-guardrails.md) | Paper mode, write isolation, fail closed, idempotency. |
-| [strategy-parameters.md](trading/strategy-parameters.md) | Decided values and the TBD list. |
-| [tui.md](trading/tui.md) | The read-only Spectre.Console monitor view. |
+| [strategy-parameters.md](trading/strategy-parameters.md) | The agent-owned policy defaults and the hard bounds it cannot cross. |
 
 ## alpaca/
 
@@ -94,16 +88,16 @@ wins.
 | File | Content |
 |---|---|
 | [summary.md](storage/summary.md) | The two roles of the database, the Dapper conventions, and money precision. |
-| [schema.md](storage/schema.md) | The full SQL schema and the ER diagram. |
+| [schema.md](storage/schema.md) | The full SQL schema, the cache tables, and the `available_utc` no-leak column. |
 
 ## llm/
 
 | File | Content |
 |---|---|
-| [summary.md](llm/summary.md) | The stack and the trust rule. |
+| [summary.md](llm/summary.md) | The stack, the trust rule, structured output, and cost. |
 | [llm-stack.md](llm/llm-stack.md) | `Microsoft.Extensions.AI`, provider choice, cost control. |
 | [tool-policy.md](llm/tool-policy.md) | Allowed and forbidden MCP tools. Defence in depth. |
-| [output-contracts.md](llm/output-contracts.md) | The two records and the validation rules. |
+
 
 ## replay/
 
@@ -150,8 +144,8 @@ wins.
   [architecture summary](architecture/summary.md).
 - **Write trading code:** [practices](practices.md) →
   [live cycle](trading/live-cycle.md) → [risk guardrails](trading/risk-guardrails.md).
-- **Write agent code:** [tool policy](llm/tool-policy.md) →
-  [output contracts](llm/output-contracts.md) → [research agent](experts/research-agent.md).
+- **Write agent code:** [war room](war-room/summary.md) → [tool policy](llm/tool-policy.md) →
+  [llm summary](llm/summary.md).
 - **Run it locally:** [local development](operations/local-development.md) →
   [MCP run modes](alpaca/mcp-run-modes.md).
 - **Write Alpaca code:** [mcp integration](alpaca/mcp-integration.md) →
