@@ -1,47 +1,62 @@
 # Local Development
 
-How to run the two Alpaca MCP servers on the developer workstation.
+How to run the Alpaca MCP server on the developer workstation.
 
 The human-facing version of this file is `DEVELOPMENT.md` in the repository root. Keep the
 two files in agreement.
 
 ## The development loop
 
-The MCP servers stay up between debug runs. The .NET host starts and stops many times, but
-the servers keep running. This is different from the deployed mode, where the host owns the
-server processes. See [MCP integration](../alpaca/mcp-integration.md).
+The MCP server stays up between debug runs. The .NET host starts and stops many times, but
+the server keeps running. This is different from the deployed mode, where the host owns the
+server process. See [MCP integration](../alpaca/mcp-integration.md).
+
+**There is one server, and it is read-only.** Deterministic C# reaches Alpaca through the
+typed `Alpaca.Markets` SDK, so nothing consumed the trading server and it was deleted
+(ADR-001, ADR-012). No MCP server this host runs holds an order tool at all.
 
 ```mermaid
 flowchart LR
     VS[".NET host on the workstation"] -->|streamable-http 8100| RO["noidea-mcp-readonly"]
-    VS -->|streamable-http 8101| TR["noidea-mcp-trading"]
     HTTP["alpaca-mcp.http"] -.manual test.-> RO
-    HTTP -.manual test.-> TR
     RO -->|HTTPS| A["Alpaca paper account"]
-    TR -->|HTTPS| A
+    VS -->|"Alpaca.Markets SDK, HTTPS"| A
 ```
 
 ## Start
 
 ```bash
-cp .env.example .env          # then add the development paper account keys
+cp .env.example .env          # then add the Alpaca and model keys
 docker compose -f compose.dev.yaml up -d --build
-docker compose -f compose.dev.yaml ps       # both must report healthy
+docker compose -f compose.dev.yaml ps       # must report healthy
 ```
 
 **The `-f compose.dev.yaml` flag is necessary.** Docker Compose finds only `compose.yaml`,
 `compose.yml`, `docker-compose.yaml`, and `docker-compose.yml` by itself. Without the flag
 the command stops with `no configuration file provided: not found`.
 
-`restart: unless-stopped` starts the servers again after a reboot of the workstation.
+`restart: unless-stopped` starts the server again after a reboot of the workstation.
 
 | Service | Port | `ALPACA_TOOLSETS` |
 |---|---|---|
 | `noidea-mcp-readonly` | `127.0.0.1:8100` | `assets,stock-data,options-data,news,corporate-actions` |
-| `noidea-mcp-trading` | `127.0.0.1:8101` | `account,trading,assets` |
 
-**The servers bind to `127.0.0.1` only.** They have no authentication, and the trading
-server can place orders. Never publish these ports to `0.0.0.0`.
+**The server binds to `127.0.0.1` only** and has no authentication. Never publish the port to
+`0.0.0.0`.
+
+## Keys
+
+`.env` holds the Alpaca paper keys and **three** model keys. The room seats its four models
+on three providers on purpose (ADR-020), so one key is not enough:
+
+| Variable | Seats |
+|---|---|
+| `ANTHROPIC_API_KEY` | `proposer` (Opus 5), `skeptic` (Sonnet 5) |
+| `OPENAI_API_KEY` | `quant` (GPT-5.6-terra) |
+| `XAI_API_KEY` | `market` (Grok 4.6) |
+
+`ChatClientFactory.MissingKeys` fails startup and names what is missing. A seat without a key
+is a dead seat, so the failure belongs before the open. `--agent stub` needs none of them.
 
 ## The endpoint
 
@@ -60,7 +75,7 @@ curl -s -D - -o /dev/null -X POST http://127.0.0.1:8100/mcp \
 
 ## Manual tests
 
-`alpaca-mcp.http` in the repository root holds the full sequence for both servers:
+`alpaca-mcp.http` in the repository root holds the full sequence for the read-only server:
 `initialize`, `notifications/initialized`, `tools/list`, and example `tools/call` requests.
 Visual Studio Code reads the session id from the response by itself. Visual Studio cannot
 chain responses, so paste the `mcp-session-id` value into the manual variables at the top.
@@ -79,9 +94,9 @@ The build context for every image is the **repository root**, because the images
 
 ## Credentials
 
-`.env` holds `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, and `ALPACA_PAPER_TRADE=true`. The file
-is git-ignored. Use the **development** paper account here, not the official competition
-account. See [operations summary](summary.md).
+`.env` is git-ignored and holds `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`,
+`ALPACA_PAPER_TRADE=true`, and the three model keys above. Use the **development** paper
+account here, not the official competition account. See [operations summary](summary.md).
 
 ## Related
 

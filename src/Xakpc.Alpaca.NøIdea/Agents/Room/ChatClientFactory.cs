@@ -81,11 +81,11 @@ public sealed class ChatClientFactory : IDisposable
             IChatClient created = provider switch
             {
                 ModelProvider.Anthropic =>
-                    new Anthropic.SDK.AnthropicClient(key).Messages,
+                    new Anthropic.AnthropicClient { ApiKey = key }.AsIChatClient(),
 
                 ModelProvider.OpenAi =>
                     new OpenAIClient(new ApiKeyCredential(key))
-                        .GetChatClient("gpt-5")
+                        .GetChatClient("gpt-5.6-terra")
                         .AsIChatClient(),
 
                 // Same protocol, different host. The model id still comes from the persona
@@ -94,7 +94,7 @@ public sealed class ChatClientFactory : IDisposable
                     new OpenAIClient(
                             new ApiKeyCredential(key),
                             new OpenAIClientOptions { Endpoint = GrokEndpoint })
-                        .GetChatClient("grok-4")
+                        .GetChatClient("grok-4.6")
                         .AsIChatClient(),
 
                 _ => throw new ArgumentOutOfRangeException(nameof(provider)),

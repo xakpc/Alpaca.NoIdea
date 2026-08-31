@@ -16,7 +16,7 @@ public sealed class MarketPersona(
 
     public override ModelProvider Provider => ModelProvider.Grok;
 
-    protected override string Model => "grok-4";
+    protected override string Model => "grok-4.6";
 
     protected override string RolePrompt =>
         """

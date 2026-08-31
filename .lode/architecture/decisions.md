@@ -446,8 +446,8 @@ on the first trading morning.
 |---|---|---|
 | `proposer` | Claude Opus 5 | Searches and proposes. Carries the full Alpaca toolset. |
 | `skeptic` | Claude Sonnet 5 | Assumes the proposal is wrong. |
-| `quant` | GPT-5 | Judges the contract and the numbers. |
-| `market` | Grok 4 | Price action, context, news and events. |
+| `quant` | GPT-5.6-terra | Judges the contract and the numbers. |
+| `market` | Grok 4.6 | Price action, context, news and events. |
 | `exposure` | none | Portfolio arithmetic in C#. Free. |
 
 ## ADR-021: Votes size the position above a threshold

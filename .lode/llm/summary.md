@@ -7,7 +7,7 @@ Microsoft.Extensions.AI
   IChatClient                    one interface, three providers
   FunctionInvokingChatClient     runs the tool loop
   ChatResponse.Usage             token counts, for the cost ledger
-Anthropic.SDK                    Claude
+Anthropic                        Claude, through `AsIChatClient()`
 Microsoft.Extensions.AI.OpenAI   GPT, and Grok through an endpoint override
 ModelContextProtocol             McpClient, read-only Alpaca tools
 ```
@@ -15,6 +15,15 @@ ModelContextProtocol             McpClient, read-only Alpaca tools
 `ChatClientFactory` resolves a provider to an `IChatClient` and caches one client per
 provider. Every persona reaches its model the same way, which is what makes a mixed room
 cheap to build (ADR-020).
+
+## Sampling parameters
+
+> **A Claude seat sends no temperature.**
+
+Claude Opus 5 and Sonnet 5 removed the sampling parameters. A request that carries
+`temperature` is rejected with 400, and a rejected call becomes an abstention, so the
+proposer and the skeptic set `SamplingTemperature` to null. `LlmPersona.SamplingTemperature`
+defaults to `Temperature`, so the Grok seat and the GPT seat keep theirs.
 
 ## The trust rule
 

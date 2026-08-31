@@ -19,6 +19,9 @@ public sealed class SkepticPersona(
 
     protected override string Model => "claude-sonnet-5";
 
+    /// <summary>Claude Sonnet 5 takes no temperature. Sending one is a 400.</summary>
+    protected override float? SamplingTemperature => null;
+
     protected override string RolePrompt =>
         """
         You are the SKEPTIC. Assume the proposal is wrong and find the strongest reason to

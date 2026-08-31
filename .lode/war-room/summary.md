@@ -45,8 +45,8 @@ that model's blind spots.
 |---|---|---|
 | `proposer` | Claude Opus 5 | Searches the allowed universe. Carries the full Alpaca toolset. Can answer NO_TRADE. |
 | `skeptic` | Claude Sonnet 5 | Assumes the proposal is wrong and looks for the strongest reason to reject it. |
-| `quant` | GPT-5 | Judges the contract: strike, expiration, spread, liquidity, maximum loss. |
-| `market` | Grok 4 | Price action, market context, news and scheduled events. |
+| `quant` | GPT-5.6-terra | Judges the contract: strike, expiration, spread, liquidity, maximum loss. |
+| `market` | Grok 4.6 | Price action, market context, news and scheduled events. |
 | `exposure` | **none** | Portfolio arithmetic in plain C#. Costs nothing and cannot hallucinate. |
 
 `ExposureRiskPersona` is the proof that `IPersona` is not an LLM interface. It does not
@@ -88,6 +88,30 @@ US dollars.
 > **Token counts are fact. Dollars are an estimate and a floor.** The rate table is hardcoded
 > and goes stale, an unpriced model is excluded from the total and named, and hosted web
 > search normally bills per call outside token counts.
+
+Rate state, checked 2026-08-31:
+
+| Model | Seat | Rate |
+|---|---|---|
+| `claude-opus-5` | proposer | **Unverified.** Carried over, not re-checked. |
+| `claude-sonnet-5` | skeptic | 2.00 / 10.00, cache read 0.20. **Was wrong**: the table held 3.00 / 15.00 and over-reported by 50%. |
+| `gpt-5.6-terra` | quant | 2.00 / 12.00, cache read 0.20. Output is 6x input, a steeper ratio than the others. |
+| `grok-4.6` | market | 2.00 / 6.00, cache read 0.50, standard tier. |
+
+Three known undercounts, all silent:
+
+- **A cache write** bills above fresh input (2.50 or 4.00 against 2.00 on Sonnet 5, by TTL).
+  `CachedInputPerMillion` is the cache **read** rate and the usage figures do not separate
+  the two.
+- **xAI doubles every rate above 200K input tokens** in one call. The table holds the cheaper
+  tier. Tiering properly has to happen when a call is recorded: by the time the ledger totals
+  a persona the per-call context length is gone, and a cumulative total crossing 200K does
+  not mean any single call did.
+- **Hosted web search** bills per call, outside tokens entirely.
+
+> Finding the sonnet-5 rate 50% wrong is the reason `claude-opus-5` is now marked unverified
+> rather than trusted. Opus is the proposer, much the priciest seat, so an error there moves
+> the total more than any other.
 
 One proposal costs roughly: 1 proposal + 3 analyses + (3 × rounds) discussion + 1 rebuttal +
 3 votes. With two rounds that is about **14 model calls**, before the tool calls behind them.

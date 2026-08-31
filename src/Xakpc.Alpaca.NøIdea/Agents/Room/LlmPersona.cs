@@ -43,9 +43,46 @@ public abstract class LlmPersona(
     /// <summary>Who this persona is and what it looks for.</summary>
     protected abstract string RolePrompt { get; }
 
+    /// <summary>
+    /// The role, followed by the house writing style. <b>Every prompt starts with this.</b>
+    /// </summary>
+    /// <remarks>
+    /// Prompts interpolate <c>Preamble</c> rather than <see cref="RolePrompt"/> so a new
+    /// phase, or a new seat, cannot quietly opt out of the language rule.
+    /// </remarks>
+    protected string Preamble => $"{RolePrompt}\n\n{LanguageRule}";
+
+    /// <summary>
+    /// The house writing style: ASD-STE100, the same rule the project's documents follow.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// One line on purpose. A model that knows the standard does not need it restated, and
+    /// every line spent on style competes for attention with the analysis the seat is there
+    /// to do.
+    /// </para>
+    /// <para>
+    /// It earns its place because what a seat writes is not decoration: the dashboard
+    /// transcript shows it and <c>forecasts.reasoning</c> stores it, so a run is explained
+    /// afterwards by these exact sentences.
+    /// </para>
+    /// </remarks>
+    protected const string LanguageRule =
+        "Write every text field you return in ASD-STE100 Simplified Technical English.";
+
     protected abstract string Model { get; }
 
     protected virtual float Temperature => 0.4f;
+
+    /// <summary>
+    /// The temperature actually sent, or null when the model refuses one.
+    /// </summary>
+    /// <remarks>
+    /// Claude Opus 5 and Sonnet 5 removed the sampling parameters. A request that carries
+    /// <c>temperature</c> is rejected with 400, and a rejected call is an abstention, so a
+    /// seat on those models must leave it unset rather than send a value the API ignores.
+    /// </remarks>
+    protected virtual float? SamplingTemperature => Temperature;
 
     protected virtual int MaxOutputTokens => 3000;
 
@@ -199,7 +236,7 @@ public abstract class LlmPersona(
                 new ChatOptions
                 {
                     ModelId = Model,
-                    Temperature = Temperature,
+                    Temperature = SamplingTemperature,
                     MaxOutputTokens = maxOutputTokens,
                     Tools = [.. tools],
                     ToolMode = toolMode,
@@ -281,7 +318,7 @@ public abstract class LlmPersona(
 
     private string BuildPrompt(Phase phase) =>
         $"""
-        {RolePrompt}
+        {Preamble}
 
         THE WAR ROOM
         An autonomous options trading system is deciding what to do on an Alpaca PAPER

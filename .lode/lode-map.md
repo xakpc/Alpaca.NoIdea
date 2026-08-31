@@ -94,7 +94,7 @@ wins.
 
 | File | Content |
 |---|---|
-| [summary.md](llm/summary.md) | The stack, the trust rule, structured output, and cost. |
+| [summary.md](llm/summary.md) | The stack, sampling rules, the trust rule, structured output, and cost. |
 | [llm-stack.md](llm/llm-stack.md) | `Microsoft.Extensions.AI`, provider choice, cost control. |
 | [tool-policy.md](llm/tool-policy.md) | Allowed and forbidden MCP tools. Defence in depth. |
 

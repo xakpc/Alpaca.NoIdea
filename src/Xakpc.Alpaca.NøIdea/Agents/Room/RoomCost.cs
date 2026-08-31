@@ -3,9 +3,22 @@ using Microsoft.Extensions.AI;
 namespace Xakpc.Alpaca.NøIdea.Agents.Room;
 
 /// <summary>What one model charged for, per million tokens, in USD.</summary>
+/// <remarks>
+/// One flat rate per token kind. Two real billing features do not fit, and both make this an
+/// under-report rather than an over-report:
+/// <list type="bullet">
+/// <item><b>Cache writes.</b> <see cref="CachedInputPerMillion"/> is the cache <i>read</i>
+/// rate. Anthropic bills a cache <i>write</i> above fresh input (2.50 or 4.00 against 2.00
+/// per million on Sonnet 5, by TTL), and the usage figures do not separate the two.</item>
+/// <item><b>Context tiers.</b> xAI doubles every rate above 200K input tokens in a single
+/// call. Tiering correctly would have to happen when a call is recorded, because by the time
+/// the ledger totals a persona the per-call context length is gone, and a cumulative total
+/// crossing 200K does not mean any one call did.</item>
+/// </list>
+/// </remarks>
 public sealed record ModelRate(decimal InputPerMillion, decimal OutputPerMillion)
 {
-    /// <summary>Cached input is normally billed well below fresh input.</summary>
+    /// <summary>The cache <b>read</b> rate. Normally well below fresh input.</summary>
     public decimal CachedInputPerMillion { get; init; } = 0m;
 }
 
@@ -29,8 +42,27 @@ public static class ModelPricing
     private static readonly Dictionary<string, ModelRate> Rates =
         new(StringComparer.OrdinalIgnoreCase)
         {
+            // ---- seated today ----
+
+            // UNVERIFIED. Carried over from an earlier price list and not re-checked. The
+            // sonnet-5 entry below it was found to be wrong by 50%, so treat this one as
+            // suspect until someone reads it off the price page.
             ["claude-opus-5"] = new(15.00m, 75.00m) { CachedInputPerMillion = 1.50m },
-            ["claude-sonnet-5"] = new(3.00m, 15.00m) { CachedInputPerMillion = 0.30m },
+
+            // Checked 2026-08-31. Was 3.00/15.00 here, which over-reported by 50%.
+            ["claude-sonnet-5"] = new(2.00m, 10.00m) { CachedInputPerMillion = 0.20m },
+
+            // Checked 2026-08-31, standard context tier. Above 200K input tokens xAI
+            // charges double (4.00 / 1.00 / 12.00) and this reports the cheaper tier, so a
+            // very long sitting is under-reported rather than over-reported.
+            ["grok-4.6"] = new(2.00m, 6.00m) { CachedInputPerMillion = 0.50m },
+
+            // Checked 2026-08-31. Note the unusual shape: input is cheap and output is dear,
+            // 6x rather than the 3-5x the others charge. The quant seat is the one asked for
+            // numbers and structured reasoning, so its output is what to watch.
+            ["gpt-5.6-terra"] = new(2.00m, 12.00m) { CachedInputPerMillion = 0.20m },
+
+            // ---- not seated. Kept for a quick switch back, and equally stale. ----
             ["claude-haiku-4-5-20251001"] = new(1.00m, 5.00m) { CachedInputPerMillion = 0.10m },
             ["gpt-5"] = new(1.25m, 10.00m) { CachedInputPerMillion = 0.125m },
             ["grok-4"] = new(3.00m, 15.00m),

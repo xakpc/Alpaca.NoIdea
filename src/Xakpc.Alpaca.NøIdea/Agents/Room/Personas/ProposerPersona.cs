@@ -35,6 +35,9 @@ public sealed class ProposerPersona(
 
     protected override string Model => "claude-opus-5";
 
+    /// <summary>Claude Opus 5 takes no temperature. Sending one is a 400.</summary>
+    protected override float? SamplingTemperature => null;
+
     protected override int MaxOutputTokens => 4000;
 
     protected override string RolePrompt =>
@@ -124,7 +127,7 @@ public sealed class ProposerPersona(
 
         var fault = await SafeCallAsync(
             $"""
-            {RolePrompt}
+            {Preamble}
 
             THE ROOM HAS ANSWERED
             Your proposal has been analysed independently and then debated. Read what was
@@ -255,7 +258,7 @@ public sealed class ProposerPersona(
                 new ChatOptions
                 {
                     ModelId = Model,
-                    Temperature = Temperature,
+                    Temperature = SamplingTemperature,
                     MaxOutputTokens = maxOutputTokens,
                     Tools = [.. tools],
                     ToolMode = ChatToolMode.Auto,
@@ -276,7 +279,7 @@ public sealed class ProposerPersona(
 
     private string SearchPrompt(IReadOnlyList<StrategyActionKind> allowed) =>
         $"""
-        {RolePrompt}
+        {Preamble}
 
         YOUR TASK
         Find the single best trade available right now among the candidates you are given,
@@ -304,7 +307,7 @@ public sealed class ProposerPersona(
 
     private string ReviewPrompt(IReadOnlyList<StrategyActionKind> allowed) =>
         $"""
-        {RolePrompt}
+        {Preamble}
 
         YOUR TASK
         An open position needs judging. Decide what to do with it and put that forward for

@@ -17,7 +17,7 @@ public sealed class QuantPersona(
 
     public override ModelProvider Provider => ModelProvider.OpenAi;
 
-    protected override string Model => "gpt-5";
+    protected override string Model => "gpt-5.6-terra";
 
     protected override float Temperature => 0.2f;
 

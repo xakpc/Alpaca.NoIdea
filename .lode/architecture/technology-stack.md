@@ -6,7 +6,7 @@
 | Language | C# | The main project language. |
 | TUI | Spectre.Console | Small terminal UI. No web stack is required. |
 | AI abstraction | `Microsoft.Extensions.AI` | Gives `IChatClient`, AI tools, and tool invocation. |
-| LLM provider | `Anthropic.SDK` (the community C# SDK) | Exposes `IChatClient` through `.Messages.AsBuilder()`. **This is not the official `Anthropic` package,** and its API surface differs from it. |
+| LLM provider | `Anthropic` (the official C# SDK) | Gives `IChatClient` through `AsIChatClient()`. It also maps `HostedWebSearchTool` to the Anthropic `web_search` server tool. |
 | Agent tool loop | `FunctionInvokingChatClient` | Completes the tool-call loop for the model. |
 | MCP client | C# MCP SDK (`ModelContextProtocol`) | Connects the host to Alpaca MCP. Gives MCP tools to `IChatClient`. |
 | Alpaca access (deterministic C#) | `Alpaca.Markets` NuGet | Typed REST access for account, orders, market data, and option chains. Returns `decimal` money, so no parsing layer is needed (ADR-001). |
@@ -24,16 +24,21 @@
 
 ```xml
 <PackageReference Include="Alpaca.Markets" Version="7.2.2" />
-<PackageReference Include="Anthropic.SDK" Version="5.10.0" />
+<PackageReference Include="Anthropic" Version="12.44.0" />
 <PackageReference Include="Dapper" Version="2.1.79" />
 <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
+<PackageReference Include="Microsoft.Extensions.AI" Version="10.9.0" />
+<PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.9.0" />
 <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
-<PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.11" />
 <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.24.1-preview.1" />
+<PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+<PackageReference Include="Spectre.Console" Version="0.57.2" />
 ```
 
 The container-tools package supports the Visual Studio tooling and is not part of the trading
-architecture. `Microsoft.Extensions.AI` is still to be added; the agents do not exist yet.
+architecture. The `Anthropic` package carries `Microsoft.Extensions.AI.Abstractions`, so the
+Claude seats and the OpenAI-protocol seats give the same `IChatClient` to the war room.
 
 The Alpaca MCP server submodule (`external/alpaca-mcp-server`) and its Docker image exist and
 run. The old Alpaca CLI binary is at `cli_0.0.14_windows_amd64/alpaca.exe`. **No application

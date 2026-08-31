@@ -12,7 +12,7 @@ How to run this project on a workstation.
 
 ```bash
 git submodule update --init --recursive     # gets external/alpaca-mcp-server
-cp .env.example .env                        # then add the paper account keys
+cp .env.example .env                        # then add the Alpaca and model keys
 ```
 
 `.env` is git-ignored. It holds:
@@ -21,15 +21,30 @@ cp .env.example .env                        # then add the paper account keys
 ALPACA_API_KEY=...
 ALPACA_SECRET_KEY=...
 ALPACA_PAPER_TRADE=true
+
+ANTHROPIC_API_KEY=...   # proposer (Opus 5) and skeptic (Sonnet 5)
+OPENAI_API_KEY=...      # quant (GPT-5.6-terra)
+XAI_API_KEY=...         # market (Grok 4.6)
 ```
 
-## Start the Alpaca MCP servers
+**All three model keys are needed, not just the first.** The war room runs its seats on
+three different providers on purpose: a room of one model arguing with itself shares that
+model's blind spots (ADR-020). `--live` and `--replay --agent llm` refuse to start when any
+is missing and name the ones they could not find, because a seat without a key is a dead
+seat and that failure belongs before the open rather than at 09:31.
 
-Two containers stay up between debug runs, so the .NET host can start and stop freely.
+To run with no model keys at all, pass `--agent stub`.
+
+## Start the Alpaca MCP server
+
+One container stays up between debug runs, so the .NET host can start and stop freely. There
+is only one, and it is read-only: deterministic C# moved to the `Alpaca.Markets` SDK, which
+left the trading server with no consumer, so it was deleted (ADR-001, ADR-012). No MCP server
+this host runs holds an order tool at all.
 
 ```bash
 docker compose -f compose.dev.yaml up -d --build
-docker compose -f compose.dev.yaml ps        # both must say (healthy)
+docker compose -f compose.dev.yaml ps        # must say (healthy)
 ```
 
 **The `-f compose.dev.yaml` is required.** Docker Compose auto-discovers only
@@ -38,26 +53,27 @@ flag you get `no configuration file provided: not found`.
 
 | Container | URL | Toolsets | Who may use it |
 |---|---|---|---|
-| `noidea-mcp-readonly` | `http://127.0.0.1:8100/mcp` | `assets,stock-data,options-data,news,corporate-actions` | The LLM agents and `IMarketDataGateway` |
-| `noidea-mcp-trading` | `http://127.0.0.1:8101/mcp` | `account,trading,assets` | `ITradingGateway` only. No LLM. |
+| `noidea-mcp-readonly` | `http://127.0.0.1:8100/mcp` | `assets,stock-data,options-data,news,corporate-actions` | The LLM agents |
 
-Both ports bind to `127.0.0.1` only. They have no authentication, and the trading server can
-place orders. Never publish them to `0.0.0.0`.
+There is no second container. `ITradingGateway` reaches Alpaca through the typed
+`Alpaca.Markets` SDK, so nothing needed the trading server and it was deleted (ADR-001).
+
+The port binds to `127.0.0.1` only and has no authentication. Never publish it to `0.0.0.0`.
 
 Other commands:
 
 ```bash
-docker compose -f compose.dev.yaml logs -f            # follow both servers
-docker compose -f compose.dev.yaml restart mcp-trading
+docker compose -f compose.dev.yaml logs -f            # follow the server
+docker compose -f compose.dev.yaml restart mcp-readonly
 docker compose -f compose.dev.yaml down               # stop
 ```
 
-The servers restart with Docker Desktop (`restart: unless-stopped`), so this is normally a
+The server restarts with Docker Desktop (`restart: unless-stopped`), so this is normally a
 one-time command.
 
-## Test the servers by hand
+## Test the server by hand
 
-Open `alpaca-mcp.http` and run the requests from the top. It covers both servers:
+Open `alpaca-mcp.http` and run the requests from the top. It covers the read-only server:
 `initialize`, `notifications/initialized`, `tools/list`, and example `tools/call` requests.
 
 The most important request is `tools/list` on port 8100. The read-only server must expose
@@ -104,6 +120,7 @@ docker run --rm -e ALPACA_API_KEY=... -e ALPACA_SECRET_KEY=... noidea/trader:dev
 | A container restarts in a loop | The API keys are empty or wrong. Read the logs. |
 | `COPY external/... not found` during a build | The build ran from `src/`. Build from the repository root. |
 | A tool is missing from a server | `ALPACA_TOOLSETS` in `compose.dev.yaml` selects the tools. |
+| `Missing model keys: ...` | The war room needs all three of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `XAI_API_KEY`. Add them, or pass `--agent stub`. |
 
 ## More
 
