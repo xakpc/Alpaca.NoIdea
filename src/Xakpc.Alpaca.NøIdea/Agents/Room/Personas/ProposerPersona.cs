@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using ToonFormat;
+using Xakpc.Alpaca.NøIdea.Agents.Tools;
 using Xakpc.Alpaca.NøIdea.Trading;
 
 namespace Xakpc.Alpaca.NøIdea.Agents.Room.Personas;

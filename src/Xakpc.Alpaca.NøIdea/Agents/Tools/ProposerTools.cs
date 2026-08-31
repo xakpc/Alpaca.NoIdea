@@ -4,9 +4,10 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Text.Json.Serialization;
 using ToonFormat;
+using Xakpc.Alpaca.NøIdea.Agents.Room;
 using Xakpc.Alpaca.NøIdea.Trading;
 
-namespace Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
+namespace Xakpc.Alpaca.NøIdea.Agents.Tools;
 
 /// <summary>
 /// Creates the local tools that the proposer uses to return structured answers and query
