@@ -195,6 +195,30 @@ CREATE TABLE IF NOT EXISTS decisions (
 
 CREATE INDEX IF NOT EXISTS ix_decisions_run ON decisions (run_id);
 
+-- One row is one immutable proposal version. A superseded version stays available for
+-- audit, but only the final decision can own an order through decisions and orders.
+CREATE TABLE IF NOT EXISTS proposal_review_passes (
+    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id                 TEXT NOT NULL,
+    proposal_version            INTEGER NOT NULL,
+    review_pass                 INTEGER NOT NULL,
+    superseded                  INTEGER NOT NULL DEFAULT 0,
+    verdict                     TEXT NOT NULL,
+    rejection_code              TEXT,
+    option_symbol               TEXT,
+    thesis                      TEXT NOT NULL,
+    thesis_conditions_json      TEXT NOT NULL,
+    operation_json              TEXT NOT NULL,
+    analyses_json               TEXT NOT NULL,
+    discussion_json             TEXT NOT NULL,
+    votes_json                  TEXT NOT NULL,
+    created_utc                 INTEGER NOT NULL,
+    UNIQUE (proposal_id, proposal_version, review_pass)
+);
+
+CREATE INDEX IF NOT EXISTS ix_proposal_review_passes_proposal
+    ON proposal_review_passes (proposal_id, proposal_version, review_pass);
+
 -- client_order_id TEXT NOT NULL UNIQUE is the idempotency guarantee. The row is
 -- written BEFORE the order is submitted, so a duplicate submit fails at the
 -- database rather than at the broker.

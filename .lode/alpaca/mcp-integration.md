@@ -25,7 +25,7 @@ flowchart LR
 
 | Caller | Path | Reaches |
 |---|---|---|
-| Research Agent, Critic Agent | Read-only MCP, filtered by `McpToolCatalog` | bars, quotes, news, option chains, greeks |
+| War-room personas | Read-only MCP, filtered by `McpToolCatalog` | bars, exact-option data, news, greeks, market context |
 | Deterministic C# | `Alpaca.Markets` SDK | account, positions, orders, market data, option chains |
 
 **There is no trading MCP connection.** No MCP server this host runs holds an order tool, so
@@ -42,12 +42,19 @@ already typed, with `decimal` prices and nullable fields for genuinely absent va
 validation layer collapses to a null check at the call site:
 
 ```csharp
-var candidate = chain.Items
-    .Where(entry => entry.Value.Quote is { BidPrice: > 0, AskPrice: > 0 })
-    .Where(entry => entry.Value.Quote!.AskPrice >= entry.Value.Quote.BidPrice)
-    .OrderBy(entry => entry.Value.Quote!.AskPrice - entry.Value.Quote.BidPrice)
-    .FirstOrDefault();
+request.Pagination.Size = 1_000;
+do
+{
+    var page = await options.GetOptionChainAsync(request, cancellationToken);
+    contracts.AddRange(Map(page.Items));
+    request.Pagination.Token = page.NextPageToken;
+}
+while (!string.IsNullOrWhiteSpace(request.Pagination.Token));
 ```
+
+Only deterministic C# reads option chains. An agent can inspect an exact contract through
+MCP, but it cannot use MCP to rediscover the chain. See
+[tradeable contract catalog](../trading/tradeable-contract-catalog.md).
 
 ## The clients
 

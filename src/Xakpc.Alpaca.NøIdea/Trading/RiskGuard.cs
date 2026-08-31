@@ -14,10 +14,14 @@ public sealed record RiskVerdict(bool Allowed, string Reason)
 public sealed record RiskSnapshot
 {
     public required decimal Equity { get; init; }
+    public required decimal Cash { get; init; }
     public required decimal DayOpeningEquity { get; init; }
     public required int OpenPositions { get; init; }
     public required decimal OpenPositionCost { get; init; }
     public required int PositionsOpenedToday { get; init; }
+    public int PendingOpenPositions { get; init; }
+    public decimal PendingOrderCost { get; init; }
+    public bool PendingRiskKnown { get; init; } = true;
 }
 
 /// <summary>
@@ -50,6 +54,11 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
             return true;   // Cannot confirm the day's baseline. Fail closed.
         }
 
+        if (!snapshot.PendingRiskKnown)
+        {
+            return true;
+        }
+
         var loss = (snapshot.DayOpeningEquity - snapshot.Equity) / snapshot.DayOpeningEquity;
         return loss >= _options.MaxDailyLossFraction;
     }
@@ -63,7 +72,7 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
     /// </param>
     public RiskVerdict CanOpen(
         StrategyAction action,
-        CandidateView candidate,
+        TradeableContractView candidate,
         RiskSnapshot snapshot,
         StrategyPolicy policy)
     {
@@ -82,10 +91,10 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
             return RiskVerdict.Reject("daily loss limit reached");
         }
 
-        if (snapshot.OpenPositions >= _options.MaxConcurrentPositions)
+        if (snapshot.OpenPositions + snapshot.PendingOpenPositions >= _options.MaxConcurrentPositions)
         {
             return RiskVerdict.Reject(
-                $"already holding {snapshot.OpenPositions} of {_options.MaxConcurrentPositions} positions");
+                $"open and pending positions use all {_options.MaxConcurrentPositions} slots");
         }
 
         if (snapshot.PositionsOpenedToday >= _options.MaxNewPositionsPerDay)
@@ -119,7 +128,8 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
                 $"cost {cost:N2} exceeds {_options.MaxRiskPerTradeFraction:P0} of equity");
         }
 
-        if (snapshot.OpenPositionCost + cost > snapshot.Equity * _options.MaxTotalRiskFraction)
+        if (snapshot.OpenPositionCost + snapshot.PendingOrderCost + cost
+            > snapshot.Equity * _options.MaxTotalRiskFraction)
         {
             return RiskVerdict.Reject(
                 $"total exposure would exceed {_options.MaxTotalRiskFraction:P0} of equity");
@@ -127,9 +137,10 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
 
         // Alpaca rejects an order the account cannot pay for; catching it here keeps the
         // rejection in the audit trail with a reason instead of as a broker error.
-        if (cost > snapshot.Equity)
+        var availableCash = Math.Max(0m, snapshot.Cash - snapshot.PendingOrderCost);
+        if (cost > availableCash)
         {
-            return RiskVerdict.Reject("not enough equity");
+            return RiskVerdict.Reject("not enough cash after pending orders");
         }
 
         return CheckContract(candidate, policy);
@@ -141,12 +152,12 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
     /// that cannot trade; the guard runs it again at submit time because the quote may have
     /// moved.
     /// </summary>
-    public RiskVerdict CheckContract(CandidateView candidate, StrategyPolicy policy)
+    public RiskVerdict CheckContract(TradeableContractView candidate, StrategyPolicy policy)
     {
         ArgumentNullException.ThrowIfNull(candidate);
         ArgumentNullException.ThrowIfNull(policy);
 
-        var contract = candidate.Candidate;
+        var contract = candidate.Contract;
         var now = _time.GetUtcNow();
 
         var daysToExpiration = contract.Expiration.DayNumber

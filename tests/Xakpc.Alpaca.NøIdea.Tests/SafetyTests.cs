@@ -69,13 +69,20 @@ public class SafetyTests
 
     [Theory]
     [InlineData("get_stock_bars")]
-    [InlineData("get_option_chain")]
     [InlineData("get_option_snapshot")]
     [InlineData("get_news")]
     [InlineData("get_clock")]
     public void TheResearchToolsTheAgentsNeedAreApproved(string toolName)
     {
         Assert.True(McpToolCatalog.IsApprovedResearchTool(toolName));
+    }
+
+    [Theory]
+    [InlineData("get_option_chain")]
+    [InlineData("get_option_contracts")]
+    public void AgentsCannotRediscoverTheCatalogThroughMcp(string toolName)
+    {
+        Assert.False(McpToolCatalog.IsApprovedResearchTool(toolName));
     }
 
     [Fact]

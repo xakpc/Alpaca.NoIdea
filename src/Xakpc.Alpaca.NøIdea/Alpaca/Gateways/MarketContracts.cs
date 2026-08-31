@@ -91,6 +91,9 @@ public sealed record OptionCandidate
     /// <summary>Live only. Alpaca serves no historical greek.</summary>
     public decimal? Delta { get; init; }
 
+    /// <summary>Live option snapshot metadata. Missing IV does not make a contract untradeable.</summary>
+    public decimal? ImpliedVolatility { get; init; }
+
     public decimal? Spread => Bid is { } bid && Ask is { } ask ? ask - bid : null;
 
     /// <summary>

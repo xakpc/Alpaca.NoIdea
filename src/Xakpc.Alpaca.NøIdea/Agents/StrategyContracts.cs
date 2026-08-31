@@ -68,24 +68,54 @@ public sealed record StrategyDecision
         new() { Actions = [StrategyAction.Hold(reasoning)] };
 }
 
-/// <summary>One contract the harness is offering the agent this cycle.</summary>
+/// <summary>One mechanically tradeable contract in the authoritative catalog.</summary>
 /// <remarks>
-/// The harness has already applied the cheap filter, so everything here passed contract
-/// quality, the policy expiration window, and the tradeable probability band. The agent
-/// chooses among these; it does not go looking for others.
+/// The harness has already applied the mechanical filter, so everything here passed quote,
+/// expiration, liquidity, duplicate-position, and one-contract risk checks. The catalog has
+/// no probability band or quality rank. The agent decides which contract is attractive.
 /// </remarks>
-public sealed record CandidateView
+public sealed record TradeableContractView
 {
-    public required OptionCandidate Candidate { get; init; }
+    public required OptionCandidate Contract { get; init; }
     public required decimal UnderlyingPrice { get; init; }
 
-    /// <summary>From the option ladder. Risk-neutral, so slightly below the real-world chance.</summary>
-    public decimal? MarketProbability { get; init; }
-
-    public int RecentNewsCount { get; init; }
-
     /// <summary>The premium for one contract, in dollars.</summary>
-    public decimal CostPerContract => Candidate.ReferencePrice * 100m;
+    public decimal CostPerContract => Contract.ReferencePrice * 100m;
+}
+
+public sealed record UnderlyingSnapshot(
+    string Symbol,
+    decimal Last,
+    DateTimeOffset LastAt,
+    decimal? Return1D,
+    decimal? Return5D);
+
+public sealed record PortfolioCapacity(
+    decimal RemainingRisk,
+    int FreePositionSlots,
+    bool PendingRiskKnown);
+
+public sealed record TradingConstraints(
+    int MinDaysToExpiration,
+    int MaxDaysToExpiration,
+    int MaxContractsPerTrade,
+    decimal MaxRiskPerTrade,
+    decimal MaxTotalRisk,
+    decimal MaxSpreadFraction,
+    TimeSpan MaxQuoteAge,
+    DateTimeOffset CompetitionFlattenUtc);
+
+public sealed record PortfolioPositionView
+{
+    public required PositionState Position { get; init; }
+    public string? Underlying { get; init; }
+    public string? OptionType { get; init; }
+    public decimal? Strike { get; init; }
+    public DateOnly? Expiration { get; init; }
+    public decimal? UnrealizedPnlFraction { get; init; }
+    public decimal PremiumRisk { get; init; }
+    public string? OriginalThesis { get; init; }
+    public IReadOnlyList<string> OriginalThesisConditions { get; init; } = [];
 }
 
 /// <summary>What the agent sees before it decides.</summary>
@@ -94,8 +124,18 @@ public sealed record StrategyContext
     public required DateTimeOffset NowUtc { get; init; }
     public required AccountState Account { get; init; }
     public required IReadOnlyList<PositionState> Positions { get; init; }
-    public required IReadOnlyList<CandidateView> Candidates { get; init; }
+    public required IReadOnlyList<TradeableContractView> ContractCatalog { get; init; }
     public required StrategyPolicy Policy { get; init; }
+
+    public IReadOnlyList<UnderlyingSnapshot> Underlyings { get; init; } = [];
+
+    public IReadOnlyList<PortfolioPositionView> PortfolioPositions { get; init; } = [];
+
+    public IReadOnlyList<OrderState> PendingOrders { get; init; } = [];
+
+    public PortfolioCapacity Capacity { get; init; } = new(0m, 0, true);
+
+    public TradingConstraints? Constraints { get; init; }
 
     /// <summary>Headlines for the tracked symbols, newest first.</summary>
     public IReadOnlyList<NewsItem> News { get; init; } = [];
@@ -127,7 +167,7 @@ public sealed record SeatOpinion(
     decimal? Probability,
     decimal? Confidence,
     string? Reasoning,
-    string? EvidenceJson);
+    string? Evidence);
 
 /// <summary>
 /// An agent that can say who decided, and why, for the audit trail.
@@ -147,6 +187,13 @@ public interface IExplainsDecision
 
     /// <summary>One entry per seat that took part in the last decision.</summary>
     IReadOnlyList<SeatOpinion> LastOpinions { get; }
+
+    /// <summary>Every immutable proposal version from the last sitting.</summary>
+    IReadOnlyList<Room.ProposalReviewPass> LastReviewPasses => [];
+
+    string? LastThesis => null;
+
+    IReadOnlyList<string> LastThesisConditions => [];
 }
 
 /// <summary>One closed trade, for the agent to learn from.</summary>

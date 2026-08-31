@@ -15,7 +15,7 @@ no terminal view and no log file. The level is never reduced (ADR-024).
 ## The event ids
 
 `Observability/RunEvents.cs` gives an `EventId` to each event that tells the story of a run:
-the start and the end, each cycle, the account and the candidates, each seat of the war room,
+the start and the end, each cycle, the account and the catalog, each seat of the war room,
 each order, and each rejection. A line with an id is part of the story. A line with no id is a
 diagnostic.
 
@@ -62,12 +62,12 @@ A view that shows only some of the events does not exist yet. When it is written
 
 For every trade, the system must be able to answer:
 
-1. What did the ML model predict?
-2. What did the Research Agent predict?
-3. What did the Critic predict?
+1. What did each reviewer first conclude?
+2. What did each reviewer say in discussion?
+3. What did each reviewer vote privately?
 4. What data did the agents read?
-5. What did the option market reference show?
-6. What was the combined probability?
+5. What proposal and contract did the room review?
+6. Did the proposer modify or withdraw it?
 7. Why did the system trade?
 8. What risk rules passed?
 9. Which order did Alpaca receive?
@@ -80,12 +80,11 @@ For every trade, the system must be able to answer:
 
 | Question | Source |
 |---|---|
-| 1 | Retired. The ML expert is excluded (ADR-013). |
-| 2, 3 | `forecasts` rows, one per war-room seat, with the vote, the confidence, and `evidence_json` holding the first opinion, what the seat said in the debate, and any fault |
+| 1, 2, 3 | `proposal_review_passes.analyses_json`, `.discussion_json`, and `.votes_json`; final action forecasts also keep one row per seat |
 | 4 | **In the console, not in the database.** The transcript writes each tool call with its arguments and each answer (ADR-027). `agent_tool_calls` is still empty. See the gap below. |
-| 5 | `evaluation_runs.market_probability`, `market_snapshot_json` |
-| 6 | `decisions.combined_probability`, and `decisions.net_vote` for the tally that sized it |
-| 7 | `decisions.action`, `.reason`, `.edge` |
+| 5 | `proposal_review_passes.operation_json`, `.option_symbol`, `.thesis`, and `.thesis_conditions_json` |
+| 6 | `proposal_review_passes.proposal_version`, `.review_pass`, `.superseded`, `.verdict`, and `.rejection_code` |
+| 7 | `decisions.action`, `.reason`, and the final non-superseded proposal pass |
 | 8 | `decisions.risk_result`, and `evaluation_runs.status` |
 | 9 | `orders.alpaca_order_id`, `.client_order_id`, joined by `orders.decision_id` |
 | 10 | `orders.status`, `.realized_pnl`, `equity_snapshots` |
@@ -111,7 +110,7 @@ did **not** trade proves that the guardrails work, so a rejection has its own id
 (`RunEvents.RiskRejected`) and a view cannot drop it as noise.
 
 Two more ids exist for the same reason. `RunEvents.Hold` carries the reason the war room never
-sat at all — halted, no free slot, no candidate passed the cheap filter — which is the common
+sat at all — halted, no free slot, or an empty tradeable catalog — which is the common
 out-of-hours path. `RunEvents.RebuttalMade` says whether the proposer held its ground, changed
 it, or withdrew.
 
@@ -119,3 +118,4 @@ it, or withdrew.
 
 - [Storage summary](../storage/summary.md)
 - [Storage schema](../storage/schema.md)
+- [Proposal review audit](../storage/proposal-review-audit.md)

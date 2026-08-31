@@ -25,4 +25,17 @@ public sealed record TradingOptions
     public TimeSpan ClosedMarketInterval { get; init; } = TimeSpan.FromMinutes(5);
 
     public decimal StartingEquity { get; init; } = 100_000m;
+
+    /// <summary>An API-size boundary, not a statement that these strikes are attractive.</summary>
+    public decimal OptionScanMaxMoneynessFraction { get; init; } = 0.20m;
+
+    public TimeSpan HeadlineLookback { get; init; } = TimeSpan.FromHours(48);
+
+    public int HeadlineLimit { get; init; } = 25;
+
+    public int MaxHeadlinesPerSymbol { get; init; } = 3;
+
+    public int InlineCatalogCharacterLimit { get; init; } = 60_000;
+
+    public int CatalogToolPageSize { get; init; } = 200;
 }

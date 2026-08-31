@@ -28,6 +28,7 @@ public class RiskGuardTests
     private static RiskSnapshot Healthy => new()
     {
         Equity = 100_000m,
+        Cash = 100_000m,
         DayOpeningEquity = 100_000m,
         OpenPositions = 0,
         OpenPositionCost = 0m,
@@ -87,12 +88,9 @@ public class RiskGuardTests
         {
             MinDaysToExpiration = 10,
             MaxDaysToExpiration = 3,
-            MinMarketProbability = 0.9m,
-            MaxMarketProbability = 0.1m,
         }.ClampTo(Options);
 
         Assert.True(clamped.MinDaysToExpiration <= clamped.MaxDaysToExpiration);
-        Assert.True(clamped.MinMarketProbability <= clamped.MaxMarketProbability);
     }
 
     [Fact]
@@ -120,6 +118,18 @@ public class RiskGuardTests
 
         Assert.False(verdict.Allowed);
         Assert.Contains("total exposure", verdict.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PremiumMustFitCashAfterPendingBuyOrders()
+    {
+        var snapshot = Healthy with { Cash = 600m, PendingOrderCost = 250m };
+
+        var verdict = Guard().CanOpen(
+            Open(), Candidate(price: 4m), snapshot, new StrategyPolicy());
+
+        Assert.False(verdict.Allowed);
+        Assert.Contains("cash", verdict.Reason, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -168,7 +178,7 @@ public class RiskGuardTests
     {
         var candidate = Candidate() with
         {
-            Candidate = Contract() with
+            Contract = Contract() with
             {
                 Quality = QuoteQuality.OneSided,
                 Bid = 1m,
@@ -184,7 +194,7 @@ public class RiskGuardTests
     {
         var candidate = Candidate() with
         {
-            Candidate = Contract() with { Bid = 1.00m, Ask = 2.00m, ReferencePrice = 2.00m },
+            Contract = Contract() with { Bid = 1.00m, Ask = 2.00m, ReferencePrice = 2.00m },
         };
 
         var verdict = Guard().CheckContract(candidate, new StrategyPolicy());
@@ -198,7 +208,7 @@ public class RiskGuardTests
     {
         var candidate = Candidate() with
         {
-            Candidate = Contract() with { QuoteTimestampUtc = Now.AddHours(-2) },
+            Contract = Contract() with { QuoteTimestampUtc = Now.AddHours(-2) },
         };
 
         var verdict = Guard().CheckContract(candidate, new StrategyPolicy());
@@ -216,7 +226,7 @@ public class RiskGuardTests
 
         var candidate = Candidate() with
         {
-            Candidate = Contract() with { Expiration = new DateOnly(2026, 9, 18) },
+            Contract = Contract() with { Expiration = new DateOnly(2026, 9, 18) },
         };
 
         var verdict = guard.CheckContract(candidate, new StrategyPolicy { MaxDaysToExpiration = 21 });
@@ -298,12 +308,10 @@ public class RiskGuardTests
         QuoteTimestampUtc = Now.AddMinutes(-1),
     };
 
-    private static CandidateView Candidate(decimal price = 1.00m) => new()
+    private static TradeableContractView Candidate(decimal price = 1.00m) => new()
     {
-        Candidate = Contract() with { ReferencePrice = price, Bid = price * 0.98m, Ask = price },
+        Contract = Contract() with { ReferencePrice = price, Bid = price * 0.98m, Ask = price },
         UnderlyingPrice = 100m,
-        MarketProbability = 0.5m,
-        RecentNewsCount = 3,
     };
 }
 

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using ToonFormat;
 using Xakpc.Alpaca.NøIdea.Alpaca.Gateways;
 using Xakpc.Alpaca.NøIdea.Trading;
 
@@ -42,6 +43,13 @@ public sealed class WarRoomAgent(
 
     public decimal? LastNetVote => LastOutcome?.Tally?.Net;
 
+    public IReadOnlyList<ProposalReviewPass> LastReviewPasses => LastOutcome?.ReviewPasses ?? [];
+
+    public string? LastThesis => LastOutcome?.Operation.Thesis;
+
+    public IReadOnlyList<string> LastThesisConditions =>
+        LastOutcome?.Operation.ThesisConditions ?? [];
+
     /// <summary>
     /// The last sitting, flattened to one entry per seat for the audit trail.
     /// </summary>
@@ -77,7 +85,7 @@ public sealed class WarRoomAgent(
                         Probability: vote?.Probability ?? analysis?.Probability,
                         Confidence: vote?.Cast == true ? vote.Confidence : analysis?.Confidence,
                         Reasoning: vote?.Rationale ?? analysis?.Analysis,
-                        EvidenceJson: System.Text.Json.JsonSerializer.Serialize(new
+                        Evidence: Toon.Encode(new
                         {
                             initialVote = analysis?.InitialVote.ToString(),
                             initialConfidence = analysis?.Confidence,
@@ -97,6 +105,7 @@ public sealed class WarRoomAgent(
         StrategyContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
+        LastOutcome = null;
 
         // Spec §14: do not convene the room when nothing may be opened anyway.
         if (context.NewPositionsHalted || context.RemainingPositionSlots <= 0)
@@ -105,9 +114,9 @@ public sealed class WarRoomAgent(
                 context.NewPositionsHalted ? "new positions are halted" : "no free position slot");
         }
 
-        if (context.Candidates.Count == 0)
+        if (context.ContractCatalog.Count == 0)
         {
-            return StrategyDecision.Nothing("no candidate passed the cheap filter");
+            return StrategyDecision.Nothing("the tradeable contract catalog is empty");
         }
 
         var outcome = await _session.RunAsync(
@@ -142,6 +151,7 @@ public sealed class WarRoomAgent(
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(position);
+        LastOutcome = null;
 
         var underReview = new PositionUnderReview
         {
@@ -149,6 +159,14 @@ public sealed class WarRoomAgent(
             TriggerReason = triggerReason,
             UnrealizedPnlFraction = unrealizedFraction,
             DaysToExpiration = daysToExpiration,
+            OriginalThesis = context.PortfolioPositions
+                .FirstOrDefault(item => string.Equals(
+                    item.Position.Symbol, position.Symbol, StringComparison.Ordinal))
+                ?.OriginalThesis,
+            OriginalThesisConditions = context.PortfolioPositions
+                .FirstOrDefault(item => string.Equals(
+                    item.Position.Symbol, position.Symbol, StringComparison.Ordinal))
+                ?.OriginalThesisConditions ?? [],
         };
 
         var outcome = await _session.RunAsync(

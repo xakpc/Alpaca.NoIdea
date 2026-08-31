@@ -40,6 +40,7 @@ public sealed class TradingLoop(
     IStrategyAgent agent,
     RiskGuard riskGuard,
     RiskOptions riskOptions,
+    TradingOptions tradingOptions,
     TradingStore store,
     TimeProvider time,
     ILogger logger)
@@ -49,6 +50,7 @@ public sealed class TradingLoop(
     private readonly IStrategyAgent _agent = agent ?? throw new ArgumentNullException(nameof(agent));
     private readonly RiskGuard _riskGuard = riskGuard ?? throw new ArgumentNullException(nameof(riskGuard));
     private readonly RiskOptions _riskOptions = riskOptions ?? throw new ArgumentNullException(nameof(riskOptions));
+    private readonly TradingOptions _tradingOptions = tradingOptions ?? throw new ArgumentNullException(nameof(tradingOptions));
     private readonly TradingStore _store = store ?? throw new ArgumentNullException(nameof(store));
     private readonly TimeProvider _time = time ?? throw new ArgumentNullException(nameof(time));
     private readonly ILogger _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -82,7 +84,7 @@ public sealed class TradingLoop(
     }
 
     /// <summary>The symbols the loop looks at each cycle.</summary>
-    public required IReadOnlyList<string> TrackedSymbols { get; init; }
+    public IReadOnlyList<string> TrackedSymbols => _tradingOptions.TrackedSymbols;
 
     /// <summary>The mode string written to the audit trail: <c>live</c> or <c>replay</c>.</summary>
     public required string Mode { get; init; }
@@ -95,6 +97,7 @@ public sealed class TradingLoop(
         // 1. Account state. Alpaca is the source of truth, never SQLite.
         var account = await _trading.GetAccountAsync(cancellationToken);
         var positions = await _trading.ListPositionsAsync(cancellationToken);
+        var pendingOrders = await _trading.ListOpenOrdersAsync(cancellationToken);
 
         if (account.IsTradingBlocked || account.IsAccountBlocked)
         {
@@ -116,7 +119,7 @@ public sealed class TradingLoop(
         if (_reviewer is not null && _triggers is not null)
         {
             closed += await ReviewPositionsAsync(
-                positions, account, cancellationToken);
+                positions, pendingOrders, account, cancellationToken);
         }
         if (closed > 0)
         {
@@ -127,20 +130,33 @@ public sealed class TradingLoop(
         var snapshot = new RiskSnapshot
         {
             Equity = account.Equity,
+            Cash = account.Cash,
             DayOpeningEquity = _dayOpeningEquity[today],
             OpenPositions = positions.Count,
             OpenPositionCost = positions.Sum(p => p.AverageEntryPrice * Math.Abs(p.Quantity) * 100m),
             PositionsOpenedToday = _openedPerDay.GetValueOrDefault(today),
+            PendingOpenPositions = pendingOrders
+                .Where(order => order.IsBuy && order.RemainingQuantity > 0)
+                .Select(order => order.ContractSymbol)
+                .Except(positions.Select(position => position.Symbol), StringComparer.Ordinal)
+                .Distinct(StringComparer.Ordinal)
+                .Count(),
+            PendingOrderCost = pendingOrders
+                .Where(order => order.IsBuy)
+                .Sum(order => order.RemainingNotional ?? 0m),
+            PendingRiskKnown = pendingOrders
+                .Where(order => order.IsBuy && order.RemainingQuantity > 0)
+                .All(order => order.RemainingNotional is not null),
         };
 
         var halted = _riskGuard.NewPositionsHalted(snapshot);
 
-        // 3. Cheap filter. Everything offered to the agent already passes contract quality,
-        //    the expiration window, and the tradeable probability band, so no token is spent
-        //    on a candidate that could not trade anyway.
-        var candidates = halted
-            ? []
-            : await BuildCandidatesAsync(positions, cancellationToken);
+        // 3. Mechanical filter. Every row is executable under current hard constraints.
+        //    C# does not decide if its probability, premium, or thesis is attractive.
+        var catalogResult = halted
+            ? CatalogBuildResult.Empty
+            : await BuildTradeableCatalogAsync(positions, pendingOrders, snapshot, cancellationToken);
+        var catalog = catalogResult.Contracts;
 
         _logger.LogInformation(
             RunEvents.AccountRead,
@@ -150,9 +166,19 @@ public sealed class TradingLoop(
         _logger.LogInformation(
             RunEvents.CandidatesBuilt,
             "{Offered} candidate(s) from {Scanned} symbol(s).",
-            candidates.Count, TrackedSymbols.Count);
+            catalog.Count, TrackedSymbols.Count);
 
-        var news = await SafeNewsAsync(cancellationToken);
+        var news = HeadlineIndexSelector.Select(
+            await SafeNewsAsync(cancellationToken),
+            TrackedSymbols,
+            _tradingOptions.HeadlineLimit,
+            _tradingOptions.MaxHeadlinesPerSymbol);
+        var freeSlots = Math.Max(
+            0, _riskOptions.MaxConcurrentPositions
+               - snapshot.OpenPositions - snapshot.PendingOpenPositions);
+        var remainingRisk = Math.Max(
+            0m, account.Equity * _riskOptions.MaxTotalRiskFraction
+                - snapshot.OpenPositionCost - snapshot.PendingOrderCost);
 
         // 4. The agent decides. It receives data and returns data.
         var context = new StrategyContext
@@ -160,12 +186,24 @@ public sealed class TradingLoop(
             NowUtc = now,
             Account = account,
             Positions = positions,
-            Candidates = candidates,
+            ContractCatalog = catalog,
             Policy = Policy,
+            Underlyings = catalogResult.Underlyings,
+            PortfolioPositions = await BuildPortfolioPositionsAsync(positions, cancellationToken),
+            PendingOrders = pendingOrders,
+            Capacity = new PortfolioCapacity(remainingRisk, freeSlots, snapshot.PendingRiskKnown),
+            Constraints = new TradingConstraints(
+                Policy.MinDaysToExpiration,
+                Policy.MaxDaysToExpiration,
+                Policy.MaxContractsPerTrade,
+                account.Equity * _riskOptions.MaxRiskPerTradeFraction,
+                account.Equity * _riskOptions.MaxTotalRiskFraction,
+                _riskOptions.MaxSpreadFraction,
+                _riskOptions.MaxQuoteAge,
+                _riskOptions.CompetitionFlattenUtc),
             News = news,
             RecentOutcomes = [],
-            RemainingPositionSlots = Math.Max(
-                0, _riskOptions.MaxConcurrentPositions - positions.Count),
+            RemainingPositionSlots = freeSlots,
             NewPositionsHalted = halted,
         };
 
@@ -173,6 +211,7 @@ public sealed class TradingLoop(
         try
         {
             decision = await _agent.DecideAsync(context, cancellationToken);
+            await RecordReviewPassesAsync(_agent as IExplainsDecision, cancellationToken);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
@@ -181,7 +220,7 @@ public sealed class TradingLoop(
             return new CycleResult
             {
                 AtUtc = now,
-                CandidatesOffered = candidates.Count,
+                CandidatesOffered = catalog.Count,
                 PositionsClosed = closed,
                 Equity = account.Equity,
             };
@@ -197,10 +236,8 @@ public sealed class TradingLoop(
             if (revised)
             {
                 _logger.LogInformation(
-                    "Policy revised: DTE {MinDte}-{MaxDte}, band {MinP:P0}-{MaxP:P0}, "
-                    + "take {Take:P0}, stop {Stop:P0}. {Rationale}",
+                    "Policy revised: DTE {MinDte}-{MaxDte}, take {Take:P0}, stop {Stop:P0}. {Rationale}",
                     clamped.MinDaysToExpiration, clamped.MaxDaysToExpiration,
-                    clamped.MinMarketProbability, clamped.MaxMarketProbability,
                     clamped.TakeProfitFraction, clamped.StopLossFraction, clamped.Rationale);
             }
 
@@ -239,7 +276,7 @@ public sealed class TradingLoop(
 
                 case StrategyActionKind.OpenCall:
                 case StrategyActionKind.OpenPut:
-                    if (await TryOpenAsync(action, candidates, snapshot, today, cancellationToken))
+                    if (await TryOpenAsync(action, catalog, snapshot, today, cancellationToken))
                     {
                         submitted++;
                         snapshot = snapshot with { OpenPositions = snapshot.OpenPositions + 1 };
@@ -259,7 +296,7 @@ public sealed class TradingLoop(
         return new CycleResult
         {
             AtUtc = now,
-            CandidatesOffered = candidates.Count,
+            CandidatesOffered = catalog.Count,
             PositionsClosed = closed,
             OrdersSubmitted = submitted,
             ActionsRejected = rejected,
@@ -331,11 +368,15 @@ public sealed class TradingLoop(
     /// </remarks>
     private async Task<int> ReviewPositionsAsync(
         IReadOnlyList<PositionState> positions,
+        IReadOnlyList<OrderState> pendingOrders,
         AccountState account,
         CancellationToken cancellationToken)
     {
         var closed = 0;
         var now = _time.GetUtcNow();
+        var portfolio = await BuildPortfolioPositionsAsync(positions, cancellationToken);
+        IReadOnlyList<NewsItem>? headlineIndex = null;
+        var underlyingSnapshots = new Dictionary<string, UnderlyingSnapshot>(StringComparer.Ordinal);
 
         foreach (var position in positions)
         {
@@ -369,10 +410,41 @@ public sealed class TradingLoop(
             StrategyDecision decision;
             try
             {
+                headlineIndex ??= HeadlineIndexSelector.Select(
+                    await SafeNewsAsync(cancellationToken),
+                    TrackedSymbols,
+                    _tradingOptions.HeadlineLimit,
+                    _tradingOptions.MaxHeadlinesPerSymbol);
+
+                foreach (var contextSymbol in new[] { underlying, "SPY", "QQQ" }
+                             .Where(symbol => !string.IsNullOrWhiteSpace(symbol))
+                             .Distinct(StringComparer.Ordinal))
+                {
+                    if (underlyingSnapshots.ContainsKey(contextSymbol))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        var latest = await _marketData.GetLatestTradeAsync(
+                            contextSymbol, cancellationToken);
+                        underlyingSnapshots[contextSymbol] = await BuildUnderlyingSnapshotAsync(
+                            latest, now, cancellationToken);
+                    }
+                    catch (Exception error) when (error is not OperationCanceledException)
+                    {
+                        _logger.LogDebug(error, "No review snapshot for {Symbol}.", contextSymbol);
+                    }
+                }
+
                 decision = await _reviewer!.ReviewPositionAsync(
-                    BuildReviewContext(account, positions, now),
+                    BuildReviewContext(
+                        account, positions, pendingOrders, portfolio,
+                        [.. underlyingSnapshots.Values], headlineIndex, now),
                     position, trigger.ToString(), unrealizedFraction, daysToExpiration,
                     cancellationToken);
+                await RecordReviewPassesAsync(_agent as IExplainsDecision, cancellationToken);
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
@@ -416,13 +488,46 @@ public sealed class TradingLoop(
     /// not a shopping list.
     /// </summary>
     private StrategyContext BuildReviewContext(
-        AccountState account, IReadOnlyList<PositionState> positions, DateTimeOffset now) => new()
+        AccountState account,
+        IReadOnlyList<PositionState> positions,
+        IReadOnlyList<OrderState> pendingOrders,
+        IReadOnlyList<PortfolioPositionView> portfolio,
+        IReadOnlyList<UnderlyingSnapshot> underlyings,
+        IReadOnlyList<NewsItem> news,
+        DateTimeOffset now) => new()
     {
         NowUtc = now,
         Account = account,
         Positions = positions,
-        Candidates = [],
+        ContractCatalog = [],
         Policy = Policy,
+        Underlyings = underlyings,
+        PortfolioPositions = portfolio,
+        PendingOrders = pendingOrders,
+        Capacity = new PortfolioCapacity(
+            Math.Max(0m,
+                account.Equity * _riskOptions.MaxTotalRiskFraction
+                - portfolio.Sum(position => position.PremiumRisk)
+                - pendingOrders.Where(order => order.IsBuy).Sum(order => order.RemainingNotional ?? 0m)),
+            Math.Max(0, _riskOptions.MaxConcurrentPositions
+                        - positions.Count
+                        - pendingOrders.Where(order => order.IsBuy && order.RemainingQuantity > 0)
+                            .Select(order => order.ContractSymbol)
+                            .Except(positions.Select(position => position.Symbol), StringComparer.Ordinal)
+                            .Distinct(StringComparer.Ordinal)
+                            .Count()),
+            pendingOrders.Where(order => order.IsBuy && order.RemainingQuantity > 0)
+                .All(order => order.RemainingNotional is not null)),
+        Constraints = new TradingConstraints(
+            Policy.MinDaysToExpiration,
+            Policy.MaxDaysToExpiration,
+            Policy.MaxContractsPerTrade,
+            account.Equity * _riskOptions.MaxRiskPerTradeFraction,
+            account.Equity * _riskOptions.MaxTotalRiskFraction,
+            _riskOptions.MaxSpreadFraction,
+            _riskOptions.MaxQuoteAge,
+            _riskOptions.CompetitionFlattenUtc),
+        News = news,
         RemainingPositionSlots = Math.Max(0, _riskOptions.MaxConcurrentPositions - positions.Count),
         NewPositionsHalted = false,
     };
@@ -431,7 +536,7 @@ public sealed class TradingLoop(
 
     private async Task<bool> TryOpenAsync(
         StrategyAction action,
-        IReadOnlyList<CandidateView> candidates,
+        IReadOnlyList<TradeableContractView> candidates,
         RiskSnapshot snapshot,
         DateOnly today,
         CancellationToken cancellationToken)
@@ -439,7 +544,7 @@ public sealed class TradingLoop(
         // The contract must be one the harness offered this cycle. A symbol the agent
         // invented is rejected here and never reaches the broker.
         var candidate = candidates.FirstOrDefault(view =>
-            string.Equals(view.Candidate.ContractSymbol, action.ContractSymbol, StringComparison.Ordinal));
+            string.Equals(view.Contract.ContractSymbol, action.ContractSymbol, StringComparison.Ordinal));
 
         if (candidate is null)
         {
@@ -450,13 +555,13 @@ public sealed class TradingLoop(
         }
 
         var wantedType = action.Kind == StrategyActionKind.OpenCall ? "call" : "put";
-        if (!string.Equals(candidate.Candidate.OptionType, wantedType, StringComparison.Ordinal))
+        if (!string.Equals(candidate.Contract.OptionType, wantedType, StringComparison.Ordinal))
         {
-            var mismatch = $"the agent asked to {action.Kind} but this is a {candidate.Candidate.OptionType}";
+            var mismatch = $"the agent asked to {action.Kind} but this is a {candidate.Contract.OptionType}";
             _logger.LogWarning(
                 RunEvents.RiskRejected,
                 "The agent asked to {Kind} but {Symbol} is a {Type}. Rejected.",
-                action.Kind, candidate.Candidate.ContractSymbol, candidate.Candidate.OptionType);
+                action.Kind, candidate.Contract.ContractSymbol, candidate.Contract.OptionType);
             await AuditAsync(action, candidate, "rejected", "contract type", mismatch, cancellationToken);
             return false;
         }
@@ -466,7 +571,7 @@ public sealed class TradingLoop(
         {
             _logger.LogInformation(
                 RunEvents.RiskRejected,
-                "Risk rejected {Symbol}: {Reason}.", candidate.Candidate.ContractSymbol, verdict.Reason);
+                "Risk rejected {Symbol}: {Reason}.", candidate.Contract.ContractSymbol, verdict.Reason);
             await AuditAsync(action, candidate, "rejected", "risk guard", verdict.Reason, cancellationToken);
             return false;
         }
@@ -480,14 +585,14 @@ public sealed class TradingLoop(
         // uncertain result the id is already durable, so recovery asks the broker what
         // happened instead of sending a second order.
         var clientOrderId = $"{Mode}-{Guid.NewGuid():N}"[..32];
-        var limitPrice = decimal.Round(candidate.Candidate.ReferencePrice, 2);
+        var limitPrice = decimal.Round(candidate.Contract.ReferencePrice, 2);
 
         try
         {
             await _store.ReserveAsync(new OrderRecord
             {
                 ClientOrderId = clientOrderId,
-                OptionSymbol = candidate.Candidate.ContractSymbol,
+                OptionSymbol = candidate.Contract.ContractSymbol,
                 Side = "Buy",
                 Quantity = action.Contracts,
                 OrderType = "Limit",
@@ -509,7 +614,7 @@ public sealed class TradingLoop(
             new OrderRequest
             {
                 ClientOrderId = clientOrderId,
-                ContractSymbol = candidate.Candidate.ContractSymbol,
+                ContractSymbol = candidate.Contract.ContractSymbol,
                 Quantity = action.Contracts,
                 IsBuy = true,
                 LimitPrice = limitPrice,
@@ -523,7 +628,7 @@ public sealed class TradingLoop(
         {
             _logger.LogWarning(
                 "{Symbol} was rejected by the broker: {Status}.",
-                candidate.Candidate.ContractSymbol, order.RawStatus);
+                candidate.Contract.ContractSymbol, order.RawStatus);
             return false;
         }
 
@@ -533,7 +638,7 @@ public sealed class TradingLoop(
             RunEvents.OrderDecided,
             "{State} {Contracts}x {Symbol} at {Price:N2} ({Cost:N2} USD). {Why}",
             DryRun ? "Would open (dry run)" : "Opened",
-            action.Contracts, candidate.Candidate.ContractSymbol, limitPrice,
+            action.Contracts, candidate.Contract.ContractSymbol, limitPrice,
             limitPrice * action.Contracts * 100m, action.Reasoning);
 
         return true;
@@ -558,7 +663,7 @@ public sealed class TradingLoop(
     /// </remarks>
     private async Task<long?> AuditAsync(
         StrategyAction action,
-        CandidateView candidate,
+        TradeableContractView candidate,
         string status,
         string riskRule,
         string riskDetail,
@@ -567,7 +672,7 @@ public sealed class TradingLoop(
         try
         {
             var now = _time.GetUtcNow().ToUnixTimeSeconds();
-            var contract = candidate.Candidate;
+            var contract = candidate.Contract;
             var explains = _agent as IExplainsDecision;
 
             var runId = await _store.RecordEvaluationAsync(
@@ -584,7 +689,7 @@ public sealed class TradingLoop(
                     ExpirationUtc = new DateTimeOffset(
                         contract.Expiration.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
                         .ToUnixTimeSeconds(),
-                    MarketProbability = candidate.MarketProbability,
+                    MarketProbability = null,
                     Status = status,
                     MarketSnapshotJson = System.Text.Json.JsonSerializer.Serialize(new
                     {
@@ -592,9 +697,9 @@ public sealed class TradingLoop(
                         contract.Ask,
                         contract.ReferencePrice,
                         contract.Delta,
+                        contract.ImpliedVolatility,
                         quality = contract.Quality.ToString(),
                         contract.QuoteTimestampUtc,
-                        candidate.RecentNewsCount,
                     }),
                 },
                 cancellationToken);
@@ -610,7 +715,7 @@ public sealed class TradingLoop(
                         Probability = opinion.Probability,
                         Confidence = opinion.Confidence,
                         Reasoning = opinion.Reasoning,
-                        EvidenceJson = opinion.EvidenceJson,
+                        EvidenceJson = opinion.Evidence,
                         CreatedUtc = now,
                     })],
                     cancellationToken);
@@ -621,10 +726,8 @@ public sealed class TradingLoop(
                 {
                     RunId = runId,
                     CombinedProbability = action.Probability,
-                    MarketProbability = candidate.MarketProbability,
-                    Edge = action.Probability is { } p && candidate.MarketProbability is { } m
-                        ? p - m
-                        : null,
+                    MarketProbability = null,
+                    Edge = null,
                     NetVote = explains?.LastNetVote,
                     Action = action.Kind.ToString(),
                     Reason = action.Reasoning,
@@ -638,103 +741,245 @@ public sealed class TradingLoop(
         catch (Exception error) when (error is not OperationCanceledException)
         {
             _logger.LogError(error, "Could not write the audit trail for {Symbol}.",
-                candidate.Candidate.ContractSymbol);
+                candidate.Contract.ContractSymbol);
             return null;
         }
     }
 
-    // ------------------------------------------------------------------ candidates
+    // ------------------------------------------------------------------ tradeable catalog
 
-    private async Task<IReadOnlyList<CandidateView>> BuildCandidatesAsync(
-        IReadOnlyList<PositionState> positions, CancellationToken cancellationToken)
+    private sealed record CatalogBuildResult(
+        IReadOnlyList<TradeableContractView> Contracts,
+        IReadOnlyList<UnderlyingSnapshot> Underlyings)
+    {
+        public static CatalogBuildResult Empty { get; } = new([], []);
+    }
+
+    private async Task<CatalogBuildResult> BuildTradeableCatalogAsync(
+        IReadOnlyList<PositionState> positions,
+        IReadOnlyList<OrderState> pendingOrders,
+        RiskSnapshot riskSnapshot,
+        CancellationToken cancellationToken)
     {
         var now = _time.GetUtcNow();
         var today = DateOnly.FromDateTime(now.UtcDateTime);
         var held = positions.Select(p => p.Symbol).ToHashSet(StringComparer.Ordinal);
-        var views = new List<CandidateView>();
+        var pendingBuys = pendingOrders
+            .Where(order => order.IsBuy && order.RemainingQuantity > 0)
+            .Select(order => order.ContractSymbol)
+            .ToHashSet(StringComparer.Ordinal);
+        var views = new List<TradeableContractView>();
+        var underlyings = new List<UnderlyingSnapshot>();
+
+        var scan = _tradingOptions.OptionScanMaxMoneynessFraction;
+        if (scan is <= 0m or >= 1m)
+        {
+            throw new InvalidOperationException(
+                $"OptionScanMaxMoneynessFraction must be between zero and one, not {scan}.");
+        }
 
         foreach (var symbol in TrackedSymbols)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            decimal spot;
+            LatestTrade latest;
             try
             {
-                spot = (await _marketData.GetLatestTradeAsync(symbol, cancellationToken)).Price;
+                latest = await _marketData.GetLatestTradeAsync(symbol, cancellationToken);
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
-                // No price means no candidate for this symbol. Fail closed and continue.
                 _logger.LogDebug(error, "No price for {Symbol} this cycle.", symbol);
                 continue;
             }
 
-            var newsCount = await CountRecentNewsAsync(symbol, now, cancellationToken);
-            if (Policy.RequireFreshNews && newsCount == 0)
+            var spot = latest.Price;
+            if (spot <= 0m)
             {
                 continue;
             }
 
-            foreach (var optionType in (string[])["call", "put"])
+            underlyings.Add(await BuildUnderlyingSnapshotAsync(latest, now, cancellationToken));
+
+            IReadOnlyList<OptionCandidate> chain;
+            try
             {
-                var chain = await _marketData.GetOptionCandidatesAsync(
+                chain = await _marketData.GetOptionCandidatesAsync(
                     new OptionChainQuery
                     {
                         Underlying = symbol,
-                        OptionType = optionType,
                         ExpirationFrom = today.AddDays(Policy.MinDaysToExpiration),
                         ExpirationTo = today.AddDays(Policy.MaxDaysToExpiration),
-                        StrikeFrom = spot * 0.90m,
-                        StrikeTo = spot * 1.10m,
+                        StrikeFrom = spot * (1m - scan),
+                        StrikeTo = spot * (1m + scan),
                     },
                     cancellationToken);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                // A partial chain is not authoritative. Drop the whole symbol for this cycle.
+                _logger.LogDebug(error, "No complete option chain for {Symbol} this cycle.", symbol);
+                continue;
+            }
 
-                var ladder = chain
-                    .Where(c => string.Equals(c.OptionType, "call", StringComparison.Ordinal))
-                    .Select(c => new LadderPoint(c.Strike, c.ReferencePrice))
-                    .OrderBy(point => point.Strike)
-                    .ToArray();
-
-                foreach (var contract in chain)
+            foreach (var contract in chain)
+            {
+                if (held.Contains(contract.ContractSymbol) || pendingBuys.Contains(contract.ContractSymbol))
                 {
-                    if (held.Contains(contract.ContractSymbol))
-                    {
-                        continue;   // No duplicate exposure in the same contract.
-                    }
+                    continue;
+                }
 
-                    var view = new CandidateView
-                    {
-                        Candidate = contract,
-                        UnderlyingPrice = spot,
-                        MarketProbability = OptionLadder.ProbabilityAbove(ladder, contract.Strike),
-                        RecentNewsCount = newsCount,
-                    };
+                var kind = contract.OptionType switch
+                {
+                    "call" => StrategyActionKind.OpenCall,
+                    "put" => StrategyActionKind.OpenPut,
+                    _ => StrategyActionKind.Hold,
+                };
 
-                    if (!_riskGuard.CheckContract(view, Policy).Allowed)
-                    {
-                        continue;
-                    }
+                if (kind == StrategyActionKind.Hold)
+                {
+                    continue;
+                }
 
-                    // The tradeable band: a contract the market prices as nearly certain
-                    // either way carries no opportunity worth an agent call.
-                    if (view.MarketProbability is { } probability
-                        && (probability < Policy.MinMarketProbability
-                            || probability > Policy.MaxMarketProbability))
-                    {
-                        continue;
-                    }
+                var view = new TradeableContractView
+                {
+                    Contract = contract,
+                    UnderlyingPrice = spot,
+                };
 
+                var oneContract = new StrategyAction
+                {
+                    Kind = kind,
+                    ContractSymbol = contract.ContractSymbol,
+                    Contracts = 1,
+                    Reasoning = "mechanical catalog admission",
+                };
+
+                if (_riskGuard.CanOpen(oneContract, view, riskSnapshot, Policy).Allowed)
+                {
                     views.Add(view);
                 }
             }
         }
 
-        // Cheapest first: with a 2% per-trade cap the affordable contracts are the ones the
-        // agent can actually act on.
-        return views
-            .OrderBy(view => view.CostPerContract)
-            .Take(40)
+        var symbolOrder = TrackedSymbols
+            .Select((symbol, index) => (symbol, index))
+            .ToDictionary(item => item.symbol, item => item.index, StringComparer.Ordinal);
+
+        return new CatalogBuildResult(
+            [.. views
+                .OrderBy(view => symbolOrder.GetValueOrDefault(view.Contract.Underlying, int.MaxValue))
+                .ThenBy(view => view.Contract.Expiration)
+                .ThenBy(view => view.Contract.OptionType, StringComparer.Ordinal)
+                .ThenBy(view => view.Contract.Strike)
+                .ThenBy(view => view.Contract.ContractSymbol, StringComparer.Ordinal)],
+            underlyings);
+    }
+
+    private async Task<UnderlyingSnapshot> BuildUnderlyingSnapshotAsync(
+        LatestTrade latest, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<PriceBar> bars;
+        try
+        {
+            bars = await _marketData.GetBarsAsync(
+                latest.Symbol, "1Day", now.AddDays(-20), now, cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            _logger.LogDebug(error, "No completed daily bars for {Symbol}.", latest.Symbol);
+            bars = [];
+        }
+
+        var todayEastern = MarketCalendar.ToEastern(now).Date;
+        var completed = bars
+            .Where(bar => MarketCalendar.ToEastern(bar.TimestampUtc).Date < todayEastern)
+            .OrderBy(bar => bar.TimestampUtc)
             .ToArray();
+
+        decimal? ReturnFrom(int sessions) => completed.Length >= sessions
+            && completed[^sessions].Close > 0m
+                ? latest.Price / completed[^sessions].Close - 1m
+                : null;
+
+        return new UnderlyingSnapshot(
+            latest.Symbol, latest.Price, latest.TimestampUtc, ReturnFrom(1), ReturnFrom(5));
+    }
+
+    private async Task<IReadOnlyList<PortfolioPositionView>> BuildPortfolioPositionsAsync(
+        IReadOnlyList<PositionState> positions,
+        CancellationToken cancellationToken)
+    {
+        var theses = await _store.PositionThesesAsync(
+            Mode,
+            [.. positions.Select(position => position.Symbol)],
+            cancellationToken);
+
+        return
+        [
+            .. positions.Select(position =>
+        {
+            var parsed = OccOptionSymbol.TryParse(position.Symbol, out var option) ? option : default;
+            theses.TryGetValue(position.Symbol, out var thesis);
+            decimal? pnlFraction = position.CurrentPrice is { } current && position.AverageEntryPrice > 0m
+                ? (current - position.AverageEntryPrice) / position.AverageEntryPrice
+                : null;
+
+            return new PortfolioPositionView
+            {
+                Position = position,
+                Underlying = parsed.Underlying,
+                OptionType = string.IsNullOrEmpty(parsed.Underlying) ? null : parsed.IsCall ? "call" : "put",
+                Strike = string.IsNullOrEmpty(parsed.Underlying) ? null : parsed.Strike,
+                Expiration = string.IsNullOrEmpty(parsed.Underlying) ? null : parsed.Expiration,
+                UnrealizedPnlFraction = pnlFraction,
+                PremiumRisk = position.AverageEntryPrice * Math.Abs(position.Quantity) * 100m,
+                OriginalThesis = thesis?.Thesis,
+                OriginalThesisConditions = thesis?.Conditions ?? [],
+            };
+        }),
+        ];
+    }
+
+    private async Task RecordReviewPassesAsync(
+        IExplainsDecision? explains,
+        CancellationToken cancellationToken)
+    {
+        if (explains?.LastReviewPasses is not { Count: > 0 } passes)
+        {
+            return;
+        }
+
+        try
+        {
+            var now = _time.GetUtcNow().ToUnixTimeSeconds();
+            await _store.RecordProposalReviewPassesAsync(
+                [.. passes.Select(pass => new ProposalReviewPassRow
+                {
+                    ProposalId = pass.ProposalId,
+                    ProposalVersion = pass.ProposalVersion,
+                    ReviewPass = pass.ReviewPass,
+                    Superseded = pass.Superseded,
+                    Verdict = pass.Verdict.ToString(),
+                    RejectionCode = pass.RejectionCode,
+                    OptionSymbol = pass.Operation.Actions
+                        .FirstOrDefault(action => action.Kind != StrategyActionKind.Hold)
+                        ?.ContractSymbol,
+                    Thesis = pass.Operation.Thesis,
+                    ThesisConditionsJson = System.Text.Json.JsonSerializer.Serialize(
+                        pass.Operation.ThesisConditions),
+                    OperationJson = System.Text.Json.JsonSerializer.Serialize(pass.Operation),
+                    AnalysesJson = System.Text.Json.JsonSerializer.Serialize(pass.Analyses),
+                    DiscussionJson = System.Text.Json.JsonSerializer.Serialize(pass.Discussion),
+                    VotesJson = System.Text.Json.JsonSerializer.Serialize(pass.Votes),
+                    CreatedUtc = now,
+                })],
+                cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            _logger.LogError(error, "Could not write proposal review passes.");
+        }
     }
 
     private async Task<int> CountRecentNewsAsync(
@@ -743,7 +988,7 @@ public sealed class TradingLoop(
         try
         {
             var news = await _marketData.GetNewsAsync(
-                [symbol], now.AddHours(-Policy.FreshNewsWithinHours), now, 20, cancellationToken);
+                [symbol], now - _tradingOptions.HeadlineLookback, now, 20, cancellationToken);
 
             return news.Count;
         }
@@ -761,7 +1006,8 @@ public sealed class TradingLoop(
         try
         {
             return await _marketData.GetNewsAsync(
-                TrackedSymbols, now.AddHours(-Policy.FreshNewsWithinHours), now, 30, cancellationToken);
+                TrackedSymbols, now - _tradingOptions.HeadlineLookback, now,
+                _tradingOptions.HeadlineLimit * 4, cancellationToken);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {

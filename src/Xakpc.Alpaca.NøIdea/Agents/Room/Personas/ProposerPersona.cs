@@ -1,7 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using System.ComponentModel;
 using ToonFormat;
+using Xakpc.Alpaca.NøIdea.Trading;
 
 namespace Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
 
@@ -20,11 +20,13 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
 /// </para>
 /// </remarks>
 public sealed class ProposerPersona(
-    ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> researchTools)
+    ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> researchTools,
+    TradingOptions tradingOptions)
     : LlmPersona(clients, logger, researchTools), IProposingPersona
 {
-    private const string ProposeTool = "submit_proposal";
-    private const string RebutTool = "submit_rebuttal";
+    private readonly TradingOptions _tradingOptions = tradingOptions
+        ?? throw new ArgumentNullException(nameof(tradingOptions));
+    private readonly ProposerTools _tools = new(logger, tradingOptions);
 
     public override string Name => "proposer";
 
@@ -57,22 +59,18 @@ public sealed class ProposerPersona(
 
         ProposedOperation? captured = null;
 
-        var offered = market.Candidates
-            .Select(view => view.Candidate.ContractSymbol)
+        var offered = market.ContractCatalog
+            .Select(view => view.Contract.ContractSymbol)
             .ToHashSet(StringComparer.Ordinal);
 
         var held = market.Positions
             .Select(item => item.Symbol)
             .ToHashSet(StringComparer.Ordinal);
 
-        var tool = AIFunctionFactory.Create(
-            (ProposalArguments arguments) =>
-            {
-                captured = ToOperation(arguments, offered, held, allowedActions);
-                return "Proposal recorded.";
-            },
-            ProposeTool,
-            "Submit your single best proposal, or NO_TRADE. Call this exactly once, last.");
+        var proposalTool = _tools.CreateProposalTool(
+            offered, held, allowedActions, operation => captured = operation);
+
+        var catalogueTool = _tools.CreateCatalogTool(market);
 
         var payload = purpose == WarRoomPurpose.PositionReview
             ? DescribeReview(market, position, allowedActions)
@@ -84,7 +82,7 @@ public sealed class ProposerPersona(
                 ? ReviewPrompt(allowedActions)
                 : SearchPrompt(allowedActions),
             payload,
-            [.. ResearchTools, tool],
+            [.. ResearchTools, catalogueTool, proposalTool],
             ChatToolMode.Auto,
             MaxOutputTokens,
             cancellationToken);
@@ -104,7 +102,7 @@ public sealed class ProposerPersona(
             Logger.LogWarning(
                 "The proposer ended its turn without calling {Tool}. Finish reason {Reason}. "
                 + "It said: {Text}",
-                ProposeTool,
+                ProposerTools.ProposeToolName,
                 response?.FinishReason?.ToString() ?? "none reported",
                 Truncate(response?.Text));
         }
@@ -121,22 +119,16 @@ public sealed class ProposerPersona(
 
         ProposedOperation? captured = null;
 
-        var offered = context.Market.Candidates
-            .Select(view => view.Candidate.ContractSymbol)
+        var offered = ReviewContextSelector.NearbyContracts(context.Market, context.Operation)
+            .Select(view => view.Contract.ContractSymbol)
             .ToHashSet(StringComparer.Ordinal);
 
         var held = context.Market.Positions
             .Select(item => item.Symbol)
             .ToHashSet(StringComparer.Ordinal);
 
-        var tool = AIFunctionFactory.Create(
-            (ProposalArguments arguments) =>
-            {
-                captured = ToOperation(arguments, offered, held, context.AllowedActions);
-                return "Rebuttal recorded.";
-            },
-            RebutTool,
-            "Defend, modify, or withdraw your proposal. Call this exactly once, last.");
+        var tool = _tools.CreateRebuttalTool(
+            offered, held, context.AllowedActions, operation => captured = operation);
 
         var (fault, _) = await InvokeAsync(
             "rebuttal",
@@ -162,7 +154,7 @@ public sealed class ProposerPersona(
             failures. Withdrawing every challenged trade produces a system that holds cash for
             four days and returns nothing.
 
-            Call `{RebutTool}` once, last.
+            Call `{ProposerTools.RebuttalToolName}` once, last.
             """,
             DescribeRebuttal(context),
             [tool],
@@ -186,79 +178,6 @@ public sealed class ProposerPersona(
 
     // ------------------------------------------------------------------ shaping
 
-    private ProposedOperation ToOperation(
-        ProposalArguments arguments,
-        HashSet<string> offered,
-        HashSet<string> held,
-        IReadOnlyList<StrategyActionKind> allowedActions)
-    {
-        if (arguments.NoTrade == true || arguments.Actions is null || arguments.Actions.Count == 0)
-        {
-            return ProposedOperation.Nothing(
-                string.IsNullOrWhiteSpace(arguments.Thesis) ? "NO_TRADE" : arguments.Thesis!);
-        }
-
-        var actions = new List<StrategyAction>();
-
-        foreach (var item in arguments.Actions)
-        {
-            var kind = item.Action?.ToLowerInvariant() switch
-            {
-                "open_call" => StrategyActionKind.OpenCall,
-                "open_put" => StrategyActionKind.OpenPut,
-                "close" or "close_position" => StrategyActionKind.ClosePosition,
-                _ => StrategyActionKind.Hold,
-            };
-
-            if (kind == StrategyActionKind.Hold || !allowedActions.Contains(kind))
-            {
-                continue;
-            }
-
-            if (string.IsNullOrWhiteSpace(item.ContractSymbol))
-            {
-                continue;
-            }
-
-            // A symbol the harness did not offer never reaches the broker. Dropping it here
-            // records it as a proposer fault rather than a risk rejection later.
-            var known = kind == StrategyActionKind.ClosePosition ? held : offered;
-            if (!known.Contains(item.ContractSymbol))
-            {
-                Logger.LogWarning(
-                    "The proposer named {Symbol}, which was not available this cycle. Dropped.",
-                    item.ContractSymbol);
-                continue;
-            }
-
-            actions.Add(new StrategyAction
-            {
-                Kind = kind,
-                ContractSymbol = item.ContractSymbol,
-                Contracts = Math.Max(1, item.Contracts ?? 1),
-                Probability = item.Probability is { } probability
-                    ? Math.Clamp(probability, 0m, 1m)
-                    : null,
-                Reasoning = string.IsNullOrWhiteSpace(item.Reasoning)
-                    ? arguments.Thesis ?? "(no reasoning given)"
-                    : item.Reasoning,
-            });
-        }
-
-        if (actions.Count == 0)
-        {
-            return ProposedOperation.Nothing("nothing survived validation");
-        }
-
-        return new ProposedOperation
-        {
-            Actions = actions,
-            Thesis = string.IsNullOrWhiteSpace(arguments.Thesis) ? "(no thesis given)" : arguments.Thesis!,
-            ThesisConditions = arguments.ThesisConditions ?? [],
-            MainRisks = arguments.MainRisks ?? [],
-        };
-    }
-
     private string SearchPrompt(IReadOnlyList<StrategyActionKind> allowed) =>
         $"""
         {Preamble}
@@ -268,13 +187,12 @@ public sealed class ProposerPersona(
         or return NO_TRADE.
 
         Only these actions are permitted: {string.Join(", ", allowed)}.
-        You may only name a contract from `candidates`. A symbol you invent is discarded.
+        You may only name a contract from the authoritative `contracts` catalog. A symbol
+        you invent is discarded. Use `get_tradeable_contracts` to query the in-memory catalog
+        when the prompt contains only its index. Do not use Alpaca for contract discovery.
 
         WHAT MAKES A GOOD PROPOSAL
         - A specific reason to expect a move, not a general feeling about the company.
-        - `market_probability` is the option market's own view: risk-neutral, so slightly low,
-          and well calibrated. To make money you must find where it is wrong, and you must be
-          able to say why.
         - Long options decay. Buying a short-dated option and waiting loses money on average;
           a measured run of exactly that lost on nearly every trade.
         - `thesis_conditions` must be checkable later. "NVDA stays above 182" is checkable.
@@ -284,7 +202,7 @@ public sealed class ProposerPersona(
         You state the size you want; the room's conviction and hard risk rules decide the
         final quantity.
 
-        Call `{ProposeTool}` once, last.
+        Call `{ProposerTools.ProposeToolName}` once, last.
         """;
 
     private string ReviewPrompt(IReadOnlyList<StrategyActionKind> allowed) =>
@@ -303,39 +221,66 @@ public sealed class ProposerPersona(
         Proposing no action means holding. That is a decision, and it needs a reason like any
         other. Do not close a position only because time has passed.
 
-        Call `{ProposeTool}` once, last.
+        Call `{ProposerTools.ProposeToolName}` once, last.
         """;
 
-    private static string DescribeSearch(
-        StrategyContext market, IReadOnlyList<StrategyActionKind> allowed) =>
-        Toon.Encode(new
+    private string DescribeSearch(
+        StrategyContext market, IReadOnlyList<StrategyActionKind> allowed)
+    {
+        var rows = _tools.ContractRows(market.ContractCatalog);
+        var inline = Toon.Encode(rows).Length <= _tradingOptions.InlineCatalogCharacterLimit;
+
+        return Toon.Encode(new
         {
             now_utc = market.NowUtc,
             allowed_actions = allowed.Select(kind => kind.ToString()),
             account = new { equity = market.Account.Equity, cash = market.Account.Cash },
-            remaining_position_slots = market.RemainingPositionSlots,
+            portfolio_capacity = new
+            {
+                remaining_risk = market.Capacity.RemainingRisk,
+                free_position_slots = market.Capacity.FreePositionSlots,
+                pending_risk_known = market.Capacity.PendingRiskKnown,
+            },
             new_positions_halted = market.NewPositionsHalted,
-            policy = market.Policy,
-            open_positions = market.Positions.Select(position => new
+            constraints = market.Constraints,
+            allowed_tickers = _tradingOptions.TrackedSymbols,
+            underlying_snapshots = market.Underlyings.Select(snapshot => new
             {
-                symbol = position.Symbol,
-                quantity = position.Quantity,
-                entry = position.AverageEntryPrice,
-                current = position.CurrentPrice,
-                unrealized = position.UnrealizedPnl,
+                symbol = snapshot.Symbol,
+                last = snapshot.Last,
+                last_at = snapshot.LastAt,
+                return_1d = snapshot.Return1D,
+                return_5d = snapshot.Return5D,
             }),
-            candidates = market.Candidates.Select(view => new
+            open_positions = market.PortfolioPositions.Select(view => new
             {
-                symbol = view.Candidate.ContractSymbol,
-                underlying = view.Candidate.Underlying,
-                type = view.Candidate.OptionType,
-                strike = view.Candidate.Strike,
-                expiration = view.Candidate.Expiration,
-                underlying_price = view.UnderlyingPrice,
-                cost_usd = view.CostPerContract,
-                market_probability = view.MarketProbability,
-                recent_news = view.RecentNewsCount,
+                symbol = view.Position.Symbol,
+                underlying = view.Underlying,
+                type = view.OptionType,
+                strike = view.Strike,
+                expiration = view.Expiration,
+                quantity = view.Position.Quantity,
+                entry = view.Position.AverageEntryPrice,
+                current = view.Position.CurrentPrice,
+                unrealized = view.Position.UnrealizedPnl,
+                unrealized_fraction = view.UnrealizedPnlFraction,
+                premium_risk = view.PremiumRisk,
+                original_thesis = view.OriginalThesis,
+                original_thesis_conditions = view.OriginalThesisConditions,
             }),
+            pending_orders = market.PendingOrders.Select(order => new
+            {
+                symbol = order.ContractSymbol,
+                side = order.IsBuy ? "buy" : "sell",
+                requested = order.RequestedQuantity,
+                filled = order.FilledQuantity,
+                remaining = order.RemainingQuantity,
+                limit = order.LimitPrice,
+                status = order.RawStatus,
+            }),
+            catalog_inline = inline,
+            contracts = inline ? rows : null,
+            catalog_index = inline ? null : _tools.CatalogIndex(market.ContractCatalog),
             headlines = market.News.Take(25).Select(item => new
             {
                 at = item.PublishedUtc,
@@ -349,6 +294,7 @@ public sealed class ProposerPersona(
                 why = outcome.Reasoning,
             }),
         });
+    }
 
     private static string DescribeReview(
         StrategyContext market,
@@ -416,52 +362,20 @@ public sealed class ProposerPersona(
                     round = contribution.Round,
                     summary = contribution.Summary,
                 }),
-            candidates = context.Market.Candidates.Select(view => new
+            allowed_nearby_contracts = ReviewContextSelector
+                .NearbyContracts(context.Market, context.Operation)
+                .Select(view => new
             {
-                symbol = view.Candidate.ContractSymbol,
-                underlying = view.Candidate.Underlying,
-                type = view.Candidate.OptionType,
-                strike = view.Candidate.Strike,
-                expiration = view.Candidate.Expiration,
-                cost_usd = view.CostPerContract,
-                market_probability = view.MarketProbability,
+                symbol = view.Contract.ContractSymbol,
+                underlying = view.Contract.Underlying,
+                type = view.Contract.OptionType,
+                strike = view.Contract.Strike,
+                expiration = view.Contract.Expiration,
+                bid = view.Contract.Bid,
+                ask = view.Contract.Ask,
+                delta = view.Contract.Delta,
+                implied_volatility = view.Contract.ImpliedVolatility,
             }),
         });
 
-    [Description("Your trade proposal, or NO_TRADE.")]
-    public sealed class ProposalArguments
-    {
-        [Description("True when no trade is worth making. Leave actions empty.")]
-        public bool? NoTrade { get; set; }
-
-        [Description("Why, in a short statement. This is what the room debates.")]
-        public string? Thesis { get; set; }
-
-        [Description("What must stay true for the thesis to hold. Each must be checkable later.")]
-        public List<string>? ThesisConditions { get; set; }
-
-        [Description("The main ways this trade loses.")]
-        public List<string>? MainRisks { get; set; }
-
-        [Description("The operations to carry out. One trade at a time.")]
-        public List<ProposalAction>? Actions { get; set; }
-    }
-
-    public sealed class ProposalAction
-    {
-        [Description("One of: open_call, open_put, close.")]
-        public string? Action { get; set; }
-
-        [Description("The exact contract symbol from candidates, or an open position to close.")]
-        public string? ContractSymbol { get; set; }
-
-        [Description("How many contracts you want. The room and the risk rules may reduce it.")]
-        public int? Contracts { get; set; }
-
-        [Description("Your honest probability from 0 to 1 that this finishes profitable.")]
-        public decimal? Probability { get; set; }
-
-        [Description("Why this contract specifically.")]
-        public string? Reasoning { get; set; }
-    }
 }

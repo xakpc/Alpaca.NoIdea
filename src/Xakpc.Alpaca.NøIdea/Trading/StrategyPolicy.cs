@@ -22,15 +22,6 @@ public sealed record StrategyPolicy
 
     public int MaxDaysToExpiration { get; init; } = 10;
 
-    /// <summary>
-    /// The tradeable band of market probability, from the option ladder. A contract that is
-    /// nearly certain either way is not worth an LLM call or a trade: the price already
-    /// reflects the outcome.
-    /// </summary>
-    public decimal MinMarketProbability { get; init; } = 0.20m;
-
-    public decimal MaxMarketProbability { get; init; } = 0.80m;
-
     /// <summary>Close a winner at this gain over the entry premium.</summary>
     public decimal TakeProfitFraction { get; init; } = 0.50m;
 
@@ -38,15 +29,6 @@ public sealed record StrategyPolicy
     public decimal StopLossFraction { get; init; } = 0.40m;
 
     public int MaxContractsPerTrade { get; init; } = 1;
-
-    /// <summary>
-    /// Whether a symbol must have recent news before the agent will consider it. After
-    /// ADR-013 the agents reading news text are the only remaining alpha hypothesis, so the
-    /// budget should go where text exists.
-    /// </summary>
-    public bool RequireFreshNews { get; init; } = true;
-
-    public int FreshNewsWithinHours { get; init; } = 48;
 
     /// <summary>Why the agent chose this policy. Recorded in the audit trail.</summary>
     public string Rationale { get; init; } = "Opening defaults. Chosen, not measured.";
@@ -56,7 +38,7 @@ public sealed record StrategyPolicy
     /// </summary>
     /// <remarks>
     /// Called on every policy the agent produces, before anything reads it. An agent that asks
-    /// for a 90-day expiration, twenty contracts, or an inverted probability band gets a
+    /// for a 90-day expiration, twenty contracts, or an inverted expiration window gets a
     /// clamped policy rather than a rejected cycle — the run continues, more conservatively
     /// than asked, and the clamp is recorded.
     /// </remarks>
@@ -76,25 +58,14 @@ public sealed record StrategyPolicy
             (minDte, maxDte) = (maxDte, minDte);
         }
 
-        var minProbability = Math.Clamp(MinMarketProbability, 0m, 1m);
-        var maxProbability = Math.Clamp(MaxMarketProbability, 0m, 1m);
-
-        if (maxProbability < minProbability)
-        {
-            (minProbability, maxProbability) = (maxProbability, minProbability);
-        }
-
         return this with
         {
             MinDaysToExpiration = minDte,
             MaxDaysToExpiration = maxDte,
-            MinMarketProbability = minProbability,
-            MaxMarketProbability = maxProbability,
             // A non-positive take-profit or stop would close every position at once.
             TakeProfitFraction = Math.Clamp(TakeProfitFraction, 0.05m, 10m),
             StopLossFraction = Math.Clamp(StopLossFraction, 0.05m, 1m),
             MaxContractsPerTrade = Math.Clamp(MaxContractsPerTrade, 1, risk.HardMaxContractsPerTrade),
-            FreshNewsWithinHours = Math.Clamp(FreshNewsWithinHours, 1, 24 * 14),
         };
     }
 

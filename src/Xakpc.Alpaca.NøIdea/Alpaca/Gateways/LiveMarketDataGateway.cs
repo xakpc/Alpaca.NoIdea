@@ -78,45 +78,49 @@ public sealed class LiveMarketDataGateway(AlpacaClients clients) : IMarketDataGa
             request.StrikePriceLessThanOrEqualTo = strikeTo;
         }
 
-        var chain = await _clients.OptionsData.GetOptionChainAsync(request, cancellationToken);
+        request.Pagination.Size = 1_000;
+        var candidates = new List<OptionCandidate>();
 
-        var candidates = new List<OptionCandidate>(chain.Items.Count);
-        foreach (var (contractSymbol, snapshot) in chain.Items)
+        do
         {
-            if (!OccOptionSymbol.TryParse(contractSymbol, out var parsed))
+            var chain = await _clients.OptionsData.GetOptionChainAsync(request, cancellationToken);
+
+            foreach (var (contractSymbol, snapshot) in chain.Items)
             {
-                // A contract symbol the parser does not recognise is a data fault, not a
-                // tradeable candidate. Fail closed by dropping it.
-                continue;
+                if (!OccOptionSymbol.TryParse(contractSymbol, out var parsed))
+                {
+                    continue;
+                }
+
+                var quote = snapshot.Quote;
+                var quality = quote is null
+                    ? QuoteQuality.Missing
+                    : quote.BidPrice > 0 && quote.AskPrice > 0
+                        ? QuoteQuality.TwoSided
+                        : quote.BidPrice > 0 || quote.AskPrice > 0
+                            ? QuoteQuality.OneSided
+                            : QuoteQuality.Missing;
+
+                candidates.Add(new OptionCandidate
+                {
+                    ContractSymbol = contractSymbol,
+                    Underlying = parsed.Underlying,
+                    OptionType = parsed.IsCall ? "call" : "put",
+                    Strike = parsed.Strike,
+                    Expiration = parsed.Expiration,
+                    Quality = quality,
+                    ReferencePrice = quote?.AskPrice ?? 0m,
+                    Bid = quote?.BidPrice,
+                    Ask = quote?.AskPrice,
+                    QuoteTimestampUtc = quote?.TimestampUtc,
+                    Delta = snapshot.Greeks?.Delta,
+                    ImpliedVolatility = snapshot.ImpliedVolatility,
+                });
             }
 
-            var quote = snapshot.Quote;
-            var quality = quote is null
-                ? QuoteQuality.Missing
-                : quote.BidPrice > 0 && quote.AskPrice > 0
-                    ? QuoteQuality.TwoSided
-                    : quote.BidPrice > 0 || quote.AskPrice > 0
-                        ? QuoteQuality.OneSided
-                        : QuoteQuality.Missing;
-
-            candidates.Add(new OptionCandidate
-            {
-                ContractSymbol = contractSymbol,
-                Underlying = parsed.Underlying,
-                OptionType = parsed.IsCall ? "call" : "put",
-                Strike = parsed.Strike,
-                Expiration = parsed.Expiration,
-                Quality = quality,
-                // The ask is what a buyer actually pays. Falling back to the bid on a
-                // one-sided quote would understate the cost, so the candidate carries zero
-                // and the quality flag stops it before any rule reads the price.
-                ReferencePrice = quote?.AskPrice ?? 0m,
-                Bid = quote?.BidPrice,
-                Ask = quote?.AskPrice,
-                QuoteTimestampUtc = quote?.TimestampUtc,
-                Delta = snapshot.Greeks?.Delta,
-            });
+            request.Pagination.Token = chain.NextPageToken;
         }
+        while (!string.IsNullOrWhiteSpace(request.Pagination.Token));
 
         return candidates;
     }
@@ -136,19 +140,24 @@ public sealed class LiveMarketDataGateway(AlpacaClients clients) : IMarketDataGa
         };
 
         request.TimeInterval = new Interval<DateTime>(from.UtcDateTime, to.UtcDateTime);
+        request.Pagination.Size = (uint)Math.Clamp(limit, 1, 50);
 
-        var page = await _clients.StockData.ListNewsArticlesAsync(request, cancellationToken);
-
-        return page.Items
-            .Take(limit)
-            .Select(article => new NewsItem(
+        var items = new List<NewsItem>(limit);
+        do
+        {
+            var page = await _clients.StockData.ListNewsArticlesAsync(request, cancellationToken);
+            items.AddRange(page.Items.Select(article => new NewsItem(
                 article.Id,
                 article.CreatedAtUtc,
                 article.Headline ?? "",
                 article.Summary,
                 article.Source,
-                article.Symbols.ToArray()))
-            .ToArray();
+                article.Symbols.ToArray())));
+            request.Pagination.Token = page.NextPageToken;
+        }
+        while (items.Count < limit && !string.IsNullOrWhiteSpace(request.Pagination.Token));
+
+        return [.. items.Take(limit)];
     }
 
     private static BarTimeFrame ParseTimeFrame(string timeframe) => timeframe switch

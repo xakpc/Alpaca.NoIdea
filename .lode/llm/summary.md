@@ -52,12 +52,30 @@ Keenable web tools, and the structured-output tools it answers through. `submit_
 
 ## Who owns a tool
 
-> **The host list is the seat toolset.** A seat builds no tool of its own.
+The host owns the external research tool list. `--no-mcp` removes the Alpaca tools.
+`--no-web-search` removes the Keenable tools. Replay gives an empty research list. A seat can
+refuse the list with `WantsResearchTools`.
 
-The host connects the servers and gives one list. `--no-mcp` removes the Alpaca tools,
-`--no-web-search` removes the Keenable tools, and replay gives an empty list, which is the
-whole of the replay guarantee. A seat can refuse all of them with `WantsResearchTools`. It
-cannot add one.
+The application also creates local response tools. These tools do not use a network and do
+not move money. `LlmPersona` owns the common analysis, discussion, and vote tools.
+`ProposerTools` owns `submit_proposal`, `submit_rebuttal`, and
+`get_tradeable_contracts`. `ProposerPersona` owns the prompts and the turn flow.
+
+```csharp
+var proposalTool = _tools.CreateProposalTool(
+    offered, held, allowedActions, operation => captured = operation);
+
+var tools = [.. ResearchTools, _tools.CreateCatalogTool(market), proposalTool];
+```
+
+```mermaid
+flowchart LR
+    H[Host] --> R[External research tools]
+    PT[ProposerTools] --> L[Local proposer tools]
+    R --> P[ProposerPersona]
+    L --> P
+    P --> M[Model turn]
+```
 
 **Each tool is an ordinary MCP function call**, so a seat operates the same on all three
 providers. A provider-hosted tool did not: Anthropic maps one to its own `web_search` server
@@ -81,19 +99,17 @@ A model that returns nothing usable becomes an **abstention**, never an approval
 
 ## What a payload is written in
 
-> **The proposer sends TOON. Every other seat sends JSON. Nothing decodes TOON.**
+> **The proposer and reviewer context use TOON. Nothing decodes TOON.**
 
 `ProposerPersona` encodes its search, review and rebuttal payloads with
 `ToonFormat.Toon.Encode`, which writes a uniform array one time as a header and then as rows
-instead of repeating each field name. That seat sends forty candidates and twenty-five
-headlines, and sends them again on each turn of its tool loop, so the format is one of the few
-things that moves its bill. `LlmPersona.Describe`, which builds the `RoomContext` the other
-four seats read, is still `JsonSerializer.Serialize`: one call for each phase, no tool loop,
-much less to earn. **The saving is not measured here** (ADR-028).
+instead of repeating each field name. The proposer sends the full contract catalog when it
+fits the 60,000-character boundary. Otherwise it sends a summary index and uses the local
+catalog query tool from `ProposerTools`. Reviewers receive only the proposed contract
+neighborhood and basic portfolio context. **The saving is not measured here** (ADR-028).
 
-Everything stored or read back stays JSON — `evidence_json`, `market_snapshot_json`, the
-cache rows, the transcript — because Dapper and `--audit` read those, and a format that only
-a prompt consumes must not reach a table.
+Structured proposal-pass columns stay JSON. The legacy `evidence_json` column currently holds
+TOON seat evidence. `market_snapshot_json` and cache rows stay JSON.
 
 ## Untrusted input
 

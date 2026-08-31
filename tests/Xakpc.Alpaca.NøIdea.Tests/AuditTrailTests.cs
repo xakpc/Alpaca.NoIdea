@@ -136,6 +136,7 @@ public class AuditTrailTests : IAsyncLifetime
         var before = await _store.AuditRowCountsAsync(CancellationToken.None);
         Assert.Equal(0, before["evaluation_runs"]);
         Assert.Equal(0, before["decisions"]);
+        Assert.Equal(0, before["proposal_review_passes"]);
 
         var runId = await _store.RecordEvaluationAsync(Evaluation("accepted"), CancellationToken.None);
         await _store.RecordForecastsAsync([Forecast(runId, "quant", "Approve", 0.6m)], CancellationToken.None);
@@ -143,6 +144,64 @@ public class AuditTrailTests : IAsyncLifetime
         var after = await _store.AuditRowCountsAsync(CancellationToken.None);
         Assert.Equal(1, after["evaluation_runs"]);
         Assert.Equal(0, after["decisions"]);
+    }
+
+    [Fact]
+    public async Task SupersededAndFinalProposalVersionsRemainAndFinalThesisJoinsThePosition()
+    {
+        await _store.RecordProposalReviewPassesAsync(
+            [
+                new ProposalReviewPassRow
+                {
+                    ProposalId = "proposal-20260831-0007",
+                    ProposalVersion = 1,
+                    ReviewPass = 1,
+                    Superseded = true,
+                    Verdict = "Rejected",
+                    OptionSymbol = "SPY260904C00775000",
+                    Thesis = "first thesis",
+                    ThesisConditionsJson = "[]",
+                },
+                new ProposalReviewPassRow
+                {
+                    ProposalId = "proposal-20260831-0007",
+                    ProposalVersion = 2,
+                    ReviewPass = 2,
+                    Verdict = "Approved",
+                    OptionSymbol = "SPY260904C00770000",
+                    Thesis = "final thesis",
+                    ThesisConditionsJson = "[\"SPY stays above 765\"]",
+                },
+            ],
+            CancellationToken.None);
+
+        var runId = await _store.RecordEvaluationAsync(Evaluation("accepted"), CancellationToken.None);
+        var decisionId = await _store.RecordDecisionAsync(
+            new DecisionRow { RunId = runId, Action = "OpenCall", CreatedUtc = 1 },
+            CancellationToken.None);
+        await _store.ReserveAsync(
+            new OrderRecord
+            {
+                ClientOrderId = "live-versioned",
+                OptionSymbol = "SPY260904C00770000",
+                Side = "Buy",
+                Quantity = 1,
+                OrderType = "Limit",
+                SubmittedUtc = 1,
+                Status = "reserved",
+                Mode = "live",
+                DecisionId = decisionId,
+            },
+            CancellationToken.None);
+
+        var counts = await _store.AuditRowCountsAsync(CancellationToken.None);
+        var theses = await _store.PositionThesesAsync(
+            "live", ["SPY260904C00770000"], CancellationToken.None);
+
+        Assert.Equal(2, counts["proposal_review_passes"]);
+        var thesis = Assert.Single(theses).Value;
+        Assert.Equal("final thesis", thesis.Thesis);
+        Assert.Equal(["SPY stays above 765"], thesis.Conditions);
     }
 
     [Fact]
@@ -229,9 +288,9 @@ public class SeatOpinionTests
 
         // The change of mind is the interesting part, so the first opinion is kept beside
         // the final vote rather than being overwritten by it.
-        Assert.Contains("\"initialVote\":\"Reject\"", skeptic.EvidenceJson);
-        Assert.Contains("skeptic analysis", skeptic.EvidenceJson);
-        Assert.Contains("skeptic speaks", skeptic.EvidenceJson);
+        Assert.Contains("initialVote: Reject", skeptic.Evidence);
+        Assert.Contains("skeptic analysis", skeptic.Evidence);
+        Assert.Contains("skeptic speaks", skeptic.Evidence);
     }
 
     [Fact]
@@ -283,11 +342,11 @@ public class SeatOpinionTests
             IsAccountBlocked = false,
         },
         Positions = [],
-        Candidates =
+        ContractCatalog =
         [
-            new CandidateView
+            new TradeableContractView
             {
-                Candidate = new OptionCandidate
+                Contract = new OptionCandidate
                 {
                     ContractSymbol = "TEST260904C00100000",
                     Underlying = "TEST",

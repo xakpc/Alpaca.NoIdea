@@ -107,6 +107,10 @@ public sealed class LiveTradingGateway(AlpacaClients clients) : ITradingGateway
         ContractSymbol = order.Symbol,
         Lifecycle = MapLifecycle(order.OrderStatus),
         FilledQuantity = (int)order.IntegerFilledQuantity,
+        RequestedQuantity = (int)order.IntegerQuantity,
+        IsBuy = order.OrderSide == OrderSide.Buy,
+        LimitPrice = order.LimitPrice,
+        SubmittedUtc = order.SubmittedAtUtc,
         AverageFillPrice = order.AverageFillPrice,
         RawStatus = order.OrderStatus.ToString(),
     };

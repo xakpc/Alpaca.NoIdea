@@ -31,13 +31,13 @@ trained Historical ML Expert, and an empty trading host.
 | `alpaca-autonomous-options-agent-avd.md` | Revision 4. **Seeded this lode; no longer a source of truth.** Revision 4 records that the war room replaced the weighted combiner (ADR-019) and that the ML expert is excluded (ADR-013). |
 | `src/Xakpc.Alpaca.NøIdea/Program.cs` | Five modes. `--live` runs the war room against the paper account; `--smoke` runs the full order path; `--check-mcp` proves the read-only tool isolation; `--import-history` loads `data/raw` into SQLite; `--replay` runs the offline replay. The trading loop runs. |
 | `src/…/Alpaca/AlpacaClients.cs` | **Done.** Three typed `Alpaca.Markets` clients on `Environments.Paper`. |
-| `src/…/Alpaca/AlpacaMcpClient.cs` + `McpToolCatalog.cs` | **Done.** One read-only MCP connection; 34 tools discovered, 25 approved, forbidden tools fail startup. |
+| `src/…/Alpaca/AlpacaMcpClient.cs` + `McpToolCatalog.cs` | **Done.** One read-only MCP connection; 23 research tools are approved. Option-chain discovery tools are excluded because C# owns the catalog. Forbidden tools fail startup. |
 | `src/…/Alpaca/Gateways/` | **Done.** `IMarketDataGateway` and `ITradingGateway` over project-owned records, with the two live SDK implementations and `OccOptionSymbol` (ADR-014). |
-| `src/…/Storage/` | **Done.** The full schema, `TradingStore` (cache, orders, and the audit trail), `RawJsonPages`, `HistoryImporter`, and `BarAvailability` (ADR-015). `TradingLoop` fills `evaluation_runs`, `forecasts` and `decisions` for accepted and rejected actions alike; `--audit` reads them back. `agent_tool_calls` stays empty (ADR-026). |
+| `src/…/Storage/` | **Done.** The full schema, `TradingStore` (cache, orders, and the audit trail), `RawJsonPages`, `HistoryImporter`, and `BarAvailability` (ADR-015). `proposal_review_passes` keeps every immutable proposal version. The final decision alone can link to an order. `agent_tool_calls` stays empty (ADR-026). |
 | `src/…/Replay/` | **Done.** `ReplayClock`, `ReplayMarketDataGateway`, `ReplayTradingGateway`, `ReplayRunner`, `MarketCalendar`, and `OptionLadder`. |
 | `data/trader.db` | **Populated.** 122,444 bars, 16,088 news items, 195,824 contracts, 151,718 option bars, for 2026-02-01 to 2026-08-28. |
 | `scripts/acquire-news.sh` | **Done.** The paginated news backfill. 25,187 items. The old script captured one page per symbol. |
-| `tests/Trader.Tests` | **Done.** 119 tests: the paper guarantee, the tool policy, the no-leak rule, bar availability, the ladder, the OCC parser, the risk limits, the war-room flow with mock personas, the dry-run gateway, the audit trail, who owns a research tool, and the model transcript with its per-seat event ids. |
+| `tests/Xakpc.Alpaca.NøIdea.Tests` | **Done.** 125 tests cover safety, catalog context, headline selection, nearby reviewer contracts, versioned review passes, risk, replay, audit, dry run, and transcripts. |
 | `src/…FeatureGenerator` (branch `phase-3-historical-ml-expert`) | **Done.** Shared library: bar reading, the regular-hours calendar, the contract catalog, the 14 features, and `HistoricalMlExpert`. |
 | `src/…Trainer` (branch `phase-3-historical-ml-expert`) | **Done.** Console: builds 1.36M labelled rows, splits by time, trains SDCA, evaluates, writes the report. |
 | `tests/Trader.Tests` (branch `phase-3-historical-ml-expert`) | **Done.** 46 xUnit tests, including the no-future-leak checks. |
@@ -48,8 +48,8 @@ trained Historical ML Expert, and an empty trading host.
 | `compose.dev.yaml` + `docker/alpaca-mcp.dev.Dockerfile` | **One** permanent development server on `127.0.0.1:8100`. The trading server was deleted (ADR-001). |
 | `scripts/*.sh` (branch `phase-3-historical-ml-expert`) | Universe screening, history, contracts, and option bars. Deterministic, no LLM. |
 | `data/raw/` | 133 MB of bars and news, 2023-01-03 to 2026-08-28, plus 370 MB of expired option contracts, 2024-01-18 to 2026-08-28. Git-ignored. |
-| `src/…/Trading/` | **Done.** `TradingLoop`, `RiskGuard`, `RiskOptions`, `StrategyPolicy`, `TradingOptions`, `LiveSession`, `PositionReviewTriggers`. |
-| `src/…/Agents/Room/` | **Done.** `WarRoomSession`, `IPersona`, five persona classes, `VoteTally`, `TokenLedger`, `ProposalPreValidator`, `ChatClientFactory` (Anthropic, OpenAI, Grok). |
+| `src/…/Trading/` | **Done.** `TradingLoop` builds the complete mechanically valid `TradeableContractCatalog`, compact underlying and headline context, and pending-order-aware capacity. `RiskGuard` performs the final check. |
+| `src/…/Agents/Room/` | **Done.** The proposer gets the full catalog or its size-aware index. Reviewers get nearby contracts and portfolio context. A modified rebuttal creates version 2 and gets a fresh review pass. |
 | `src/…/Agents/` | **Done.** The typed action space and `StubStrategyAgent`. |
 | `src/…/Observability/` | **Done.** `RunEvents`, the permanent `EventId` of each event that tells the story of a run, and `ChatTranscript`, which writes each seat's whole conversation with its model — the prompts, the turns, each tool call with its arguments, each answer, and a tally — under one block of ids per seat (ADR-027). There is no terminal view: the run writes to the console (ADR-024). |
 | Options Evaluator as a separate class | Not implemented. The evaluator's checks live in `RiskGuard.CheckContract`. |
@@ -68,6 +68,11 @@ hallucinate.
 
 `TokenLedger` reports what each sitting cost. Token counts are fact; the dollar figure is an
 estimate and a floor.
+
+C# builds an authoritative tradeable contract catalog from all pages of the broad option
+chain. It admits contracts by quote, spread, expiration, duplicate-position, cash, slot, and
+hard-risk rules. It does not use market probability, news, premium rank, or a quality score
+as trade strategy. See [tradeable contract catalog](trading/tradeable-contract-catalog.md).
 
 `--live` runs the loop against the paper account. `--replay --agent llm` runs the same room over
 stored history with **no research tools at all**, because a live tool in a historical run reads

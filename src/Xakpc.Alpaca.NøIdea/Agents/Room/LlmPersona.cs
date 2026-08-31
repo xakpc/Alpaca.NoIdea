@@ -1,8 +1,8 @@
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using ToonFormat;
 using Xakpc.Alpaca.NøIdea.Observability;
 
 namespace Xakpc.Alpaca.NøIdea.Agents.Room;
@@ -29,9 +29,6 @@ public abstract class LlmPersona(
     private const string AnalyseTool = "submit_analysis";
     private const string SpeakTool = "speak";
     private const string VoteTool = "cast_vote";
-
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-
     private readonly IReadOnlyList<AITool> _researchTools = researchTools ?? [];
     private readonly TokenLedger _ledger = new();
 
@@ -416,15 +413,21 @@ public abstract class LlmPersona(
             """,
     };
 
-    private static string Describe(RoomContext context) => JsonSerializer.Serialize(
-        new
+    private static string Describe(RoomContext context)
+    {
+        var nearby = ReviewContextSelector.NearbyContracts(context.Market, context.Operation);
+        var underlyings = ReviewContextSelector.RelevantUnderlyings(context.Market, context.Operation);
+        var headlines = ReviewContextSelector.RelevantHeadlines(context.Market, context.Operation);
+
+        return Toon.Encode(new
         {
             proposal_id = context.ProposalId,
             purpose = context.Purpose.ToString(),
             now_utc = context.Market.NowUtc,
             round = context.Round,
-            account_equity = context.Market.Account.Equity,
-            policy = context.Market.Policy,
+            account = new { equity = context.Market.Account.Equity, cash = context.Market.Account.Cash },
+            portfolio_capacity = context.Market.Capacity,
+            constraints = context.Market.Constraints,
             allowed_actions = context.AllowedActions.Select(kind => kind.ToString()),
             operation = new
             {
@@ -455,30 +458,54 @@ public abstract class LlmPersona(
                 original_thesis = context.Position.OriginalThesis,
                 original_thesis_conditions = context.Position.OriginalThesisConditions,
             },
-            contracts = context.Market.Candidates
-                .Where(view => context.Operation.Actions.Any(action =>
-                    string.Equals(action.ContractSymbol, view.Candidate.ContractSymbol,
-                        StringComparison.Ordinal)))
-                .Select(view => new
+            contracts = nearby.Select(view => new
                 {
-                    symbol = view.Candidate.ContractSymbol,
-                    underlying = view.Candidate.Underlying,
-                    type = view.Candidate.OptionType,
-                    strike = view.Candidate.Strike,
-                    expiration = view.Candidate.Expiration,
-                    underlying_price = view.UnderlyingPrice,
+                    symbol = view.Contract.ContractSymbol,
+                    underlying = view.Contract.Underlying,
+                    type = view.Contract.OptionType,
+                    strike = view.Contract.Strike,
+                    expiration = view.Contract.Expiration,
+                    bid = view.Contract.Bid,
+                    ask = view.Contract.Ask,
+                    delta = view.Contract.Delta,
+                    implied_volatility = view.Contract.ImpliedVolatility,
                     cost_usd = view.CostPerContract,
-                    market_probability = view.MarketProbability,
-                    recent_news = view.RecentNewsCount,
                 }),
-            open_positions = context.Market.Positions.Select(position => new
+            underlying_snapshots = underlyings.Select(snapshot => new
             {
-                symbol = position.Symbol,
-                entry = position.AverageEntryPrice,
-                current = position.CurrentPrice,
-                unrealized = position.UnrealizedPnl,
+                symbol = snapshot.Symbol,
+                last = snapshot.Last,
+                last_at = snapshot.LastAt,
+                return_1d = snapshot.Return1D,
+                return_5d = snapshot.Return5D,
             }),
-            headlines = context.Market.News.Take(20).Select(item => new
+            open_positions = context.Market.PortfolioPositions.Select(view => new
+            {
+                symbol = view.Position.Symbol,
+                underlying = view.Underlying,
+                type = view.OptionType,
+                strike = view.Strike,
+                expiration = view.Expiration,
+                quantity = view.Position.Quantity,
+                entry = view.Position.AverageEntryPrice,
+                current = view.Position.CurrentPrice,
+                unrealized = view.Position.UnrealizedPnl,
+                unrealized_fraction = view.UnrealizedPnlFraction,
+                premium_risk = view.PremiumRisk,
+                original_thesis = view.OriginalThesis,
+                original_thesis_conditions = view.OriginalThesisConditions,
+            }),
+            pending_orders = context.Market.PendingOrders.Select(order => new
+            {
+                symbol = order.ContractSymbol,
+                side = order.IsBuy ? "buy" : "sell",
+                requested = order.RequestedQuantity,
+                filled = order.FilledQuantity,
+                remaining = order.RemainingQuantity,
+                limit = order.LimitPrice,
+                status = order.RawStatus,
+            }),
+            headlines = headlines.Select(item => new
             {
                 at = item.PublishedUtc,
                 symbols = item.Symbols,
@@ -513,8 +540,8 @@ public abstract class LlmPersona(
                 pnl = outcome.RealizedPnl,
                 why = outcome.Reasoning,
             }),
-        },
-        Json);
+        });
+    }
 
     // ------------------------------------------------------------------ tool shapes
 

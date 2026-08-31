@@ -17,9 +17,9 @@ flowchart TD
     E -- No --> G[Leave the position]
     F --> H[Recalculate capacity]
     G --> H
-    H --> I{Capacity and candidates?}
+    H --> I{Capacity and catalog rows?}
     I -- No --> Y[Record and wait]
-    I -- Yes --> J[Cheap filter builds candidates]
+    I -- Yes --> J[Build tradeable contract catalog]
     J --> K[New-trade war room]
     K --> L{Approved?}
     L -- No --> Y
@@ -78,20 +78,32 @@ A review that fails leaves the position alone. It is still covered by the hard e
 Position count, positions opened today, exposure against equity, the daily loss state, and
 the remaining position slots.
 
-## 5. Cheap filter
+## 5. Tradeable contract catalog
 
-The filter decides what is **worth an agent call**. Whether a trade could legally exist is a
-different question, answered by `ProposalPreValidator` inside the room.
+C# reads one broad call-and-put chain for each tracked symbol. It uses all API pages. The
+20 percent moneyness boundary controls request size. It is not a trade-quality rule.
 
-For each tracked symbol the loop reads the spot price, requires fresh news when the policy
-asks for it, pulls the call and put chains inside the policy expiration window and a strike
-band around spot, computes the ladder market probability, drops anything already held, and
-keeps the 40 cheapest that fall inside the tradeable probability band.
+The builder keeps each contract that has a current tradeable quote, acceptable spread,
+allowed expiration, no held or pending duplicate, and one-contract risk that fits the
+account. Missing delta or implied volatility does not reject a row. C# does not use news,
+market probability, premium rank, or a quality score to choose rows.
+
+```csharp
+if (_riskGuard.CanOpen(oneContract, view, snapshot, policy).Allowed)
+{
+    catalog.Add(view);
+}
+```
+
+The proposer receives the full compact catalog when it is at most 60,000 TOON characters.
+A larger catalog becomes a summary index. The proposer can query the immutable local catalog
+with symbol, type, expiration, strike bounds, and offset filters.
 
 ## 6. The war room
 
 See [war room](../war-room/summary.md). Propose, pre-validate, analyse independently, debate,
-rebut, vote privately, tally to a verdict and a size.
+rebut, vote privately, tally to a verdict and a size. A modified rebuttal creates version 2
+and gets a new independent analysis, discussion, and private vote.
 
 ## 7. Risk and submission
 
@@ -102,8 +114,9 @@ instead of sending a second order.
 
 ## 8. Persist
 
-Every cycle writes an equity snapshot. Rejections are recorded with their reason: the
-rejected path matters as much as the executed one.
+Every cycle writes an equity snapshot. Each proposal version keeps its operation, thesis,
+analyses, discussion, votes, verdict, review pass, and superseded state. Only the final
+decision can link to an order. Rejections remain with their reason.
 
 ## Related
 
@@ -111,3 +124,5 @@ rejected path matters as much as the executed one.
 - [Risk guardrails](risk-guardrails.md)
 - [Position lifecycle](position-lifecycle.md)
 - [Strategy parameters](strategy-parameters.md)
+- [Tradeable contract catalog](tradeable-contract-catalog.md)
+- [Staged war-room context](../war-room/staged-context.md)

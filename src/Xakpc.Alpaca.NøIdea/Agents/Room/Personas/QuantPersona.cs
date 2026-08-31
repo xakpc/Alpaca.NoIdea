@@ -31,9 +31,10 @@ public sealed class QuantPersona(
         whether this contract is a sensible way to express the stated view at all, or whether
         the thesis would be better served by a different strike or expiration.
 
-        Compare the market probability from the option ladder against the move actually being
-        bet on. Check the breakeven against typical daily moves. The market's probability is
-        well calibrated and risk-neutral, so it sits slightly below the real-world chance.
+        Check the breakeven against typical daily moves. Use nullable delta and implied
+        volatility as context when they exist. Missing greeks mean less information, not an
+        automatic rejection; request the exact-contract snapshot when the missing value is
+        important to the decision.
 
         Say clearly when the operation needs an implausibly large move to pay, and equally
         clearly when the numbers do support it.

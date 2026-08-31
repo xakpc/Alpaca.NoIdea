@@ -115,8 +115,8 @@ Three known undercounts, all silent:
 
 ### The proposer is the seat that spends
 
-The tool loop resends the whole conversation on each turn: the prompt, the candidate payload,
-the 25 tool schemas, and each earlier tool result. Only the proposer loops like this, so it
+The tool loop resends the whole conversation on each turn: the prompt, the catalog payload or
+index, the tool schemas, and each earlier tool result. Only the proposer loops like this, so it
 bills more input than the other four seats together. Two measured searches, in cycles where
 the room never sat:
 
@@ -128,17 +128,17 @@ the room never sat:
 Input is 96 to 98 percent of that, and output is nearly constant. The seat runs on Sonnet 5
 for this reason: 2.00 against 5.00 per million input.
 
-**The payload is TOON, not JSON.** Forty candidates of nine fields and twenty-five headlines
-repeat each field name in JSON, and this seat resends them on each turn. `Toon.Encode` writes
-a uniform array one time as a header and then as rows. Only this seat does it, and the saving
-is not measured (ADR-028).
+**The payload is TOON, not JSON.** The full catalog is inline at 60,000 characters or less.
+A larger catalog is a per-symbol index and the proposer pages the immutable local catalog.
+Reviewers get only nearby contracts. `Toon.Encode` writes a uniform array header once, and the
+saving is not measured (ADR-028).
 
 **Nothing sets `cache_control`.** The part of a request that does not change between turns —
 the prompt, the payload, the tool schemas — is billed again at the full rate on every turn,
 when a cache read costs 0.20. That is the larger correction and it is not made.
 
-One proposal costs roughly: 1 proposal + 3 analyses + (3 × rounds) discussion + 1 rebuttal +
-3 votes. With two rounds that is about **14 model calls**, before the tool calls behind them.
+One unchanged proposal costs roughly: 1 proposal + 3 analyses + (3 × rounds) discussion + 1
+rebuttal + 3 votes. A modified proposal adds a fresh analysis, discussion, and vote pass.
 
 ## Position review
 

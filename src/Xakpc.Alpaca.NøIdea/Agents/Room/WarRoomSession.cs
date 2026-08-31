@@ -29,6 +29,7 @@ public sealed record WarRoomOutcome
     public IReadOnlyList<PersonaAnalysis> Analyses { get; init; } = [];
     public IReadOnlyList<RoomContribution> Discussion { get; init; } = [];
     public IReadOnlyList<PersonaVote> Votes { get; init; } = [];
+    public IReadOnlyList<ProposalReviewPass> ReviewPasses { get; init; } = [];
 
     /// <summary>Set when C# rejected before the room sat.</summary>
     public string? RejectionCode { get; init; }
@@ -38,6 +39,22 @@ public sealed record WarRoomOutcome
 
     public bool ShouldExecute =>
         Verdict == WarRoomVerdict.Approved && Operation.TradesAnything;
+}
+
+/// <summary>One immutable proposal version and its review evidence.</summary>
+public sealed record ProposalReviewPass
+{
+    public required string ProposalId { get; init; }
+    public required int ProposalVersion { get; init; }
+    public required int ReviewPass { get; init; }
+    public required ProposedOperation Operation { get; init; }
+    public required WarRoomVerdict Verdict { get; init; }
+    public required VoteTally Tally { get; init; }
+    public bool Superseded { get; init; }
+    public string? RejectionCode { get; init; }
+    public IReadOnlyList<PersonaAnalysis> Analyses { get; init; } = [];
+    public IReadOnlyList<RoomContribution> Discussion { get; init; } = [];
+    public IReadOnlyList<PersonaVote> Votes { get; init; } = [];
 }
 
 /// <summary>How the room runs.</summary>
@@ -176,34 +193,11 @@ public sealed class WarRoomSession(
         }
 
         // ---- Discussion (spec §19). Everyone has now read everyone.
-        var discussion = new List<RoomContribution>();
         var rounds = Math.Clamp(_options.DiscussionRounds, 1, WarRoomOptions.MaximumDiscussionRounds);
+        var discussion = await RunDiscussionAsync(
+            context, analyses, rounds, deadline, ledger, cancellationToken);
 
-        for (var round = 1; round <= rounds; round++)
-        {
-            if (_time.GetUtcNow() >= deadline)
-            {
-                _logger.LogWarning(
-                    "{Id}: discussion deadline reached after round {Round}. Going to the vote.",
-                    request.ProposalId, round - 1);
-                break;
-            }
-
-            foreach (var reviewer in _reviewers)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var roundContext = context with
-                {
-                    Analyses = analyses,
-                    Said = discussion,
-                    Round = round,
-                };
-
-                var said = await SpeakAsync(reviewer, roundContext, round, ledger, cancellationToken);
-                discussion.Add(said);
-            }
-        }
+        var reviewPasses = new List<ProposalReviewPass>();
 
         // ---- Rebuttal (spec §20). Defend, modify, or withdraw.
         var modified = false;
@@ -233,6 +227,20 @@ public sealed class WarRoomSession(
 
             if (modified)
             {
+                reviewPasses.Add(new ProposalReviewPass
+                {
+                    ProposalId = request.ProposalId,
+                    ProposalVersion = 1,
+                    ReviewPass = 1,
+                    Operation = operation,
+                    Verdict = WarRoomVerdict.Rejected,
+                    Tally = VoteTally.Count([]),
+                    Superseded = true,
+                    RejectionCode = "SUPERSEDED_BY_PROPOSER",
+                    Analyses = analyses,
+                    Discussion = discussion,
+                });
+
                 // Spec §20: a changed structure is a new proposal and must be validated again.
                 if (_preValidate(answered, request) is { } rejectedAfterChange)
                 {
@@ -240,18 +248,40 @@ public sealed class WarRoomSession(
                         "{Id}: the modified proposal failed pre-validation: {Code}.",
                         request.ProposalId, rejectedAfterChange);
 
-                    return Rejected(request, answered, ledger, rejectedAfterChange) with
+                    var rejected = Rejected(request, answered, ledger, rejectedAfterChange);
+                    return rejected with
                     {
-                        Analyses = analyses,
-                        Discussion = discussion,
                         ProposalWasModified = true,
+                        ReviewPasses =
+                        [
+                            .. reviewPasses,
+                            new ProposalReviewPass
+                            {
+                                ProposalId = request.ProposalId,
+                                ProposalVersion = 2,
+                                ReviewPass = 2,
+                                Operation = answered,
+                                Verdict = WarRoomVerdict.PreValidationRejected,
+                                Tally = VoteTally.Count([]),
+                                RejectionCode = rejectedAfterChange,
+                            },
+                        ],
                     };
                 }
 
+                // A changed proposal starts a clean review pass. The old opinions stay in
+                // the audit, but they do not decide the new contract.
+                operation = answered;
+                context = context with { Operation = operation, Analyses = [], Said = [], Round = 0 };
+                analyses = await RunIndependentAsync(context, ledger, cancellationToken);
+                discussion = await RunDiscussionAsync(
+                    context, analyses, rounds, deadline, ledger, cancellationToken);
             }
-
-            operation = answered;
-            context = context with { Operation = operation };
+            else
+            {
+                operation = answered;
+                context = context with { Operation = operation };
+            }
         }
 
         // ---- Private vote (spec §21). In parallel, and no persona sees another vote:
@@ -276,17 +306,32 @@ public sealed class WarRoomSession(
             request.ProposalId, tally,
             tally.SizeMultiplier > 0m ? "APPROVED" : "REJECTED", cost);
 
+        var finalOperation = ApplySize(operation, tally);
+        var finalPass = new ProposalReviewPass
+        {
+            ProposalId = request.ProposalId,
+            ProposalVersion = modified ? 2 : 1,
+            ReviewPass = modified ? 2 : 1,
+            Operation = finalOperation,
+            Verdict = verdict,
+            Tally = tally,
+            Analyses = analyses,
+            Discussion = discussion,
+            Votes = votes,
+        };
+
         return new WarRoomOutcome
         {
             ProposalId = request.ProposalId,
             Verdict = tally.SizeMultiplier > 0m ? WarRoomVerdict.Approved : WarRoomVerdict.Rejected,
-            Operation = ApplySize(operation, tally),
+            Operation = finalOperation,
             Tally = tally,
             Cost = cost,
             Analyses = analyses,
             Discussion = discussion,
             Votes = votes,
             ProposalWasModified = modified,
+            ReviewPasses = [.. reviewPasses, finalPass],
         };
     }
 
@@ -342,6 +387,43 @@ public sealed class WarRoomSession(
             _logger.LogError(error, "{Persona} failed to speak.", reviewer.Name);
             return RoomContribution.Failed(reviewer.Name, round, error.Message);
         }
+    }
+
+    private async Task<IReadOnlyList<RoomContribution>> RunDiscussionAsync(
+        RoomContext context,
+        IReadOnlyList<PersonaAnalysis> analyses,
+        int rounds,
+        DateTimeOffset deadline,
+        TokenLedger ledger,
+        CancellationToken cancellationToken)
+    {
+        var discussion = new List<RoomContribution>();
+
+        for (var round = 1; round <= rounds; round++)
+        {
+            if (_time.GetUtcNow() >= deadline)
+            {
+                _logger.LogWarning(
+                    "{Id}: discussion deadline reached after round {Round}. Going to the vote.",
+                    context.ProposalId, round - 1);
+                break;
+            }
+
+            foreach (var reviewer in _reviewers)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var roundContext = context with
+                {
+                    Analyses = analyses,
+                    Said = discussion,
+                    Round = round,
+                };
+                discussion.Add(await SpeakAsync(
+                    reviewer, roundContext, round, ledger, cancellationToken));
+            }
+        }
+
+        return discussion;
     }
 
     private async Task<ProposedOperation> RebutAsync(
@@ -421,6 +503,18 @@ public sealed class WarRoomSession(
         Operation = operation,
         Tally = VoteTally.Count([]),
         Cost = ledger.Snapshot(),
+        ReviewPasses =
+        [
+            new ProposalReviewPass
+            {
+                ProposalId = request.ProposalId,
+                ProposalVersion = 1,
+                ReviewPass = 1,
+                Operation = operation,
+                Verdict = WarRoomVerdict.NoProposal,
+                Tally = VoteTally.Count([]),
+            },
+        ],
     };
 
     private static WarRoomOutcome Rejected(
@@ -432,6 +526,19 @@ public sealed class WarRoomSession(
         Tally = VoteTally.Count([]),
         Cost = ledger.Snapshot(),
         RejectionCode = code,
+        ReviewPasses =
+        [
+            new ProposalReviewPass
+            {
+                ProposalId = request.ProposalId,
+                ProposalVersion = 1,
+                ReviewPass = 1,
+                Operation = operation,
+                Verdict = WarRoomVerdict.PreValidationRejected,
+                Tally = VoteTally.Count([]),
+                RejectionCode = code,
+            },
+        ],
     };
 
     private static WarRoomOutcome Withdrawn(
@@ -450,6 +557,21 @@ public sealed class WarRoomSession(
         Discussion = discussion,
         RejectionCode = "WITHDRAWN_BY_PROPOSER",
         ProposalWasModified = true,
+        ReviewPasses =
+        [
+            new ProposalReviewPass
+            {
+                ProposalId = request.ProposalId,
+                ProposalVersion = 1,
+                ReviewPass = 1,
+                Operation = operation,
+                Verdict = WarRoomVerdict.Rejected,
+                Tally = VoteTally.Count([]),
+                RejectionCode = "WITHDRAWN_BY_PROPOSER",
+                Analyses = analyses,
+                Discussion = discussion,
+            },
+        ],
     };
 }
 

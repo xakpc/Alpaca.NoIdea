@@ -52,11 +52,14 @@ Short definitions of the domain language of this project. Keep the lines short.
   value is 1 or 0. A lower score is better.
 - **Reliability weight** — The influence of one expert in the combination. It comes from
   the average Brier score. See [forecast combination](war-room/summary.md).
-- **Candidate** — One option contract and one price question under evaluation.
+- **Tradeable contract catalog** — The complete set of option contracts that C# confirms can
+  be traded under current mechanical and hard-risk rules. The catalog does not rank trades.
+- **Proposal review pass** — One immutable proposal version with its analyses, discussion,
+  votes, verdict, and superseded state.
 - **Evaluation run** — One row in the `evaluation_runs` table. It is one evaluated option
   event.
-- **Cheap filter** — The step that compares the ML probability with the market reference
-  before the system calls an LLM. It prevents unnecessary LLM cost.
+- **Mechanical catalog filter** — The C# checks for existence, quote, spread, expiration,
+  duplicate exposure, cash, slots, and hard risk. It does not decide trade quality.
 - **Cycle** — One pass of the live trading loop. The target interval is 30 minutes.
 - **Replay** — The historical mode. The same strategy code runs against stored SQLite data
   and a replay `TimeProvider`. See [replay mode](replay/replay-mode.md).

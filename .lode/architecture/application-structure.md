@@ -42,7 +42,8 @@ src/Xakpc.Alpaca.NøIdea/
             VoteTally.cs                  # votes to verdict and size
             RoomCost.cs                   # TokenLedger and ModelPricing
             Personas/
-                ProposerPersona.cs        # Claude Opus. Full Alpaca toolset.
+                ProposerPersona.cs        # Claude Sonnet. Prompts and turn flow.
+                ProposerTools.cs          # Local proposer tools and their schemas.
                 SkepticPersona.cs         # Claude Sonnet
                 QuantPersona.cs           # GPT
                 MarketPersona.cs          # Grok

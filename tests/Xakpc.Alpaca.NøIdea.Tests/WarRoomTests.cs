@@ -205,6 +205,38 @@ public class WarRoomTests
         Assert.True(outcome.ProposalWasModified);
     }
 
+    [Fact]
+    public async Task AModifiedProposalGetsAFreshReviewAndKeepsBothVersions()
+    {
+        var reviewer = new RecordingPersona("r", VoteKind.Approve, 0.8m);
+        var original = OneTrade();
+        var changed = TradeOn("TEST260904C00105000");
+        var proposer = new ScriptedProposer(original) { Rebuttal = changed };
+
+        var outcome = await Session(proposer, [reviewer])
+            .RunAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(2, reviewer.AnalyseCalls);
+        Assert.Equal(2, reviewer.SpeakCalls);
+        Assert.Equal(1, reviewer.VoteCalls);
+        Assert.Collection(
+            outcome.ReviewPasses,
+            first =>
+            {
+                Assert.Equal(1, first.ProposalVersion);
+                Assert.True(first.Superseded);
+                Assert.Equal(original.SubstanceKey, first.Operation.SubstanceKey);
+                Assert.Empty(first.Votes);
+            },
+            second =>
+            {
+                Assert.Equal(2, second.ProposalVersion);
+                Assert.False(second.Superseded);
+                Assert.Equal(changed.SubstanceKey, second.Operation.SubstanceKey);
+                Assert.Single(second.Votes);
+            });
+    }
+
     // ---------------------------------------------------------------- sizing
 
     [Fact]
@@ -330,7 +362,7 @@ public class WarRoomTests
                 IsAccountBlocked = false,
             },
             Positions = [],
-            Candidates = [],
+            ContractCatalog = [],
             Policy = new StrategyPolicy(),
             RemainingPositionSlots = 4,
             NewPositionsHalted = false,

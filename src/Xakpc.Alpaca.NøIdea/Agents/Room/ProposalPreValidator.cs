@@ -8,9 +8,9 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This is deliberately separate from the cheap filter that builds the candidate list. The
-/// filter answers "is this worth an agent call"; this answers "could this trade legally exist
-/// at all". Conflating the two hides real faults behind a taste judgement.
+/// This is deliberately separate from the mechanical catalog builder. The builder admits
+/// executable contracts; this validates that the proposal names and uses one of those rows
+/// correctly. Neither component judges whether the trade is attractive.
 /// </para>
 /// <para>
 /// It is also separate from <c>RiskGuard</c>, which runs again immediately before submission
@@ -76,15 +76,15 @@ public sealed class ProposalPreValidator(
                 continue;
             }
 
-            var view = market.Candidates.FirstOrDefault(candidate =>
-                string.Equals(candidate.Candidate.ContractSymbol, action.ContractSymbol, StringComparison.Ordinal));
+            var view = market.ContractCatalog.FirstOrDefault(candidate =>
+                string.Equals(candidate.Contract.ContractSymbol, action.ContractSymbol, StringComparison.Ordinal));
 
             if (view is null)
             {
                 return "REJECT_INVALID_CONTRACT";
             }
 
-            var contract = view.Candidate;
+            var contract = view.Contract;
 
             if (!_allowed.Contains(contract.Underlying))
             {

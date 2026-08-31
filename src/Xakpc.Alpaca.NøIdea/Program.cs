@@ -169,7 +169,7 @@ if (args.Contains("--replay"))
             new ExposureRiskPersona(replayRisk),
         };
 
-        var replayProposer = new ProposerPersona(replayFactory, log, noTools);
+        var replayProposer = new ProposerPersona(replayFactory, log, noTools, tradingOptions);
 
         var replayMissing = ChatClientFactory.MissingKeys([replayProposer, .. replayPersonas]);
         if (replayMissing.Count > 0)
@@ -214,11 +214,11 @@ if (args.Contains("--replay"))
                 replayAgent,
                 new RiskGuard(replayRisk, cycle.Clock),
                 replayRisk,
+                tradingOptions,
                 replayStore,
                 cycle.Clock,
                 log)
             {
-                TrackedSymbols = tradingOptions.TrackedSymbols,
                 Mode = "replay",
                 Policy = replayPolicy,
             };
@@ -404,7 +404,7 @@ if (args.Contains("--live"))
             new ExposureRiskPersona(liveRiskOptions),          // plain C#, no tokens
         };
 
-        var roomProposer = new ProposerPersona(factory, log, researchTools);
+        var roomProposer = new ProposerPersona(factory, log, researchTools, liveTradingOptions);
 
         // Fail before the open, not at 09:31. A seat without a key is a dead seat.
         var missing = ChatClientFactory.MissingKeys([roomProposer, .. personas]);
@@ -454,11 +454,11 @@ if (args.Contains("--live"))
         liveAgent,
         new RiskGuard(liveRiskOptions, TimeProvider.System),
         liveRiskOptions,
+        liveTradingOptions,
         liveStore,
         TimeProvider.System,
         log)
     {
-        TrackedSymbols = liveTradingOptions.TrackedSymbols,
         Mode = dryRun ? "dry-run" : "live",
         DryRun = dryRun,
     };

@@ -12,7 +12,7 @@ is a separate process. Its tools never enter an LLM tool list.
 ```text
 Stock bars and quotes
 News
-Option chains and option snapshots
+Exact-option snapshots, quotes, trades, and bars
 Greeks when available
 Reference-symbol market data
 Asset and contract metadata
@@ -20,6 +20,19 @@ Asset and contract metadata
 
 The Research Agent and the Critic Agent use the same approved list. The exact MCP tool names
 come from the pinned server version. `McpToolCatalog` holds the allowlist.
+
+`get_option_chain` and `get_option_contracts` are not approved. C# builds the authoritative
+tradeable contract catalog once. The proposer can query that immutable in-memory catalog with
+the local `get_tradeable_contracts` tool. The local tool does not call Alpaca.
+
+```text
+get_tradeable_contracts(
+    underlying: "NVDA",
+    option_type: "call",
+    strike_from: 210,
+    strike_to: 230,
+    offset: 0)
+```
 
 ## Forbidden
 
@@ -77,3 +90,4 @@ connect to the live Alpaca MCP server.** See [replay mode](../replay/replay-mode
 - [MCP safety](../alpaca/mcp-safety.md)
 - [Risk guardrails](../trading/risk-guardrails.md)
 - [LLM stack](llm-stack.md)
+- [Tradeable contract catalog](../trading/tradeable-contract-catalog.md)

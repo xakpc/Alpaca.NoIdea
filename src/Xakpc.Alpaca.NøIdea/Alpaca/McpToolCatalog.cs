@@ -69,8 +69,8 @@ public static class McpToolCatalog
         "get_stock_trades",
 
         // Option market data, including greeks through the snapshot.
-        "get_option_bars", "get_option_chain", "get_option_contract",
-        "get_option_contracts", "get_option_latest_quote", "get_option_latest_trade",
+        "get_option_bars", "get_option_contract",
+        "get_option_latest_quote", "get_option_latest_trade",
         "get_option_snapshot", "get_option_trades",
 
         // News. The remaining alpha hypothesis rests on the agents reading text.

@@ -186,16 +186,16 @@ public sealed class ExposureRiskPersona(RiskOptions risk) : IPersona
     }
 
     private static decimal CostOf(StrategyAction action, StrategyContext market) =>
-        market.Candidates
+        market.ContractCatalog
             .FirstOrDefault(view =>
-                string.Equals(view.Candidate.ContractSymbol, action.ContractSymbol, StringComparison.Ordinal))
+                string.Equals(view.Contract.ContractSymbol, action.ContractSymbol, StringComparison.Ordinal))
             ?.CostPerContract * action.Contracts ?? 0m;
 
     private static string? UnderlyingOf(string contractSymbol, StrategyContext market) =>
-        market.Candidates
+        market.ContractCatalog
             .FirstOrDefault(view =>
-                string.Equals(view.Candidate.ContractSymbol, contractSymbol, StringComparison.Ordinal))
-            ?.Candidate.Underlying
+                string.Equals(view.Contract.ContractSymbol, contractSymbol, StringComparison.Ordinal))
+            ?.Contract.Underlying
         ?? (Alpaca.Gateways.OccOptionSymbol.TryParse(contractSymbol, out var parsed)
             ? parsed.Underlying
             : null);

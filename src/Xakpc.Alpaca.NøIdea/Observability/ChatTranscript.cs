@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using ToonFormat;
 
 namespace Xakpc.Alpaca.NøIdea.Observability;
 
@@ -33,8 +34,6 @@ public static class ChatTranscript
 
     /// <summary>How much of one tool answer reaches the log. Tool output is untrusted.</summary>
     public const int MaxToolResultCharacters = 2000;
-
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     /// <summary>Writes what the host is about to send.</summary>
     public static void Request(
@@ -216,7 +215,7 @@ public static class ChatTranscript
 
         try
         {
-            return JsonSerializer.Serialize(value, Json);
+            return Toon.Encode(value);
         }
         catch (NotSupportedException)
         {

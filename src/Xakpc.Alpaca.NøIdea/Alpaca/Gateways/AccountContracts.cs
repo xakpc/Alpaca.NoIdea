@@ -46,6 +46,10 @@ public sealed record OrderState
     public required string ContractSymbol { get; init; }
     public required OrderLifecycle Lifecycle { get; init; }
     public required int FilledQuantity { get; init; }
+    public int RequestedQuantity { get; init; }
+    public bool IsBuy { get; init; }
+    public decimal? LimitPrice { get; init; }
+    public DateTimeOffset? SubmittedUtc { get; init; }
     public decimal? AverageFillPrice { get; init; }
 
     /// <summary>The broker status verbatim, for the audit trail.</summary>
@@ -54,6 +58,12 @@ public sealed record OrderState
     public bool IsTerminal =>
         Lifecycle is OrderLifecycle.Filled or OrderLifecycle.Canceled
             or OrderLifecycle.Expired or OrderLifecycle.Rejected;
+
+    public int RemainingQuantity => Math.Max(0, RequestedQuantity - FilledQuantity);
+
+    public decimal? RemainingNotional => IsBuy && LimitPrice is { } limit
+        ? limit * RemainingQuantity * 100m
+        : IsBuy ? null : 0m;
 }
 
 /// <summary>A request to buy or sell one option contract.</summary>

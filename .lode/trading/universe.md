@@ -25,7 +25,7 @@ flowchart TD
 |---|---|---|
 | 1. Expiration in the window | >= 1 between Monday and Thursday | Friday is after the finish line. A Friday-only symbol keeps unrealized time value at Thursday EOD. See [competition constraints](../operations/competition-constraints.md). |
 | 2. ATM relative spread | <= 0.20 | `(ask - bid) / mid`. A wider spread takes too much of the move. |
-| 3. Greeks coverage | >= 0.85 of near-money contracts | The market probability reference needs delta. A contract with no delta is not usable. |
+| 3. Greeks coverage | >= 0.85 of near-money contracts | The Options Analyst should usually receive useful metadata. A missing Greek on one contract does not reject that contract. |
 | 4. Average daily volume | >= 10,000,000 | Thin underlying data gives weak features. |
 
 Rule 1 is the hard rule. It comes from the four-day competition window, not from market

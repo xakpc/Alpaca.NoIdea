@@ -11,9 +11,8 @@ namespace Xakpc.Alpaca.NøIdea.Agents;
 /// checked while the market is closed.
 /// </para>
 /// <para>
-/// Its rule is intentionally simple and carries no claimed edge: take the cheapest candidate
-/// whose market probability sits nearest the middle of the policy band, one contract, and only
-/// when a position slot is free. <b>Do not read its replay P&amp;L as evidence about the
+/// Its rule is intentionally simple and carries no claimed edge: take the cheapest tradeable
+/// contract, one contract, and only when a position slot is free. <b>Do not read its replay P&amp;L as evidence about the
 /// strategy.</b> It is evidence about the code.
 /// </para>
 /// </remarks>
@@ -36,20 +35,17 @@ public sealed class StubStrategyAgent : IStrategyAgent
             return Task.FromResult(StrategyDecision.Nothing("no free position slot"));
         }
 
-        var midBand = (context.Policy.MinMarketProbability + context.Policy.MaxMarketProbability) / 2m;
-
-        var pick = context.Candidates
-            .Where(view => view.MarketProbability is not null)
-            .OrderBy(view => Math.Abs(view.MarketProbability!.Value - midBand))
-            .ThenBy(view => view.CostPerContract)
+        var pick = context.ContractCatalog
+            .OrderBy(view => view.CostPerContract)
+            .ThenBy(view => view.Contract.ContractSymbol, StringComparer.Ordinal)
             .FirstOrDefault();
 
         if (pick is null)
         {
-            return Task.FromResult(StrategyDecision.Nothing("no candidate carried a market probability"));
+            return Task.FromResult(StrategyDecision.Nothing("the tradeable catalog is empty"));
         }
 
-        var kind = string.Equals(pick.Candidate.OptionType, "put", StringComparison.Ordinal)
+        var kind = string.Equals(pick.Contract.OptionType, "put", StringComparison.Ordinal)
             ? StrategyActionKind.OpenPut
             : StrategyActionKind.OpenCall;
 
@@ -60,14 +56,10 @@ public sealed class StubStrategyAgent : IStrategyAgent
                 new StrategyAction
                 {
                     Kind = kind,
-                    ContractSymbol = pick.Candidate.ContractSymbol,
+                    ContractSymbol = pick.Contract.ContractSymbol,
                     Contracts = 1,
-                    // The market's own probability, restated. The stub claims no edge, and a
-                    // Brier score against this baseline is what a real agent must beat.
-                    Probability = pick.MarketProbability,
-                    Reasoning =
-                        $"stub: nearest the middle of the policy band at {pick.MarketProbability:P1}, "
-                        + $"cheapest at {pick.CostPerContract:N2} USD",
+                    Probability = null,
+                    Reasoning = $"stub: cheapest mechanically tradeable contract at {pick.CostPerContract:N2} USD",
                 },
             ],
         });

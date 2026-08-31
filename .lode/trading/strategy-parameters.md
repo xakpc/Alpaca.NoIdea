@@ -3,6 +3,13 @@
 The architecture separates strategy parameters from code. A strategy number must never
 appear in a C# file. It belongs in `TradingOptions`, `RiskOptions`, or `AgentOptions`.
 
+```mermaid
+flowchart LR
+    A[TradingOptions] --> B[Scan and context limits]
+    C[StrategyPolicy] --> D[Agent-owned exit and expiration policy]
+    E[RiskOptions] --> F[Human-owned hard risk bounds]
+```
+
 ## Decided values
 
 ```json
@@ -14,6 +21,11 @@ appear in a C# file. It belongs in `TradingOptions`, `RiskOptions`, or `AgentOpt
   ],
   "MaxConcurrentPositions": 4,
   "MaxNewPositionsPerDay": 4,
+  "OptionScanMaxMoneynessFraction": 0.20,
+  "InlineCatalogCharacterLimit": 60000,
+  "CatalogToolPageSize": 200,
+  "HeadlineLimit": 25,
+  "MaxHeadlinesPerSymbol": 3,
   "MinExpertSamplesForAdaptiveWeight": 20
 }
 ```
@@ -42,15 +54,15 @@ These are the **opening defaults**. They are chosen, not measured.
 {
   "MinDaysToExpiration": 2,
   "MaxDaysToExpiration": 10,
-  "MinMarketProbability": 0.20,
-  "MaxMarketProbability": 0.80,
   "TakeProfitFraction": 0.50,
   "StopLossFraction": 0.40,
-  "MaxContractsPerTrade": 1,
-  "RequireFreshNews": true,
-  "FreshNewsWithinHours": 48
+  "MaxContractsPerTrade": 1
 }
 ```
+
+Market probability, fresh news, contract count caps, and low-premium rank are not catalog
+rules. The war room judges trade quality. `OptionLadder` remains available for replay and
+research, but the live catalog does not use it.
 
 ## The hard bounds the agent cannot cross
 
@@ -98,3 +110,4 @@ the audit trail.
 
 - [Risk guardrails](risk-guardrails.md)
 - [Replay mode](../replay/replay-mode.md)
+- [Tradeable contract catalog](tradeable-contract-catalog.md)

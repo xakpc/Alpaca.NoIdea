@@ -46,6 +46,31 @@ public sealed record DecisionRow
     public long CreatedUtc { get; init; }
 }
 
+/// <summary>One immutable proposal version and all evidence from its review pass.</summary>
+public sealed record ProposalReviewPassRow
+{
+    public string ProposalId { get; init; } = "";
+    public int ProposalVersion { get; init; }
+    public int ReviewPass { get; init; }
+    public bool Superseded { get; init; }
+    public string Verdict { get; init; } = "";
+    public string? RejectionCode { get; init; }
+    public string? OptionSymbol { get; init; }
+    public string Thesis { get; init; } = "";
+    public string ThesisConditionsJson { get; init; } = "[]";
+    public string OperationJson { get; init; } = "{}";
+    public string AnalysesJson { get; init; } = "[]";
+    public string DiscussionJson { get; init; } = "[]";
+    public string VotesJson { get; init; } = "[]";
+    public long CreatedUtc { get; init; }
+}
+
+/// <summary>The thesis that belongs to an open position's executed proposal.</summary>
+public sealed record PositionThesis(
+    string ContractSymbol,
+    string Thesis,
+    IReadOnlyList<string> Conditions);
+
 /// <summary>
 /// The audit-trail writes. What the agent thought, and what the guardrails allowed.
 /// </summary>
@@ -63,6 +88,94 @@ public sealed record DecisionRow
 /// </remarks>
 public sealed partial class TradingStore
 {
+    public async Task RecordProposalReviewPassesAsync(
+        IReadOnlyCollection<ProposalReviewPassRow> passes,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(passes);
+        if (passes.Count == 0)
+        {
+            return;
+        }
+
+        const string sql =
+            """
+            INSERT OR IGNORE INTO proposal_review_passes (
+                proposal_id, proposal_version, review_pass, superseded, verdict,
+                rejection_code, option_symbol, thesis, thesis_conditions_json,
+                operation_json, analyses_json, discussion_json, votes_json, created_utc)
+            VALUES (
+                @ProposalId, @ProposalVersion, @ReviewPass, @Superseded, @Verdict,
+                @RejectionCode, @OptionSymbol, @Thesis, @ThesisConditionsJson,
+                @OperationJson, @AnalysesJson, @DiscussionJson, @VotesJson, @CreatedUtc)
+            """;
+
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql, passes, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyDictionary<string, PositionThesis>> PositionThesesAsync(
+        string mode,
+        IReadOnlyCollection<string> contractSymbols,
+        CancellationToken cancellationToken)
+    {
+        if (contractSymbols.Count == 0)
+        {
+            return new Dictionary<string, PositionThesis>(StringComparer.Ordinal);
+        }
+
+        const string sql =
+            """
+            SELECT r.option_symbol AS ContractSymbol,
+                   p.thesis AS Thesis,
+                   p.thesis_conditions_json AS ConditionsJson
+            FROM orders o
+            JOIN decisions d ON d.id = o.decision_id
+            JOIN evaluation_runs r ON r.id = d.run_id
+            JOIN proposal_review_passes p ON p.proposal_id = r.proposal_id
+            WHERE o.mode = @mode
+              AND o.option_symbol IN @contractSymbols
+              AND p.superseded = 0
+            ORDER BY p.id DESC
+            """;
+
+        await using var connection = await OpenAsync(cancellationToken);
+        var rows = await connection.QueryAsync<PositionThesisDbRow>(new CommandDefinition(
+            sql, new { mode, contractSymbols }, cancellationToken: cancellationToken));
+
+        return rows
+            .GroupBy(row => row.ContractSymbol, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                {
+                    var row = group.First();
+                    IReadOnlyList<string> conditions;
+                    try
+                    {
+                        conditions = System.Text.Json.JsonSerializer.Deserialize<string[]>(
+                            row.ConditionsJson) ?? [];
+                    }
+                    catch (System.Text.Json.JsonException)
+                    {
+                        conditions = [];
+                    }
+
+                    return new PositionThesis(row.ContractSymbol, row.Thesis, conditions);
+                },
+                StringComparer.Ordinal);
+    }
+
+    private sealed record PositionThesisDbRow
+    {
+        public string ContractSymbol { get; init; } = "";
+        public string Thesis { get; init; } = "";
+        public string ConditionsJson { get; init; } = "[]";
+    }
+
     /// <summary>Records one evaluated contract and returns its id.</summary>
     public async Task<long> RecordEvaluationAsync(
         EvaluationRunRow run, CancellationToken cancellationToken)
@@ -185,6 +298,7 @@ public sealed partial class TradingStore
             SELECT 'evaluation_runs' AS TableName, COUNT(*) AS Rows FROM evaluation_runs
             UNION ALL SELECT 'forecasts', COUNT(*) FROM forecasts
             UNION ALL SELECT 'decisions', COUNT(*) FROM decisions
+            UNION ALL SELECT 'proposal_review_passes', COUNT(*) FROM proposal_review_passes
             UNION ALL SELECT 'orders', COUNT(*) FROM orders
             UNION ALL SELECT 'equity_snapshots', COUNT(*) FROM equity_snapshots
             """;

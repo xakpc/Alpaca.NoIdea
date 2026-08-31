@@ -61,6 +61,7 @@ wins.
 | File | Content |
 |---|---|
 | [summary.md](war-room/summary.md) | **The decision process.** Five phases, the seats, votes to size, cost. |
+| [staged-context.md](war-room/staged-context.md) | The proposer and reviewer payload stages, local catalog tool, and proposal versions. |
 
 ## trading/
 
@@ -72,6 +73,7 @@ wins.
 | [position-lifecycle.md](trading/position-lifecycle.md) | States, exit policy, LLM re-check triggers. |
 | [risk-guardrails.md](trading/risk-guardrails.md) | Paper mode, write isolation, fail closed, idempotency. |
 | [strategy-parameters.md](trading/strategy-parameters.md) | The agent-owned policy defaults and the hard bounds it cannot cross. |
+| [tradeable-contract-catalog.md](trading/tradeable-contract-catalog.md) | The complete mechanical contract set, its invariants, and its size-aware proposer boundary. |
 
 ## alpaca/
 
@@ -89,6 +91,7 @@ wins.
 |---|---|
 | [summary.md](storage/summary.md) | The two roles of the database, the Dapper conventions, and money precision. |
 | [schema.md](storage/schema.md) | The full SQL schema, the cache tables, and the `available_utc` no-leak column. |
+| [proposal-review-audit.md](storage/proposal-review-audit.md) | Immutable proposal versions, superseded passes, final-order linkage, and thesis recovery. |
 
 ## llm/
 
