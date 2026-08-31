@@ -43,7 +43,7 @@ that model's blind spots.
 
 | Seat | Provider | Role |
 |---|---|---|
-| `proposer` | Claude Opus 5 | Searches the allowed universe. Carries the full Alpaca toolset. Can answer NO_TRADE. |
+| `proposer` | Claude Sonnet 5 | Searches the allowed universe. Carries the full research toolset. Can answer NO_TRADE. |
 | `skeptic` | Claude Sonnet 5 | Assumes the proposal is wrong and looks for the strongest reason to reject it. |
 | `quant` | GPT-5.6-terra | Judges the contract: strike, expiration, spread, liquidity, maximum loss. |
 | `market` | Grok 4.6 | Price action, market context, news and scheduled events. |
@@ -93,8 +93,7 @@ Rate state, checked 2026-08-31:
 
 | Model | Seat | Rate |
 |---|---|---|
-| `claude-opus-5` | proposer | **Unverified.** Carried over, not re-checked. |
-| `claude-sonnet-5` | skeptic | 2.00 / 10.00, cache read 0.20. **Was wrong**: the table held 3.00 / 15.00 and over-reported by 50%. |
+| `claude-sonnet-5` | proposer, skeptic | 2.00 / 10.00, cache read 0.20. **Was wrong**: the table held 3.00 / 15.00 and over-reported by 50%. |
 | `gpt-5.6-terra` | quant | 2.00 / 12.00, cache read 0.20. Output is 6x input, a steeper ratio than the others. |
 | `grok-4.6` | market | 2.00 / 6.00, cache read 0.50, standard tier. |
 
@@ -107,11 +106,36 @@ Three known undercounts, all silent:
   tier. Tiering properly has to happen when a call is recorded: by the time the ledger totals
   a persona the per-call context length is gone, and a cumulative total crossing 200K does
   not mean any single call did.
-- **Hosted web search** bills per call, outside tokens entirely.
+- **Web research** is an ordinary MCP tool call, so its tokens are counted here, but the
+  Keenable service bills on its own terms, outside this table.
 
-> Finding the sonnet-5 rate 50% wrong is the reason `claude-opus-5` is now marked unverified
-> rather than trusted. Opus is the proposer, much the priciest seat, so an error there moves
-> the total more than any other.
+> **A stale table over-reported Opus by 3x.** `claude-opus-5` held 15.00 / 75.00 / 1.50,
+> which is the **retired Opus 4.1 and Opus 4** rate: an old price list carried forward under
+> a new model name. It is 5.00 / 25.00 / 0.50. No seat uses it.
+
+### The proposer is the seat that spends
+
+The tool loop resends the whole conversation on each turn: the prompt, the candidate payload,
+the 25 tool schemas, and each earlier tool result. Only the proposer loops like this, so it
+bills more input than the other four seats together. Two measured searches, in cycles where
+the room never sat:
+
+| Run | Input | Output | On Opus 5 | On Sonnet 5 |
+|---|---|---|---|---|
+| web research on | ~158,000 | ~7,300 | 0.98 USD | 0.39 USD |
+| `--no-web-search` | ~341,000 | ~7,200 | 1.88 USD | 0.75 USD |
+
+Input is 96 to 98 percent of that, and output is nearly constant. The seat runs on Sonnet 5
+for this reason: 2.00 against 5.00 per million input.
+
+**The payload is TOON, not JSON.** Forty candidates of nine fields and twenty-five headlines
+repeat each field name in JSON, and this seat resends them on each turn. `Toon.Encode` writes
+a uniform array one time as a header and then as rows. Only this seat does it, and the saving
+is not measured (ADR-028).
+
+**Nothing sets `cache_control`.** The part of a request that does not change between turns —
+the prompt, the payload, the tool schemas — is billed again at the full rate on every turn,
+when a cache read costs 0.20. That is the larger correction and it is not made.
 
 One proposal costs roughly: 1 proposal + 3 analyses + (3 × rounds) discussion + 1 rebuttal +
 3 votes. With two rounds that is about **14 model calls**, before the tool calls behind them.

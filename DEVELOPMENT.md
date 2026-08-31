@@ -22,7 +22,7 @@ ALPACA_API_KEY=...
 ALPACA_SECRET_KEY=...
 ALPACA_PAPER_TRADE=true
 
-ANTHROPIC_API_KEY=...   # proposer (Opus 5) and skeptic (Sonnet 5)
+ANTHROPIC_API_KEY=...   # proposer and skeptic (Sonnet 5)
 OPENAI_API_KEY=...      # quant (GPT-5.6-terra)
 XAI_API_KEY=...         # market (Grok 4.6)
 ```
@@ -34,6 +34,10 @@ is missing and name the ones they could not find, because a seat without a key i
 seat and that failure belongs before the open rather than at 09:31.
 
 To run with no model keys at all, pass `--agent stub`.
+
+`KEENABLE_API_KEY` is separate and optional. It is the web-research MCP server that gives the
+seats `search_web_pages` and `fetch_page_content`. Without it the run warns once and decides
+from Alpaca data alone; `--no-web-search` leaves it out deliberately.
 
 ## Start the Alpaca MCP server
 

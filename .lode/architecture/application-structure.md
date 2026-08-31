@@ -64,6 +64,8 @@ src/Xakpc.Alpaca.NøIdea/
         OptionLadder.cs                   # the market probability reference
     Observability/
         RunEvents.cs                      # the permanent EventId of each run event
+    Research/
+        KeenableMcpClient.cs              # the web-research MCP connection, allowlisted
     Storage/
         Schema.sql                        # cache, audit and score tables
         TradingStore.cs                   # audit half. The only class with SQL.

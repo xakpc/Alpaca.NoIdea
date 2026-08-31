@@ -51,7 +51,7 @@ on three providers on purpose (ADR-020), so one key is not enough:
 
 | Variable | Seats |
 |---|---|
-| `ANTHROPIC_API_KEY` | `proposer` (Opus 5), `skeptic` (Sonnet 5) |
+| `ANTHROPIC_API_KEY` | `proposer`, `skeptic` (Sonnet 5) |
 | `OPENAI_API_KEY` | `quant` (GPT-5.6-terra) |
 | `XAI_API_KEY` | `market` (Grok 4.6) |
 

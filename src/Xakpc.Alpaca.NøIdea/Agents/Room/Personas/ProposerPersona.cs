@@ -1,7 +1,7 @@
-using System.ComponentModel;
-using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using System.ComponentModel;
+using ToonFormat;
 
 namespace Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
 
@@ -12,8 +12,7 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
 /// <remarks>
 /// <para>
 /// It carries the full read-only Alpaca toolset because it is the only seat that has to look
-/// at the market rather than react to somebody else's reading of it. It runs on the strongest
-/// model available, since finding a trade is harder than judging one.
+/// at the market rather than react to somebody else's reading of it.
 /// </para>
 /// <para>
 /// <b>It does not get final authority over quantity</b> (spec §16). It states the size it
@@ -21,22 +20,19 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
 /// </para>
 /// </remarks>
 public sealed class ProposerPersona(
-    ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> alpacaTools,
-    bool webSearchAvailable)
-    : LlmPersona(clients, logger, alpacaTools, webSearchAvailable), IProposingPersona
+    ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> researchTools)
+    : LlmPersona(clients, logger, researchTools), IProposingPersona
 {
     private const string ProposeTool = "submit_proposal";
     private const string RebutTool = "submit_rebuttal";
-
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     public override string Name => "proposer";
 
     public override ModelProvider Provider => ModelProvider.Anthropic;
 
-    protected override string Model => "claude-opus-5";
+    protected override string Model => "claude-sonnet-5";
 
-    /// <summary>Claude Opus 5 takes no temperature. Sending one is a 400.</summary>
+    /// <summary>Claude Sonnet 5 takes no temperature. Sending one is a 400.</summary>
     protected override float? SamplingTemperature => null;
 
     protected override int MaxOutputTokens => 4000;
@@ -82,12 +78,14 @@ public sealed class ProposerPersona(
             ? DescribeReview(market, position, allowedActions)
             : DescribeSearch(market, allowedActions);
 
-        var (fault, response) = await SafeCallAsync(
+        var (fault, response) = await InvokeAsync(
+            purpose == WarRoomPurpose.PositionReview ? "review" : "search",
             purpose == WarRoomPurpose.PositionReview
                 ? ReviewPrompt(allowedActions)
                 : SearchPrompt(allowedActions),
             payload,
             [.. ResearchTools, tool],
+            ChatToolMode.Auto,
             MaxOutputTokens,
             cancellationToken);
 
@@ -140,7 +138,8 @@ public sealed class ProposerPersona(
             RebutTool,
             "Defend, modify, or withdraw your proposal. Call this exactly once, last.");
 
-        var (fault, _) = await SafeCallAsync(
+        var (fault, _) = await InvokeAsync(
+            "rebuttal",
             $"""
             {Preamble}
 
@@ -167,6 +166,7 @@ public sealed class ProposerPersona(
             """,
             DescribeRebuttal(context),
             [tool],
+            ChatToolMode.Auto,
             2500,
             cancellationToken);
 
@@ -259,45 +259,6 @@ public sealed class ProposerPersona(
         };
     }
 
-    /// <summary>The fault, or null; and the response, for whoever has to explain a silent turn.</summary>
-    private async Task<(string? Fault, ChatResponse? Response)> SafeCallAsync(
-        string systemPrompt,
-        string payload,
-        IReadOnlyList<AITool> tools,
-        int maxOutputTokens,
-        CancellationToken cancellationToken)
-    {
-        ChatResponse? response = null;
-
-        try
-        {
-            response = await Clients.For(Provider, Name).GetResponseAsync(
-                [
-                    new ChatMessage(ChatRole.System, systemPrompt),
-                    new ChatMessage(ChatRole.User, payload),
-                ],
-                new ChatOptions
-                {
-                    ModelId = Model,
-                    Temperature = SamplingTemperature,
-                    MaxOutputTokens = maxOutputTokens,
-                    Tools = [.. tools],
-                    ToolMode = ChatToolMode.Auto,
-                },
-                cancellationToken);
-
-            return (null, response);
-        }
-        catch (Exception error) when (error is not OperationCanceledException)
-        {
-            return (error.Message, null);
-        }
-        finally
-        {
-            RecordCall(Model, response);
-        }
-    }
-
     private string SearchPrompt(IReadOnlyList<StrategyActionKind> allowed) =>
         $"""
         {Preamble}
@@ -347,7 +308,7 @@ public sealed class ProposerPersona(
 
     private static string DescribeSearch(
         StrategyContext market, IReadOnlyList<StrategyActionKind> allowed) =>
-        JsonSerializer.Serialize(new
+        Toon.Encode(new
         {
             now_utc = market.NowUtc,
             allowed_actions = allowed.Select(kind => kind.ToString()),
@@ -387,13 +348,13 @@ public sealed class ProposerPersona(
                 pnl = outcome.RealizedPnl,
                 why = outcome.Reasoning,
             }),
-        }, Json);
+        });
 
     private static string DescribeReview(
         StrategyContext market,
         PositionUnderReview? position,
         IReadOnlyList<StrategyActionKind> allowed) =>
-        JsonSerializer.Serialize(new
+        Toon.Encode(new
         {
             now_utc = market.NowUtc,
             allowed_actions = allowed.Select(kind => kind.ToString()),
@@ -417,10 +378,10 @@ public sealed class ProposerPersona(
                 symbols = item.Symbols,
                 headline = item.Headline,
             }),
-        }, Json);
+        });
 
     private static string DescribeRebuttal(RoomContext context) =>
-        JsonSerializer.Serialize(new
+        Toon.Encode(new
         {
             proposal_id = context.ProposalId,
             your_proposal = new
@@ -465,7 +426,7 @@ public sealed class ProposerPersona(
                 cost_usd = view.CostPerContract,
                 market_probability = view.MarketProbability,
             }),
-        }, Json);
+        });
 
     [Description("Your trade proposal, or NO_TRADE.")]
     public sealed class ProposalArguments

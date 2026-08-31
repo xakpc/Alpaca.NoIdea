@@ -324,28 +324,37 @@ information rather than as instruction.
 market. A web search returns everything that has happened since the replay instant. Either
 would make a historical run look brilliant for the wrong reason.
 
-`--replay --agent llm` therefore passes an empty Alpaca tool list **and**
-`webSearchAvailable: false`. Both are necessary. An empty list alone does not stop web
-search, because a seat builds that tool itself.
+`--replay --agent llm` therefore gives an empty tool list, and that is the whole guarantee,
+because a seat builds no tool of its own. This is a code path, not a setting. The replay tool
+substitutes described in [replay mode](../replay/replay-mode.md) are the proper fix and are
+not built.
 
-This is a code path, not a setting. The replay tool substitutes described in
-[replay mode](../replay/replay-mode.md) are the proper fix and are not built.
+### Web research is an MCP server, not a tool hosted by the provider
 
-### The host says what is available. The seat says what it wants.
+**Decision:** search and page fetch come from the Keenable MCP server
+(`https://api.keenable.ai/mcp`, header `X-API-Key` from `KEENABLE_API_KEY`). Two tools are
+approved by name: `search_web_pages` and `fetch_page_content`. This is an allowlist, for the
+reason the Alpaca connection has one: a server that adds a tool later must not reach a model
+because nobody looked (ADR-005, ADR-006).
 
-These are two different questions, and only the host can answer the first. A seat asks for
-web search by default (`WantsWebSearch`), but a replay must reach no live source, whatever a
-seat would prefer.
+**A hosted tool is not portable.** `HostedWebSearchTool` was the earlier answer. Anthropic
+maps it to a `web_search` server tool. The OpenAI chat-completions endpoint answers
+`Unknown parameter: web_search_options` with a 400, and a refused call is an abstention. The
+seat thus operated or failed as a function of which model held it. **An MCP tool is an
+ordinary function call and operates the same on all three providers.**
 
-**One place builds a hosted tool: `LlmPersona.ResearchTools`.** When the host also built one
-and put it in the list it supplies, each request held two tools with the name `web_search`.
-Anthropic refused every such request with `tools: Tool names must be unique`, a 400 that
-names no tool. The proposer failed on each call, the room never sat, and each cycle gave
-NO_TRADE that looked like a decision.
+It also removed a class of failure. The host built a hosted tool and put it in the list it
+supplied, and `LlmPersona` built a second one, so each request held two tools with the name
+`web_search`. Anthropic refused all of them with `tools: Tool names must be unique`, a 400
+that names no tool. The proposer failed on each call, the room never sat, and each cycle gave
+a NO_TRADE that read as a decision. **The host list is now the seat toolset**, so there is
+nothing that can be a duplicate.
 
-`LlmPersona` now refuses a toolset that holds a `HostedWebSearchTool` at construction. A dead
-seat found at startup is a one-line correction before the open. The same seat found in a
-cycle is a dead seat at 09:31.
+**A `KEENABLE_API_KEY` that is not set is a warning, not a failure.** Reading text is the
+remaining alpha hypothesis (ADR-013), so the loss is real, but a run that decides from Alpaca
+data alone is still a correct run. A *model* key is different and does stop the host: a seat
+with no key is a dead seat, and a room that votes without one is not the room that was
+designed.
 
 ## ADR-018: The agent room, and the decider always has the final word
 
@@ -463,7 +472,7 @@ on the first trading morning.
 
 | Seat | Provider | Purpose |
 |---|---|---|
-| `proposer` | Claude Opus 5 | Searches and proposes. Carries the full Alpaca toolset. |
+| `proposer` | Claude Sonnet 5 | Searches and proposes. Carries the full research toolset. |
 | `skeptic` | Claude Sonnet 5 | Assumes the proposal is wrong. |
 | `quant` | GPT-5.6-terra | Judges the contract and the numbers. |
 | `market` | Grok 4.6 | Price action, context, news and events. |
@@ -598,6 +607,86 @@ must never have.
 **`agent_tool_calls` is deliberately still empty.** Filling it means instrumenting the tool
 path inside `FunctionInvokingChatClient`, which sits on the critical path of every research
 call.
+
+## ADR-027: The console holds the full conversation with a model
+
+**Decision:** each seat writes its whole conversation to the log at `Information`: the system
+prompt and the payload that the host sent, each turn that the model wrote, **each tool that it
+called and the arguments that it passed**, what each tool answered, and a tally at the end
+(finish reason, turns, tool calls with counts, input and cached and output tokens, seconds).
+`Observability/ChatTranscript.cs` writes these lines.
+
+**Reason:** the record stopped at what a seat submitted. A proposer that used 341,000 input
+tokens across a dozen tool calls and then said NO_TRADE read exactly like a proposer that
+looked at nothing. The tokens told you that work occurred. Nothing told you what the work was.
+
+**One call path.** `LlmPersona.InvokeAsync` is the only place in this application that speaks
+to a model. Each seat and each phase uses it, so the transcript, the token ledger and the
+fault handling cannot be different between seats. The proposer had a second, almost identical
+call path before this. That path recorded tokens but wrote no transcript.
+
+**No call streams.** Each call is `GetResponseAsync`. Nothing in this application reads a word
+before the turn is complete, and a streamed turn gives back its text, its tool calls and its
+usage in parts that this record must then assemble again.
+
+**Each seat has a block of one hundred ids, and the last digit is the kind of line.** The
+proposer is `41xx`, the quant is `42xx`, the skeptic is `43xx`, the market seat is `44xx`, and
+the exposure seat is `45xx`. An id that ends in 1 is a request, 2 is model prose, 3 is a tool
+call, 4 is a tool answer, and 5 is the tally. So one filter shows one seat, and a different
+filter shows each tool call from all seats. A seat that this table does not know shares the
+`49xx` block. **A block is as permanent as a single id.**
+
+**Long text is clipped**, to 4,000 characters for a message and 2,000 for a tool answer, and
+the full length is printed with it. The payload of candidates and headlines is tens of
+kilobytes, and it is a document that this code made itself. A console that a person must read
+during a four-day contest is worth more than a verbatim copy of it.
+
+## ADR-028: The proposer payload is TOON. Everything kept or read back is JSON
+
+**Decision:** the three payloads that the proposer sends — the candidate search, the position
+review, and the rebuttal — are encoded with `ToonFormat.Toon.Encode` (Toon.DotNet 1.7.3).
+Token-Oriented Object Notation is an indentation-based format that writes a uniform array one
+time as a header and then as rows, in place of repeating each field name in each object.
+
+```csharp
+// ProposerPersona.DescribeSearch
+private static string DescribeSearch(
+    StrategyContext market, IReadOnlyList<StrategyActionKind> allowed) =>
+    Toon.Encode(new
+    {
+        now_utc = market.NowUtc,
+        candidates = market.Candidates.Select(view => new { /* nine fields */ }),
+        headlines = market.News.Take(25).Select(item => new { /* three fields */ }),
+    });
+```
+
+**Reason:** the proposer payload is the one document in this system that is large, uniform and
+sent again on each turn of a tool loop. Forty candidates of nine fields and twenty-five
+headlines repeat each field name forty and twenty-five times in JSON. That seat bills more
+input than the other four together (see [war room](../war-room/summary.md)), and input is 96
+to 98 percent of its cost, so the payload format is one of the few things that moves the
+total.
+
+> **The saving is not measured in this repository.** No test compares the two encodings, and
+> no run has been priced before and after. The reason to expect one is structural, not
+> observed, and this entry must not be read as evidence.
+
+**Only the proposer.** `LlmPersona.Describe`, which builds the `RoomContext` that the other
+four seats read, is still `JsonSerializer.Serialize`. Those seats each make one call for each
+phase and loop over no tools, so their payload is sent one time and the format earns much
+less. This asymmetry is the current state and is not a rule.
+
+**Nothing decodes TOON.** The encoding is one-way, from this process into a prompt. Every
+value that is stored or read back stays JSON: `decisions.evidence_json`,
+`evaluation_runs.market_snapshot_json`, the cache rows, and what `ChatTranscript` writes to
+the console. Dapper and `--audit` read those, and a format that only a prompt consumes must
+not reach a table.
+
+**The risk is a silent one.** A model that misreads an indentation-based payload does not
+fail; it proposes from data it read wrongly, and the result looks like an ordinary weak
+proposal. There is no assertion that can catch it. What limits it is that the transcript now
+prints the exact payload that was sent (ADR-027), so a proposal that does not match the data
+can be checked against what the seat actually received.
 
 ## Related
 

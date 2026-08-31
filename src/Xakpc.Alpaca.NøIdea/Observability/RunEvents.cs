@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 
 namespace Xakpc.Alpaca.NøIdea.Observability;
@@ -45,4 +46,74 @@ public static class RunEvents
     public static readonly EventId RebuttalMade = new(3005, nameof(RebuttalMade));
     public static readonly EventId VoteCast = new(3006, nameof(VoteCast));
     public static readonly EventId VerdictReached = new(3007, nameof(VerdictReached));
+
+    // 4000 - the conversation with a model. Each seat owns a block of one hundred, and the
+    // last digit is always the same kind of line. So `41xx` is everything the proposer said
+    // and heard, and an id that ends in 3 is a tool call from any seat.
+    //
+    // A block is permanent, exactly as a single id is: a seat that moves to a new number
+    // makes every filter that selects the old one go quiet, and nothing reports it.
+    private static readonly Dictionary<string, int> PersonaBlocks =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["proposer"] = 1,
+            ["quant"] = 2,
+            ["skeptic"] = 3,
+            ["market"] = 4,
+            ["exposure"] = 5,
+        };
+
+    /// <summary>The block for a seat this table does not know. Shared, on purpose.</summary>
+    private const int UnknownPersonaBlock = 9;
+
+    private static readonly ConcurrentDictionary<(string Persona, ChatEvent Kind), EventId> ChatIds =
+        new();
+
+    /// <summary>
+    /// The id of one line of one seat's conversation with its model.
+    /// </summary>
+    /// <remarks>
+    /// The name reads <c>proposer.ToolCall</c>, so a console line says which seat and which
+    /// kind of line it is without the reader knowing the numbering.
+    /// </remarks>
+    public static EventId Chat(string persona, ChatEvent kind)
+    {
+        var name = string.IsNullOrWhiteSpace(persona) ? "unknown" : persona;
+
+        return ChatIds.GetOrAdd(
+            (name, kind),
+            key =>
+            {
+                var block = PersonaBlocks.TryGetValue(key.Persona, out var known)
+                    ? known
+                    : UnknownPersonaBlock;
+
+                return new EventId(
+                    4000 + (block * 100) + (int)key.Kind,
+                    $"{key.Persona}.{key.Kind}");
+            });
+    }
+}
+
+/// <summary>One kind of line in the conversation between a seat and its model.</summary>
+/// <remarks>
+/// The value is the last digit of the event id, so it is as permanent as the id. See
+/// <see cref="RunEvents.Chat"/>.
+/// </remarks>
+public enum ChatEvent
+{
+    /// <summary>What the host sent: the system prompt, the payload, and the toolbox.</summary>
+    Request = 1,
+
+    /// <summary>What the model wrote in prose, including a reasoning summary.</summary>
+    Said = 2,
+
+    /// <summary>A tool the model called, with the arguments it passed.</summary>
+    ToolCall = 3,
+
+    /// <summary>What that tool answered.</summary>
+    ToolResult = 4,
+
+    /// <summary>The tally: finish reason, turns, tools called, tokens, and time.</summary>
+    Finished = 5,
 }

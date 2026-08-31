@@ -8,6 +8,7 @@ using Xakpc.Alpaca.NøIdea.Agents.Room;
 using Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
 using Xakpc.Alpaca.NøIdea.Observability;
 using Xakpc.Alpaca.NøIdea.Replay;
+using Xakpc.Alpaca.NøIdea.Research;
 using Xakpc.Alpaca.NøIdea.Trading;
 using Xakpc.Alpaca.NøIdea.Storage;
 
@@ -154,22 +155,21 @@ if (args.Contains("--replay"))
     {
         var replayFactory = new ChatClientFactory();
 
-        // No live source, passed explicitly: an empty Alpaca toolset AND no web search. A
-        // live Alpaca call in replay reads today's market and a web search returns everything
-        // since the replay instant; either would make a historical run look brilliant for the
-        // wrong reason. The seats ask for web search, so only the host can refuse it here.
+        // An empty tool list, passed explicitly, and that is the whole guarantee: a seat
+        // builds no tool of its own. A live Alpaca call in replay reads today's market and a
+        // web search returns everything since the replay instant; either would make a
+        // historical run look brilliant for the wrong reason.
         IReadOnlyList<Microsoft.Extensions.AI.AITool> noTools = [];
-        const bool noWebSearch = false;
 
         var replayPersonas = new List<IPersona>
         {
-            new SkepticPersona(replayFactory, log, noTools, noWebSearch),
-            new QuantPersona(replayFactory, log, noTools, noWebSearch),
-            new MarketPersona(replayFactory, log, noTools, noWebSearch),
+            new SkepticPersona(replayFactory, log, noTools),
+            new QuantPersona(replayFactory, log, noTools),
+            new MarketPersona(replayFactory, log, noTools),
             new ExposureRiskPersona(replayRisk),
         };
 
-        var replayProposer = new ProposerPersona(replayFactory, log, noTools, noWebSearch);
+        var replayProposer = new ProposerPersona(replayFactory, log, noTools);
 
         var replayMissing = ChatClientFactory.MissingKeys([replayProposer, .. replayPersonas]);
         if (replayMissing.Count > 0)
@@ -336,6 +336,7 @@ if (args.Contains("--live"))
     }
 
     ModelContextProtocol.Client.McpClient? liveMcpClient = null;
+    ModelContextProtocol.Client.McpClient? liveKeenableClient = null;
     IStrategyAgent liveAgent;
     WarRoomAgent? liveWarRoom = null;
     var agentChoice = ArgumentValue("--agent") ?? "llm";
@@ -377,18 +378,19 @@ if (args.Contains("--live"))
             log.LogInformation("{Count} approved read-only Alpaca tools given to the agent.", approved.Count);
         }
 
-        // Server-side search. It widens the text channel beyond Alpaca's Benzinga feed,
-        // which matters because reading text is the only remaining alpha hypothesis after
-        // ADR-013. Web content is untrusted input: the prompt says so, and RiskGuard bounds
-        // what a poisoned page could ever cause. See ADR-017.
-        //
-        // The host says whether it is AVAILABLE. The seat builds the tool, because a request
-        // carrying two tools of one name is a 400 from Anthropic that names no tool.
-        var webSearch = !args.Contains("--no-web-search");
-
-        if (webSearch)
+        // Web research, over MCP like everything else. It widens the text channel beyond
+        // Alpaca's Benzinga feed, which matters because reading text is the only remaining
+        // alpha hypothesis after ADR-013. Web content is untrusted input: the prompt says so,
+        // and RiskGuard bounds what a poisoned page could ever cause. See ADR-017.
+        if (!args.Contains("--no-web-search"))
         {
-            log.LogInformation("Web search is available to the agent.");
+            var (keenableClient, webTools) = await KeenableMcpClient.ConnectAsync(
+                AlpacaOptions.Secret(KeenableMcpClient.KeyVariable), loggerFactory, liveToken);
+
+            liveKeenableClient = keenableClient;
+            researchTools.AddRange(webTools);
+
+            log.LogInformation("{Count} web research tools given to the agent.", webTools.Count);
         }
 
         // Every seat gets the same read-only tools. The diversity that matters is the model.
@@ -396,13 +398,13 @@ if (args.Contains("--live"))
 
         var personas = new List<IPersona>
         {
-            new SkepticPersona(factory, log, researchTools, webSearch),   // Claude
-            new QuantPersona(factory, log, researchTools, webSearch),     // GPT
-            new MarketPersona(factory, log, researchTools, webSearch),    // Grok
+            new SkepticPersona(factory, log, researchTools),   // Claude
+            new QuantPersona(factory, log, researchTools),     // GPT
+            new MarketPersona(factory, log, researchTools),    // Grok
             new ExposureRiskPersona(liveRiskOptions),          // plain C#, no tokens
         };
 
-        var roomProposer = new ProposerPersona(factory, log, researchTools, webSearch);
+        var roomProposer = new ProposerPersona(factory, log, researchTools);
 
         // Fail before the open, not at 09:31. A seat without a key is a dead seat.
         var missing = ChatClientFactory.MissingKeys([roomProposer, .. personas]);
@@ -515,6 +517,11 @@ if (args.Contains("--live"))
     if (liveMcpClient is not null)
     {
         await liveMcpClient.DisposeAsync();
+    }
+
+    if (liveKeenableClient is not null)
+    {
+        await liveKeenableClient.DisposeAsync();
     }
 
     return 0;

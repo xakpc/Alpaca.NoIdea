@@ -1,7 +1,9 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Xakpc.Alpaca.NøIdea.Observability;
 
 namespace Xakpc.Alpaca.NøIdea.Agents.Room;
 
@@ -22,8 +24,7 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room;
 public abstract class LlmPersona(
     ChatClientFactory clients,
     ILogger logger,
-    IReadOnlyList<AITool> alpacaTools,
-    bool webSearchAvailable) : IPersona, ICostReporting
+    IReadOnlyList<AITool> researchTools) : IPersona, ICostReporting
 {
     private const string AnalyseTool = "submit_analysis";
     private const string SpeakTool = "speak";
@@ -31,8 +32,7 @@ public abstract class LlmPersona(
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    private readonly IReadOnlyList<AITool> _alpacaTools = Vetted(alpacaTools);
-    private readonly bool _webSearchAvailable = webSearchAvailable;
+    private readonly IReadOnlyList<AITool> _researchTools = researchTools ?? [];
     private readonly TokenLedger _ledger = new();
 
     protected ChatClientFactory Clients { get; } = clients ?? throw new ArgumentNullException(nameof(clients));
@@ -88,83 +88,27 @@ public abstract class LlmPersona(
 
     protected virtual int MaxOutputTokens => 3000;
 
-    /// <summary>Read-only Alpaca tools. On by default: every seat may check the data itself.</summary>
-    protected virtual bool WantsAlpacaTools => true;
-
-    /// <summary>Whether this seat asks for web search when the host offers it.</summary>
-    protected virtual bool WantsWebSearch => true;
+    /// <summary>Whether this seat wants the research tools at all. On by default.</summary>
+    protected virtual bool WantsResearchTools => true;
 
     /// <summary>
-    /// What this seat may call.
+    /// What this seat may call: the read-only Alpaca tools and the web-research tools.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>The host decides what is available; a seat decides what it wants.</b> The two are
-    /// different questions and only the host can answer the first: a replay must reach no
-    /// live source at all, whatever a seat would prefer.
+    /// <b>The host decides what exists. A seat only decides whether it wants any of it.</b>
+    /// The host can then guarantee that a replay reaches no live source by passing an empty
+    /// list, and no seat can add one back.
     /// </para>
     /// <para>
-    /// This is also the ONE place that builds a <see cref="HostedWebSearchTool"/>. Two places
-    /// building one put two tools of the same name in the same request, which Anthropic
-    /// rejects with "Tool names must be unique" and a 400 that names no tool.
+    /// Every tool here is an ordinary MCP function call, so each seat behaves the same on
+    /// Anthropic, OpenAI and xAI. A provider-hosted tool did not: Anthropic and OpenAI each
+    /// wanted a different shape and one of them answered 400 (ADR-017).
     /// </para>
     /// </remarks>
-    protected IReadOnlyList<AITool> ResearchTools
-    {
-        get
-        {
-            var tools = new List<AITool>();
-
-            if (WantsAlpacaTools)
-            {
-                tools.AddRange(_alpacaTools);
-            }
-
-            if (WantsWebSearch && _webSearchAvailable)
-            {
-                tools.Add(new HostedWebSearchTool());
-            }
-
-            return tools;
-        }
-    }
-
-    /// <summary>
-    /// Refuses a toolset that already carries a hosted tool this class adds itself.
-    /// </summary>
-    /// <remarks>
-    /// The caller supplies the Alpaca tools and nothing else. When it also supplied a
-    /// <see cref="HostedWebSearchTool"/>, the request carried two tools named
-    /// <c>web_search</c> and Anthropic refused it with "Tool names must be unique" — a 400
-    /// that names no tool, on every call, so the room never sat at all.
-    ///
-    /// This throws at construction instead. A dead seat found at startup is a one-line fix
-    /// before the open; found mid-cycle it is a dead seat at 09:31.
-    /// </remarks>
-    private static IReadOnlyList<AITool> Vetted(IReadOnlyList<AITool>? alpacaTools)
-    {
-        if (alpacaTools is null)
-        {
-            return [];
-        }
-
-        if (alpacaTools.Any(tool => tool is HostedWebSearchTool))
-        {
-            throw new ArgumentException(
-                "The Alpaca toolset must not carry a HostedWebSearchTool. A seat adds web "
-                + "search itself when the host makes it available, and two tools of one name "
-                + "are refused by the provider.",
-                nameof(alpacaTools));
-        }
-
-        return alpacaTools;
-    }
+    protected IReadOnlyList<AITool> ResearchTools => WantsResearchTools ? _researchTools : [];
 
     public RoomCost DrainCost() => _ledger.Drain();
-
-    /// <summary>Lets a subclass with its own call path record tokens through the same ledger.</summary>
-    protected void RecordCall(string model, ChatResponse? response) =>
-        _ledger.Record(Name, model, response);
 
     // ------------------------------------------------------------------ §18 independent
 
@@ -185,7 +129,7 @@ public abstract class LlmPersona(
             "Submit your independent analysis and initial vote. Call this exactly once, last.");
 
         var failed = await CallAsync(
-            BuildPrompt(Phase.Independent), context, [.. ResearchTools, tool],
+            Phase.Independent, context, [.. ResearchTools, tool],
             ChatToolMode.Auto, MaxOutputTokens, cancellationToken);
 
         if (failed is not null)
@@ -215,7 +159,7 @@ public abstract class LlmPersona(
             "Say your piece to the room. Call this exactly once, last.");
 
         var failed = await CallAsync(
-            BuildPrompt(Phase.Discussion), context, [.. ResearchTools, tool],
+            Phase.Discussion, context, [.. ResearchTools, tool],
             ChatToolMode.Auto, MaxOutputTokens, cancellationToken);
 
         if (failed is not null)
@@ -248,7 +192,7 @@ public abstract class LlmPersona(
         // No research tools here. The evidence phase is over, and a tool call at the vote is
         // latency spent re-reading what the transcript already holds.
         var failed = await CallAsync(
-            BuildPrompt(Phase.Vote), context, [tool],
+            Phase.Vote, context, [tool],
             ChatToolMode.RequireSpecific(VoteTool), 1500, cancellationToken);
 
         if (failed is not null)
@@ -264,24 +208,60 @@ public abstract class LlmPersona(
 
     private enum Phase { Independent, Discussion, Vote }
 
+    private static string Label(Phase phase) => phase switch
+    {
+        Phase.Independent => "analysis",
+        Phase.Discussion => "discussion",
+        _ => "vote",
+    };
+
     /// <summary>Makes the call and records the tokens. Returns a fault message, or null.</summary>
     private async Task<string?> CallAsync(
-        string systemPrompt,
+        Phase phase,
         RoomContext context,
         IReadOnlyList<AITool> tools,
         ChatToolMode toolMode,
         int maxOutputTokens,
         CancellationToken cancellationToken)
     {
+        var (fault, _) = await InvokeAsync(
+            Label(phase), BuildPrompt(phase), Describe(context), tools, toolMode,
+            maxOutputTokens, cancellationToken);
+
+        return fault;
+    }
+
+    /// <summary>
+    /// <b>The one path from this application to a model.</b> Every seat and every phase goes
+    /// through here, so the transcript, the token ledger and the fault handling are written
+    /// once and cannot differ between seats.
+    /// </summary>
+    /// <returns>The fault message, or null; and the response, which a caller may need to
+    /// explain a turn that submitted nothing.</returns>
+    protected async Task<(string? Fault, ChatResponse? Response)> InvokeAsync(
+        string phase,
+        string systemPrompt,
+        string payload,
+        IReadOnlyList<AITool> tools,
+        ChatToolMode toolMode,
+        int maxOutputTokens,
+        CancellationToken cancellationToken)
+    {
+        ChatMessage[] messages =
+        [
+            new(ChatRole.System, systemPrompt),
+            new(ChatRole.User, payload),
+        ];
+
+        ChatTranscript.Request(Logger, Name, phase, Model, messages, tools, maxOutputTokens);
+
+        var started = Stopwatch.GetTimestamp();
         ChatResponse? response = null;
 
         try
         {
             response = await Clients.For(Provider, Name).GetResponseAsync(
-                [
-                    new ChatMessage(ChatRole.System, systemPrompt),
-                    new ChatMessage(ChatRole.User, Describe(context)),
-                ],
+                messages,
                 new ChatOptions
                 {
                     ModelId = Model,
@@ -292,12 +272,17 @@ public abstract class LlmPersona(
                 },
                 cancellationToken);
 
-            return null;
+            ChatTranscript.Response(
+                Logger, Name, phase, Model, response, Stopwatch.GetElapsedTime(started));
+
+            return (null, response);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            Logger.LogError(error, "{Persona} failed a model call.", Name);
-            return error.Message;
+            ChatTranscript.Failed(
+                Logger, Name, phase, Model, error, Stopwatch.GetElapsedTime(started));
+
+            return (error.Message, null);
         }
         finally
         {

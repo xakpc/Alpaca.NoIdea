@@ -4,11 +4,12 @@
 |---|---|---|
 | Runtime | .NET 10 | Good support for console, async I/O, process control, and `TimeProvider`. |
 | Language | C# | The main project language. |
-| TUI | Spectre.Console | Small terminal UI. No web stack is required. |
+| Terminal output | `ILogger` to the console | There is no terminal view. Each event that tells the story of a run carries a `RunEvents` id (ADR-024). Spectre.Console stays in the project file, unused, for a later attempt. |
 | AI abstraction | `Microsoft.Extensions.AI` | Gives `IChatClient`, AI tools, and tool invocation. |
-| LLM provider | `Anthropic` (the official C# SDK) | Gives `IChatClient` through `AsIChatClient()`. It also maps `HostedWebSearchTool` to the Anthropic `web_search` server tool. |
+| LLM provider | `Anthropic` (the official C# SDK) | Gives `IChatClient` through `AsIChatClient()`. Hosted provider tools are NOT used: they are shaped differently on each provider, so web research is an MCP server instead (ADR-017). |
 | Agent tool loop | `FunctionInvokingChatClient` | Completes the tool-call loop for the model. |
-| MCP client | C# MCP SDK (`ModelContextProtocol`) | Connects the host to Alpaca MCP. Gives MCP tools to `IChatClient`. |
+| Proposer payload format | `Toon.DotNet` | TOON encodes a uniform array one time as a header and then as rows, in place of a field name in each object. The proposer sends the largest payload and sends it again on each turn of its tool loop (ADR-028). Prompts only: everything stored or read back stays JSON. |
+| MCP client | C# MCP SDK (`ModelContextProtocol`) | Connects the host to two servers: read-only Alpaca, and Keenable for web research. Gives their tools to `IChatClient`. |
 | Alpaca access (deterministic C#) | `Alpaca.Markets` NuGet | Typed REST access for account, orders, market data, and option chains. Returns `decimal` money, so no parsing layer is needed (ADR-001). |
 | Alpaca access (LLM agents) | Alpaca MCP Server, read-only | Bars, quotes, news, option chains, and greeks as MCP tools. One connection (ADR-012). |
 | MCP transport | `HttpClientTransport` in development, `StdioClientTransport` when deployed | A URL selects HTTP, a command selects stdio. Both or neither fails startup. |

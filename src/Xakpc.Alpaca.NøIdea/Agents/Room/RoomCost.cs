@@ -44,12 +44,11 @@ public static class ModelPricing
         {
             // ---- seated today ----
 
-            // UNVERIFIED. Carried over from an earlier price list and not re-checked. The
-            // sonnet-5 entry below it was found to be wrong by 50%, so treat this one as
-            // suspect until someone reads it off the price page.
-            ["claude-opus-5"] = new(15.00m, 75.00m) { CachedInputPerMillion = 1.50m },
-
-            // Checked 2026-08-31. Was 3.00/15.00 here, which over-reported by 50%.
+            // Read off the published table 2026-08-31. Two seats: the proposer, whose INPUT
+            // is what to watch because it loops over tools and resends the conversation each
+            // turn, and the skeptic. Cache writes are 2.50 (5m) and 4.00 (1h) against the
+            // 2.00 base; only the 0.20 read rate is modelled. Was 3.00/15.00 here, which
+            // over-reported by 50%.
             ["claude-sonnet-5"] = new(2.00m, 10.00m) { CachedInputPerMillion = 0.20m },
 
             // Checked 2026-08-31, standard context tier. Above 200K input tokens xAI
@@ -63,6 +62,15 @@ public static class ModelPricing
             ["gpt-5.6-terra"] = new(2.00m, 12.00m) { CachedInputPerMillion = 0.20m },
 
             // ---- not seated. Kept for a quick switch back, and equally stale. ----
+
+            // Read off the published table 2026-08-31. This entry held 15.00/75.00/1.50,
+            // which is the RETIRED Opus 4.1 and Opus 4 rate: an old table carried forward
+            // under a new model name. It over-reported every Opus call by exactly 3x, and
+            // two measured proposer searches were reported as 2.93 and 5.65 USD when they
+            // cost 0.98 and 1.88. Cache writes are 6.25 (5m) and 10.00 (1h) against the 5.00
+            // base; only the 0.50 read rate is modelled.
+            ["claude-opus-5"] = new(5.00m, 25.00m) { CachedInputPerMillion = 0.50m },
+
             ["claude-haiku-4-5-20251001"] = new(1.00m, 5.00m) { CachedInputPerMillion = 0.10m },
             ["gpt-5"] = new(1.25m, 10.00m) { CachedInputPerMillion = 0.125m },
             ["grok-4"] = new(3.00m, 15.00m),
