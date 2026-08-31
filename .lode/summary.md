@@ -37,7 +37,7 @@ trained Historical ML Expert, and an empty trading host.
 | `src/…/Replay/` | **Done.** `ReplayClock`, `ReplayMarketDataGateway`, `ReplayTradingGateway`, `ReplayRunner`, `MarketCalendar`, and `OptionLadder`. |
 | `data/trader.db` | **Populated.** 122,444 bars, 16,088 news items, 195,824 contracts, 151,718 option bars, for 2026-02-01 to 2026-08-28. |
 | `scripts/acquire-news.sh` | **Done.** The paginated news backfill. 25,187 items. The old script captured one page per symbol. |
-| `tests/Trader.Tests` | **Done.** 98 tests: the paper guarantee, the tool policy, the no-leak rule, bar availability, the ladder, the OCC parser, the risk limits, and the war-room flow with mock personas. |
+| `tests/Trader.Tests` | **Done.** 110 tests: the paper guarantee, the tool policy, the no-leak rule, bar availability, the ladder, the OCC parser, the risk limits, the war-room flow with mock personas, the dry-run gateway, and the audit trail. |
 | `src/…FeatureGenerator` (branch `phase-3-historical-ml-expert`) | **Done.** Shared library: bar reading, the regular-hours calendar, the contract catalog, the 14 features, and `HistoricalMlExpert`. |
 | `src/…Trainer` (branch `phase-3-historical-ml-expert`) | **Done.** Console: builds 1.36M labelled rows, splits by time, trains SDCA, evaluates, writes the report. |
 | `tests/Trader.Tests` (branch `phase-3-historical-ml-expert`) | **Done.** 46 xUnit tests, including the no-future-leak checks. |
@@ -51,7 +51,8 @@ trained Historical ML Expert, and an empty trading host.
 | `src/…/Trading/` | **Done.** `TradingLoop`, `RiskGuard`, `RiskOptions`, `StrategyPolicy`, `TradingOptions`, `LiveSession`, `PositionReviewTriggers`. |
 | `src/…/Agents/Room/` | **Done.** `WarRoomSession`, `IPersona`, five persona classes, `VoteTally`, `TokenLedger`, `ProposalPreValidator`, `ChatClientFactory` (Anthropic, OpenAI, Grok). |
 | `src/…/Agents/` | **Done.** The typed action space and `StubStrategyAgent`. |
-| Options Evaluator as a separate class, TUI | Not implemented. The evaluator's checks live in `RiskGuard.CheckContract`. |
+| `src/…/Observability/` | **Done.** `RunEvents`, the permanent `EventId` of each event that tells the story of a run. There is no terminal view: the run writes to the console (ADR-024). |
+| Options Evaluator as a separate class | Not implemented. The evaluator's checks live in `RiskGuard.CheckContract`. |
 
 **The strategy is decided by a war room (ADR-019).** A proposer searches the allowed universe
 and puts one operation forward. Reviewers analyse it **independently**, then debate, then the

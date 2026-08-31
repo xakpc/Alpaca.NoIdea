@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Xakpc.Alpaca.NøIdea.Observability;
 
 namespace Xakpc.Alpaca.NøIdea.Agents.Room;
 
@@ -101,6 +102,7 @@ public sealed class WarRoomSession(
         preValidate ?? throw new ArgumentNullException(nameof(preValidate));
 
     private readonly TimeProvider _time = time ?? throw new ArgumentNullException(nameof(time));
+
     private readonly ILogger _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     public async Task<WarRoomOutcome> RunAsync(
@@ -119,6 +121,13 @@ public sealed class WarRoomSession(
 
         CollectCost(ledger, _proposer);
 
+        _logger.LogInformation(
+            RunEvents.ProposalMade,
+            "{Id}: {Count} action(s). {Thesis}",
+            request.ProposalId,
+            operation.Actions.Count(action => action.Kind != StrategyActionKind.Hold),
+            operation.Thesis);
+
         if (!operation.TradesAnything && request.Purpose == WarRoomPurpose.NewTrade)
         {
             _logger.LogInformation("{Id}: proposer returned NO_TRADE. The room does not sit.", request.ProposalId);
@@ -136,7 +145,9 @@ public sealed class WarRoomSession(
         // ---- C# pre-validation (spec §17), before the room spends tokens.
         if (_preValidate(operation, request) is { } rejection)
         {
-            _logger.LogInformation("{Id}: pre-validation rejected: {Code}.", request.ProposalId, rejection);
+            _logger.LogInformation(
+                RunEvents.ProposalRejectedEarly,
+                "{Id}: pre-validation rejected: {Code}.", request.ProposalId, rejection);
             return Rejected(request, operation, ledger, rejection);
         }
 
@@ -154,9 +165,12 @@ public sealed class WarRoomSession(
         // ---- Independent analysis (spec §18). In parallel, and nobody sees anybody else.
         var analyses = await RunIndependentAsync(context, ledger, cancellationToken);
 
+        // A seat that faulted is reported by the error the fault raised, so only a
+        // completed analysis is narrated here.
         foreach (var analysis in analyses.Where(item => item.Completed))
         {
             _logger.LogInformation(
+                RunEvents.AnalysisReceived,
                 "  {Persona} initial {Vote} at {Confidence:P0}: {Analysis}",
                 analysis.Persona, analysis.InitialVote, analysis.Confidence, analysis.Analysis);
         }
@@ -186,7 +200,8 @@ public sealed class WarRoomSession(
                     Round = round,
                 };
 
-                discussion.Add(await SpeakAsync(reviewer, roundContext, round, ledger, cancellationToken));
+                var said = await SpeakAsync(reviewer, roundContext, round, ledger, cancellationToken);
+                discussion.Add(said);
             }
         }
 
@@ -199,15 +214,26 @@ public sealed class WarRoomSession(
 
             if (!answered.TradesAnything && request.Purpose == WarRoomPurpose.NewTrade)
             {
-                _logger.LogInformation("{Id}: the proposer withdrew after the debate.", request.ProposalId);
+                _logger.LogInformation(
+                    RunEvents.RebuttalMade,
+                    "{Id}: the proposer withdrew after the debate.", request.ProposalId);
                 return Withdrawn(request, answered, ledger, analyses, discussion);
             }
 
-            if (!string.Equals(answered.SubstanceKey, operation.SubstanceKey, StringComparison.Ordinal))
+            modified = !string.Equals(
+                answered.SubstanceKey, operation.SubstanceKey, StringComparison.Ordinal);
+
+            // Whether the proposer held its ground or changed it is the most interesting
+            // thing the debate produces. Reported here, before the pre-validation branch
+            // below can return, so it is never lost on a modified-then-rejected proposal.
+            _logger.LogInformation(
+                RunEvents.RebuttalMade,
+                "{Id}: the proposer {Outcome} after the debate.",
+                request.ProposalId, modified ? "modified the proposal" : "held its ground");
+
+            if (modified)
             {
                 // Spec §20: a changed structure is a new proposal and must be validated again.
-                modified = true;
-
                 if (_preValidate(answered, request) is { } rejectedAfterChange)
                 {
                     _logger.LogInformation(
@@ -222,7 +248,6 @@ public sealed class WarRoomSession(
                     };
                 }
 
-                _logger.LogInformation("{Id}: the proposer modified the proposal.", request.ProposalId);
             }
 
             operation = answered;
@@ -237,14 +262,16 @@ public sealed class WarRoomSession(
         foreach (var vote in votes)
         {
             _logger.LogInformation(
+                RunEvents.VoteCast,
                 "  {Persona} votes {Vote} at {Confidence:P0}: {Rationale}",
                 vote.Persona, vote.Vote, vote.Confidence, vote.Rationale);
         }
 
         var tally = VoteTally.Count(votes, _options.ApproveThreshold, _options.RequireEveryVoter);
         var cost = ledger.Snapshot();
-
+        var verdict = tally.SizeMultiplier > 0m ? WarRoomVerdict.Approved : WarRoomVerdict.Rejected;
         _logger.LogInformation(
+            RunEvents.VerdictReached,
             "{Id}: {Tally}. Verdict {Verdict}. Cost {Cost}.",
             request.ProposalId, tally,
             tally.SizeMultiplier > 0m ? "APPROVED" : "REJECTED", cost);
@@ -302,7 +329,9 @@ public sealed class WarRoomSession(
 
             if (contribution.Spoke)
             {
-                _logger.LogInformation("  [{Round}] {Speaker}: {Summary}", round, contribution.Speaker, contribution.Summary);
+                _logger.LogInformation(
+                    RunEvents.DiscussionHeard,
+                    "  [{Round}] {Speaker}: {Summary}", round, contribution.Speaker, contribution.Summary);
             }
 
             return contribution;

@@ -206,7 +206,7 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
             return RiskVerdict.Reject("quote has no timestamp");
         }
 
-        if (now - quotedAt > _options.MaxQuoteAge)
+        if (!_options.AllowStaleQuotes && now - quotedAt > _options.MaxQuoteAge)
         {
             return RiskVerdict.Reject($"quote is {(now - quotedAt).TotalMinutes:N0} minutes old");
         }

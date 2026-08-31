@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Xakpc.Alpaca.NøIdea.Agents;
 using Xakpc.Alpaca.NøIdea.Alpaca.Gateways;
+using Xakpc.Alpaca.NøIdea.Observability;
 using Xakpc.Alpaca.NøIdea.Replay;
 using Xakpc.Alpaca.NøIdea.Storage;
 
@@ -51,6 +52,9 @@ public sealed class TradingLoop(
     private readonly TradingStore _store = store ?? throw new ArgumentNullException(nameof(store));
     private readonly TimeProvider _time = time ?? throw new ArgumentNullException(nameof(time));
     private readonly ILogger _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+
+    /// <summary>True when a decorator is intercepting orders, so nothing reaches the broker.</summary>
+    public bool DryRun { get; init; }
 
     private readonly IPositionReviewer? _reviewer = agent as IPositionReviewer;
 
@@ -138,6 +142,16 @@ public sealed class TradingLoop(
             ? []
             : await BuildCandidatesAsync(positions, cancellationToken);
 
+        _logger.LogInformation(
+            RunEvents.AccountRead,
+            "Equity {Equity:N2} USD, cash {Cash:N2}, {Positions} position(s).",
+            account.Equity, account.Cash, positions.Count);
+
+        _logger.LogInformation(
+            RunEvents.CandidatesBuilt,
+            "{Offered} candidate(s) from {Scanned} symbol(s).",
+            candidates.Count, TrackedSymbols.Count);
+
         var news = await SafeNewsAsync(cancellationToken);
 
         // 4. The agent decides. It receives data and returns data.
@@ -204,6 +218,11 @@ public sealed class TradingLoop(
             switch (action.Kind)
             {
                 case StrategyActionKind.Hold:
+                    // Say why nothing happened. The war room short-circuits before it ever
+                    // sits — halted, no free slot, no candidate — and without this the run
+                    // shows a cycle that does nothing and explains nothing, which reads as a
+                    // broken agent rather than a working one with nothing to do.
+                    _logger.LogInformation(RunEvents.Hold, "{Why}", action.Reasoning);
                     break;
 
                 case StrategyActionKind.ClosePosition:
@@ -264,7 +283,10 @@ public sealed class TradingLoop(
                 continue;
             }
 
-            _logger.LogInformation("Closing {Symbol}: {Reason}.", position.Symbol, reason);
+            _logger.LogInformation(
+                RunEvents.PositionClosed,
+                "{State} {Symbol}: {Reason}.",
+                DryRun ? "Would close (dry run)" : "Closing", position.Symbol, reason);
 
             try
             {
@@ -432,6 +454,7 @@ public sealed class TradingLoop(
         {
             var mismatch = $"the agent asked to {action.Kind} but this is a {candidate.Candidate.OptionType}";
             _logger.LogWarning(
+                RunEvents.RiskRejected,
                 "The agent asked to {Kind} but {Symbol} is a {Type}. Rejected.",
                 action.Kind, candidate.Candidate.ContractSymbol, candidate.Candidate.OptionType);
             await AuditAsync(action, candidate, "rejected", "contract type", mismatch, cancellationToken);
@@ -442,6 +465,7 @@ public sealed class TradingLoop(
         if (!verdict.Allowed)
         {
             _logger.LogInformation(
+                RunEvents.RiskRejected,
                 "Risk rejected {Symbol}: {Reason}.", candidate.Candidate.ContractSymbol, verdict.Reason);
             await AuditAsync(action, candidate, "rejected", "risk guard", verdict.Reason, cancellationToken);
             return false;
@@ -506,7 +530,9 @@ public sealed class TradingLoop(
         _openedPerDay[today] = _openedPerDay.GetValueOrDefault(today) + 1;
 
         _logger.LogInformation(
-            "Opened {Contracts}x {Symbol} at {Price:N2} ({Cost:N2} USD). {Why}",
+            RunEvents.OrderDecided,
+            "{State} {Contracts}x {Symbol} at {Price:N2} ({Cost:N2} USD). {Why}",
+            DryRun ? "Would open (dry run)" : "Opened",
             action.Contracts, candidate.Candidate.ContractSymbol, limitPrice,
             limitPrice * action.Contracts * 100m, action.Reasoning);
 
@@ -617,7 +643,6 @@ public sealed class TradingLoop(
         }
     }
 
-    // ------------------------------------------------------------------ candidates
     // ------------------------------------------------------------------ candidates
 
     private async Task<IReadOnlyList<CandidateView>> BuildCandidatesAsync(

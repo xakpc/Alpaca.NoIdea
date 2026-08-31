@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Xakpc.Alpaca.NøIdea.Alpaca.Gateways;
+using Xakpc.Alpaca.NøIdea.Observability;
 
 namespace Xakpc.Alpaca.NøIdea.Trading;
 
@@ -32,6 +33,25 @@ public sealed class LiveSession(
     private readonly TimeProvider _time = time ?? throw new ArgumentNullException(nameof(time));
     private readonly ILogger _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
+    /// <summary>
+    /// What the room has spent so far. The session does not own the agent, so it asks.
+    /// </summary>
+    /// <remarks>
+    /// The default reports nothing, which is correct for a stub agent that spends nothing.
+    /// The live host supplies <c>WarRoomAgent.TotalCost</c>.
+    /// </remarks>
+    public Func<Agents.Room.RoomCost> RunningCost { get; init; } = static () => new();
+
+    /// <summary>Run one cycle and stop, even when the exchange is shut.</summary>
+    /// <remarks>
+    /// The only way to exercise the live path out of hours. Pair it with a dry run: quotes
+    /// are stale and an order left resting on a closed session could fill at the next open.
+    /// </remarks>
+    public bool RunOnceIgnoringMarketHours { get; init; }
+
+    /// <summary>How many cycles actually ran.</summary>
+    public int CyclesRun { get; private set; }
+
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation(
@@ -49,16 +69,37 @@ public sealed class LiveSession(
             {
                 var clock = await _marketData.GetClockAsync(cancellationToken);
 
-                if (clock.IsOpen)
+                if (clock.IsOpen || RunOnceIgnoringMarketHours)
                 {
-                    var result = await _loop.RunCycleAsync(cancellationToken);
+                    if (!clock.IsOpen)
+                    {
+                        _logger.LogWarning(
+                            "Market is closed. Running one cycle anyway: quotes are stale and "
+                            + "nothing will fill.");
+                    }
+
                     cycles++;
+                    CyclesRun = cycles;
+                    _logger.LogInformation(
+                        RunEvents.CycleStarted,
+                        "Cycle {Number} at {At:u}. Market open {Open}.",
+                        cycles, _time.GetUtcNow(), clock.IsOpen);
+
+                    var result = await _loop.RunCycleAsync(cancellationToken);
 
                     _logger.LogInformation(
+                        RunEvents.CycleFinished,
                         "Cycle {Number}: {Offered} candidates, {Opened} opened, {Closed} closed, "
-                        + "{Rejected} rejected, equity {Equity:N2} USD.",
+                        + "{Rejected} rejected, equity {Equity:N2} USD. Run cost {Cost}.",
                         cycles, result.CandidatesOffered, result.OrdersSubmitted,
-                        result.PositionsClosed, result.ActionsRejected, result.Equity);
+                        result.PositionsClosed, result.ActionsRejected, result.Equity,
+                        RunningCost());
+
+                    if (RunOnceIgnoringMarketHours)
+                    {
+                        _logger.LogInformation("Single cycle requested. Stopping.");
+                        break;
+                    }
 
                     interval = _options.CycleInterval;
                 }

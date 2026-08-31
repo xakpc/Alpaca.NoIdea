@@ -62,6 +62,18 @@ public sealed record RiskOptions
     public TimeSpan MaxQuoteAge { get; init; } = TimeSpan.FromMinutes(10);
 
     /// <summary>
+    /// Testing only. Skips the quote-age rule so a closed market still yields candidates.
+    /// </summary>
+    /// <remarks>
+    /// <b>The host refuses this unless the run is also a dry run.</b> Out of hours every
+    /// quote is stale, so the cheap filter correctly finds nothing and the war room never
+    /// sits — which makes the whole decision path untestable on a weekend. Allowing it only
+    /// alongside a gateway that cannot submit means the relaxed rule can never reach an
+    /// order. It is a way to watch the machinery, never a way to trade on stale data.
+    /// </remarks>
+    public bool AllowStaleQuotes { get; init; }
+
+    /// <summary>
     /// Positions close before this moment, because Alpaca scores total equity at the end of
     /// Thursday 2026-09-03 and the system must not depend on Friday option activity.
     /// </summary>

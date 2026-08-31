@@ -3,10 +3,27 @@
 The project does not need a separate observability stack. It uses:
 
 - Structured application logs (`Microsoft.Extensions.Logging`).
-- SQLite decision records.
-- The TUI status view.
-- Equity snapshots.
+- SQLite order and equity records.
+- `RunEvents`, the permanent event ids that mark the story of a run.
 - Agent MCP tool-call records.
+
+## Where the record lives
+
+The complete record is stdout at `Information`, which is what `docker logs` collects. There is
+no terminal view and no log file. The level is never reduced (ADR-024).
+
+## The event ids
+
+`Observability/RunEvents.cs` gives an `EventId` to each event that tells the story of a run:
+the start and the end, each cycle, the account and the candidates, each seat of the war room,
+each order, and each rejection. A line with an id is part of the story. A line with no id is a
+diagnostic.
+
+The ids are in groups: 1000 for the host and the session, 2000 for the trading loop, 3000 for
+the war room. **An id is permanent**, because a filter selects on the number.
+
+A view that shows only some of the events does not exist yet. When it is written, it will be an
+`ILoggerProvider` that selects on the id. It will not change the trading code.
 
 ## The ten questions
 
@@ -30,22 +47,41 @@ For every trade, the system must be able to answer:
 
 | Question | Source |
 |---|---|
-| 1, 2, 3 | `forecasts` rows, one for each forecaster |
-| 4 | `agent_tool_calls` rows |
+| 1 | Retired. The ML expert is excluded (ADR-013). |
+| 2, 3 | `forecasts` rows, one per war-room seat, with the vote, the confidence, and `evidence_json` holding the first opinion, what the seat said in the debate, and any fault |
+| 4 | **Not stored.** See the gap below. |
 | 5 | `evaluation_runs.market_probability`, `market_snapshot_json` |
-| 6 | `decisions.combined_probability` |
-| 7 | `decisions.edge`, `decisions.action`, `decisions.reason` |
-| 8 | `decisions.risk_result` |
-| 9 | `orders.alpaca_order_id`, `orders.client_order_id` |
-| 10 | `orders.status`, `orders.realized_pnl`, `equity_snapshots` |
+| 6 | `decisions.combined_probability`, and `decisions.net_vote` for the tally that sized it |
+| 7 | `decisions.action`, `.reason`, `.edge` |
+| 8 | `decisions.risk_result`, and `evaluation_runs.status` |
+| 9 | `orders.alpaca_order_id`, `.client_order_id`, joined by `orders.decision_id` |
+| 10 | `orders.status`, `.realized_pnl`, `equity_snapshots` |
 
-The schema is in [storage schema](../storage/schema.md).
+`--audit` prints the row counts and the most recent decisions joined across all three
+tables, so the record can be read without a SQLite client. `--audit --last 50` widens it.
+
+### The one gap
+
+> **`agent_tool_calls` is still empty.** Recording what the agents read means instrumenting
+> the tool-invocation path inside `FunctionInvokingChatClient`, which is on the critical
+> path of every research call. It is the one table left, and it is deliberate.
+
+The response objects already carry `FunctionCallContent`, and `LlmPersona.CallAsync` already
+reads them for token cost, so the extraction has an obvious home. What it needs is a sink
+threaded through the five persona constructors.
 
 ## Rejections count
 
 Record a skip and a rejection with the same care as a trade. A demo that shows why the agent
-did not trade proves that the guardrails work.
+did **not** trade proves that the guardrails work, so a rejection has its own id
+(`RunEvents.RiskRejected`) and a view cannot drop it as noise.
+
+Two more ids exist for the same reason. `RunEvents.Hold` carries the reason the war room never
+sat at all — halted, no free slot, no candidate passed the cheap filter — which is the common
+out-of-hours path. `RunEvents.RebuttalMade` says whether the proposer held its ground, changed
+it, or withdrew.
 
 ## Related
 
 - [Storage summary](../storage/summary.md)
+- [Storage schema](../storage/schema.md)

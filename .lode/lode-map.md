@@ -54,7 +54,7 @@ wins.
 | [component-model.md](architecture/component-model.md) | Internal components and the three replacement seams. |
 | [application-structure.md](architecture/application-structure.md) | Current and target folder layout. |
 | [technology-stack.md](architecture/technology-stack.md) | The approved and rejected technology. |
-| [decisions.md](architecture/decisions.md) | ADR-001 to ADR-022. ADR-013 excludes the ML expert. ADR-014 owns the gateway records. ADR-015 is the bar-availability rule. ADR-016 makes the agent direct the strategy. ADR-017 gives it read-only research tools and web search. ADR-018 superseded. ADR-019 is the war room, ADR-020 personas as classes, ADR-021 votes size the position, ADR-022 cost reporting. |
+| [decisions.md](architecture/decisions.md) | ADR-001 to ADR-026. ADR-013 excludes the ML expert. ADR-014 owns the gateway records. ADR-015 is the bar-availability rule. ADR-016 makes the agent direct the strategy. ADR-017 gives it read-only research tools and web search. ADR-018 superseded. ADR-019 is the war room, ADR-020 personas as classes, ADR-021 votes size the position, ADR-022 cost reporting, ADR-023 dry run as a gateway, ADR-024 console logging and the event ids, ADR-025 out-of-hours testing, ADR-026 the audit trail. |
 
 ## war-room/
 

@@ -62,6 +62,8 @@ src/Xakpc.Alpaca.NøIdea/
         ReplayTradingGateway.cs           # simulates. Holds no Alpaca client.
         MarketCalendar.cs                 # regular hours, Eastern
         OptionLadder.cs                   # the market probability reference
+    Observability/
+        RunEvents.cs                      # the permanent EventId of each run event
     Storage/
         Schema.sql                        # cache, audit and score tables
         TradingStore.cs                   # audit half. The only class with SQL.
@@ -84,6 +86,8 @@ tests/Xakpc.Alpaca.NøIdea.Tests/
 
 - Build output goes to `build/`, never into `src/`.
 - Every SQL string lives in `Storage/`.
+- `Observability/` holds only the event ids. It has no reference to a trading type, and it
+  decides nothing (ADR-024).
 - `Alpaca/Gateways/` is the only place `Alpaca.Markets` types are converted (ADR-014).
 - A strategy number lives in `RiskOptions` or `StrategyPolicy`, never in a C# expression.
 

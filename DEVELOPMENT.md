@@ -95,17 +95,34 @@ dotnet build
 dotnet run --project src/Xakpc.Alpaca.NøIdea
 ```
 
-The host reads the two server URLs from configuration. See
-`.lode/alpaca/mcp-run-modes.md` for the configuration keys.
+With no arguments the host prints what it can do and exits. The usual runs:
+
+```bash
+# Decide everything, send nothing. Safe out of hours.
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live --dry-run --once --allow-stale-quotes
+
+# Trade the paper account.
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live
+
+# Read the audit trail back.
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --audit --last 20
+```
+
+A run writes to stdout, which is what `docker logs` collects. Every line that tells the
+story of the run carries an event id from `Observability/RunEvents.cs`, so a later view can
+select on the id. See `.lode/operations/observability.md`.
+
+The host reads the server URL from configuration. See `.lode/alpaca/mcp-run-modes.md` for the
+configuration keys.
 
 ## Build the deployed image
 
-The deployed image holds the .NET host **and** the pinned MCP server, which it starts as two
-stdio child processes. It needs no compose file and no Docker socket.
+The deployed image holds the .NET host **and** the pinned MCP server, which it starts as a
+single stdio child process. It needs no compose file and no Docker socket.
 
 ```bash
 docker build -f src/Xakpc.Alpaca.NøIdea/Dockerfile -t noidea/trader:dev .
-docker run --rm -e ALPACA_API_KEY=... -e ALPACA_SECRET_KEY=... noidea/trader:dev
+docker run --rm --env-file .env noidea/trader:dev --live --dry-run --once
 ```
 
 **The build context is the repository root** for both images, because both need

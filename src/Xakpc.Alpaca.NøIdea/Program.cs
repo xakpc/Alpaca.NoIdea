@@ -6,6 +6,7 @@ using Xakpc.Alpaca.NøIdea.Alpaca.Gateways;
 using Xakpc.Alpaca.NøIdea.Agents;
 using Xakpc.Alpaca.NøIdea.Agents.Room;
 using Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
+using Xakpc.Alpaca.NøIdea.Observability;
 using Xakpc.Alpaca.NøIdea.Replay;
 using Xakpc.Alpaca.NøIdea.Trading;
 using Xakpc.Alpaca.NøIdea.Storage;
@@ -15,9 +16,16 @@ using Xakpc.Alpaca.NøIdea.Storage;
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.GetCultureInfo("en-US");
 CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.GetCultureInfo("en-US");
 
-using var loggerFactory = LoggerFactory.Create(builder => builder
-    .SetMinimumLevel(LogLevel.Information)
-    .AddSimpleConsole(options => options.SingleLine = true));
+// The console is the whole record. The level is NEVER reduced: turning the record down to
+// warnings trades away the thing that explains a bad trade afterwards. Every line a person
+// watches a run by carries a RunEvents id, so a later view can select on the id rather than
+// on the level. See Observability/RunEvents.cs.
+using var loggerFactory = LoggerFactory.Create(builder =>
+{
+    builder.SetMinimumLevel(LogLevel.Information);
+    builder.AddDebug();
+    builder.AddSimpleConsole(options => options.SingleLine = true);
+});
 
 var log = loggerFactory.CreateLogger("Trader");
 
@@ -28,8 +36,9 @@ if (!args.Contains("--smoke") && !args.Contains("--check-mcp") && !args.Contains
 {
     log.LogInformation(
         "Nothing to do. Pass --smoke for the order path, --check-mcp for the read-only MCP "
-        + "connection, --import-history to load data/raw into SQLite, or --replay to run the "
-        + "offline replay.");
+        + "connection, --import-history to load data/raw into SQLite, --replay to run the "
+        + "offline replay, or --live to trade. Add --dry-run to decide everything and send "
+        + "nothing, and --once to run a single cycle out of hours.");
     return 0;
 }
 
@@ -66,7 +75,6 @@ if (args.Contains("--audit"))
 
     return 0;
 }
-
 
 // The import is offline and needs no Alpaca credentials, so it runs before anything
 // reads them. It loads data/raw into the SQLite cache that replay reads.
@@ -270,6 +278,23 @@ if (args.Contains("--live"))
     var liveTradingOptions = new TradingOptions();
     var liveRiskOptions = new RiskOptions();
 
+    // Relaxing quote freshness is only ever allowed when nothing can be sent.
+    if (args.Contains("--allow-stale-quotes"))
+    {
+        if (!args.Contains("--dry-run"))
+        {
+            log.LogError(
+                "--allow-stale-quotes turns off a safety rule, so it requires --dry-run. "
+                + "Refusing to start.");
+            return 1;
+        }
+
+        liveRiskOptions = liveRiskOptions with { AllowStaleQuotes = true };
+        log.LogWarning(
+            "Quote-age checks are OFF for this dry run. Candidates may be hours stale. "
+            + "This exists to watch the machinery out of hours, not to judge a price.");
+    }
+
     if (ArgumentValue("--cycle-minutes") is { } cycleText)
     {
         liveTradingOptions = liveTradingOptions with
@@ -279,7 +304,18 @@ if (args.Contains("--live"))
     }
 
     var liveMarketData = new LiveMarketDataGateway(liveClients);
-    var liveTrading = new LiveTradingGateway(liveClients);
+
+    // A decorator, not a flag: a gateway with no way to submit cannot be bypassed by code
+    // that forgets to check one.
+    var dryRun = args.Contains("--dry-run");
+    ITradingGateway liveTrading = new LiveTradingGateway(liveClients);
+    DryRunTradingGateway? dryRunGateway = null;
+
+    if (dryRun)
+    {
+        dryRunGateway = new DryRunTradingGateway(liveTrading, TimeProvider.System, log);
+        liveTrading = dryRunGateway;
+    }
 
     // Fail closed before the first cycle: an account that cannot trade options would make
     // every later rejection look like a strategy decision.
@@ -415,7 +451,8 @@ if (args.Contains("--live"))
         log)
     {
         TrackedSymbols = liveTradingOptions.TrackedSymbols,
-        Mode = "live",
+        Mode = dryRun ? "dry-run" : "live",
+        DryRun = dryRun,
     };
 
     log.LogInformation(
@@ -424,9 +461,50 @@ if (args.Contains("--live"))
         liveAgent.Name);
 
     var session = new LiveSession(
-        liveLoop, liveMarketData, liveTradingOptions, liveRiskOptions, TimeProvider.System, log);
+        liveLoop, liveMarketData, liveTradingOptions, liveRiskOptions, TimeProvider.System, log)
+    {
+        RunOnceIgnoringMarketHours = args.Contains("--once"),
+
+        // The session does not own the agent, so it asks the agent what the room has spent.
+        // Without this the per-cycle cost was hardcoded to an empty total and every cycle
+        // reported zero calls, whatever the room actually did.
+        RunningCost = () => liveWarRoom?.TotalCost ?? new RoomCost(),
+    };
+
+    string[] seats = liveWarRoom is null
+        ? []
+        : ["proposer", "skeptic", "quant", "market", "exposure"];
+
+    log.LogInformation(
+        RunEvents.RunStarted,
+        "Run started. Mode {Mode}. Dry run {DryRun}. Seats: {Seats}.",
+        dryRun ? "dry-run" : "live", dryRun,
+        seats.Length == 0 ? "none" : string.Join(", ", seats));
 
     await session.RunAsync(liveToken);
+
+    var totalCost = liveWarRoom?.TotalCost ?? new RoomCost();
+
+    log.LogInformation(
+        RunEvents.RunStopped,
+        "Run stopped after {Cycles} cycle(s). Total {Cost}.", session.CyclesRun, totalCost);
+
+    // Itemised per seat, because a single total hides which model is the expensive one.
+    foreach (var cost in totalCost.PerPersona)
+    {
+        log.LogInformation(
+            RunEvents.RoomSpend,
+            "  {Persona} ({Model}): {Calls} calls, {Tokens:N0} tokens, {Usd}",
+            cost.Persona, cost.Model, cost.Calls, cost.TotalTokens,
+            cost.EstimatedUsd is { } usd ? $"~{usd:F4} USD" : "unpriced");
+    }
+
+    if (dryRunGateway is { Planned.Count: > 0 } planned)
+    {
+        log.LogWarning(
+            "Dry run: {Count} order(s) were decided and none were sent. Notional {Notional:N2} USD.",
+            planned.Planned.Count, planned.PlannedNotional);
+    }
 
     if (liveMcpClient is not null)
     {

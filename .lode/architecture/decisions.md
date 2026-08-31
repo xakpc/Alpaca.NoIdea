@@ -482,6 +482,73 @@ search normally bills per call outside token counts. **Treat the number as a flo
 
 A failed call is still recorded, because a failed call is still billed.
 
+## ADR-023: Dry run is a gateway, not a flag
+
+**Decision:** `--dry-run` wraps the real `ITradingGateway` in `DryRunTradingGateway`. Reads
+pass through to the genuine account, positions and orders. The four write methods are
+intercepted, recorded, and never forwarded.
+
+**Reason:** a flag is checked at a call site, and a call site can be forgotten. A gateway with
+no path to the inner one for a write cannot be bypassed by code that forgets to check. The
+loop is handed the object and cannot tell the difference.
+
+**Reads deliberately stay real.** A dry run against a fake account proves nothing. It must
+exercise the true equity, the true positions and the true prices, and differ from a live run
+in exactly one respect.
+
+**A submitted order is reported as accepted**, so the cycle continues exactly as it would
+live: the order is recorded, the daily count advances, and the next cycle sees the same state
+machine. Audit rows are written with `mode = "dry-run"`.
+
+## ADR-024: The run writes to the console, and each event has an id
+
+**Decision:** The trading code writes to `ILogger`. There is no terminal view, and there is no
+observer interface between the code and the log.
+
+**Each event that tells the story of a run has an `EventId`.** `RunEvents` holds them all. A
+line with an id is part of the story. A line with no id is a diagnostic. A view can then select
+the ids that it shows, and the trading code does not know that a view exists.
+
+**An id is permanent.** If you give an event a new number, each filter that selects the old
+number stops to show that event, and nothing reports the change.
+
+**Why there is no observer interface.** An earlier design sent each event to `IRunObserver`,
+and one implementation of that interface wrote the log. This made two paths that report the
+same facts. `TradingLoop`, `LiveSession` and `WarRoomSession` each hold an `ILogger` already,
+and almost every observer call was two lines away from a log line with the same content.
+`ILogger` has the mechanism to select an event already: the id.
+
+**Why there is no dashboard.** A frame that draws again and again was built with
+Spectre.Console. It did not work. The frame also needed a presentation model, a log file, and a
+fan-out, because a frame and a log stream cannot share a terminal. That is approximately 1,200
+lines to show what the console shows. The `Spectre.Console` package stays in the project file
+for a later attempt.
+
+**The log level is never reduced.** It stays at `Information`. If you make the record smaller
+to keep a display tidy, you lose the thing that explains a bad trade.
+
+**A rejection is reported.** `RunEvents.RiskRejected` marks each action that a deterministic
+rule refused. A run that shows only what it traded gives no proof that the guardrails operate.
+
+## ADR-025: Out-of-hours testing, and the one rule that may be relaxed
+
+**Decision:** `--once` runs a single cycle even when the exchange is shut.
+`--allow-stale-quotes` skips the quote-age rule. **The host refuses `--allow-stale-quotes`
+unless `--dry-run` is also set.**
+
+**Reason:** out of hours every quote is from the previous close, so the cheap filter correctly
+rejects every candidate and the war room never sits. Measured on a Sunday: **0 candidates from
+13 symbols**, and with the rule relaxed, **40**. Without a relaxation the entire decision path
+is untestable on a weekend, which is exactly when there is time to test it.
+
+**Why this is not a hole in the guardrails.** The relaxed rule can only run alongside a
+gateway that has no way to submit, so it can never reach an order. The pairing is enforced at
+startup and the host refuses to run otherwise. It is a way to watch the machinery, never a way
+to trade on stale data.
+
+> Submitting into a closed session is the specific danger this avoids: a resting order can
+> fill at the next open, hours later, at a price nobody evaluated.
+
 ## ADR-026: The audit trail is written by the loop, and records rejections
 
 **Decision:** `TradingLoop` writes `evaluation_runs`, `forecasts` and `decisions`, and links
