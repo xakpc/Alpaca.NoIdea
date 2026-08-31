@@ -180,14 +180,45 @@ reports `QuoteQuality.UnknownHistorical` instead. See
 
 ## Audit tables
 
-One `evaluation_runs` row represents one evaluated option event. `mode` separates `live`
-from `replay` data.
+One `evaluation_runs` row represents one evaluated option event: the war room sat over this
+contract, and this is what the option market looked like at that moment. `mode` separates
+`live`, `dry-run` and `replay` data.
+
+`TradingLoop` writes these, because it is the only place that holds the market data, the
+risk verdict and the order id at once. It reads the seat detail through
+`IExplainsDecision`, so it audits opinions without knowing that a room produced them.
+
+> **A rejected action is written exactly like an accepted one.** A stored history of trades
+> alone cannot show that a risk rule ever fired, and the rejections are the evidence that the
+> guardrails work. `decisions.risk_result` names the rule.
+
+> **A failed audit write never stops a trade.** The audit describes a decision; it does not
+> take part in one. Losing a row is bad; refusing to trade because a disk is full is worse.
+
+### Two columns are nullable on purpose
+
+`forecasts.probability` and `decisions.combined_probability` were `NOT NULL` when four
+weighted experts each returned a number. The war room replaced that (ADR-019): a seat
+**argues and votes**, and `ExposureRiskPersona` is plain C# that never produces a
+probability at all. Requiring one would silently drop exactly the seats that reason in
+words, which is most of them.
+
+### The reshape was a guarded migration
+
+`CREATE TABLE IF NOT EXISTS` cannot widen a column, and SQLite cannot drop a `NOT NULL` with
+`ALTER`. `TradingStore.DropEmptyReshapedTablesAsync` therefore drops `evaluation_runs`,
+`forecasts`, `agent_tool_calls` and `decisions` **only while they hold no rows**, and the
+schema then recreates them. Nothing had ever written them, so nothing was lost.
+
+**A table with rows in it is left alone, whatever its shape.** `orders` and
+`equity_snapshots` are not in the list: they carry real history and did not change.
 
 ```sql
 CREATE TABLE evaluation_runs (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp_utc           INTEGER NOT NULL,
     mode                    TEXT NOT NULL,
+    proposal_id             TEXT,            -- ties the row to the sitting in the log
     symbol                  TEXT NOT NULL,
     current_price           REAL NOT NULL,
     option_symbol           TEXT NOT NULL,
@@ -203,7 +234,8 @@ CREATE TABLE forecasts (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id              INTEGER NOT NULL,
     forecaster          TEXT NOT NULL,
-    probability         REAL NOT NULL,
+    vote                TEXT,
+    probability         REAL,            -- NULLABLE. A seat argues; it need not compute.
     confidence          REAL,
     reasoning           TEXT,
     evidence_json       TEXT,
@@ -227,9 +259,10 @@ CREATE TABLE agent_tool_calls (
 CREATE TABLE decisions (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id                  INTEGER NOT NULL,
-    combined_probability    REAL NOT NULL,
+    combined_probability    REAL,            -- NULLABLE. A vote is not a probability.
     market_probability      REAL,
     edge                    REAL,
+    net_vote                REAL,            -- the confidence-weighted tally
     action                  TEXT NOT NULL,
     reason                  TEXT,
     risk_result             TEXT,

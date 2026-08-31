@@ -21,7 +21,7 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room;
 public sealed class WarRoomAgent(
     WarRoomSession session,
     TimeProvider time,
-    ILogger logger) : IStrategyAgent, IPositionReviewer
+    ILogger logger) : IStrategyAgent, IPositionReviewer, IExplainsDecision
 {
     private readonly WarRoomSession _session = session ?? throw new ArgumentNullException(nameof(session));
     private readonly TimeProvider _time = time ?? throw new ArgumentNullException(nameof(time));
@@ -37,6 +37,61 @@ public sealed class WarRoomAgent(
 
     /// <summary>The last sitting, for the audit trail.</summary>
     public WarRoomOutcome? LastOutcome { get; private set; }
+
+    public string? LastProposalId => LastOutcome?.ProposalId;
+
+    public decimal? LastNetVote => LastOutcome?.Tally?.Net;
+
+    /// <summary>
+    /// The last sitting, flattened to one entry per seat for the audit trail.
+    /// </summary>
+    /// <remarks>
+    /// The independent analysis and the final vote are folded into one row per seat, because
+    /// the interesting question afterwards is "what did this seat think, and did it change
+    /// its mind" — and both halves of that answer belong on the same row.
+    /// </remarks>
+    public IReadOnlyList<SeatOpinion> LastOpinions
+    {
+        get
+        {
+            if (LastOutcome is not { } outcome)
+            {
+                return [];
+            }
+
+            var seats = outcome.Analyses.Select(analysis => analysis.Persona)
+                .Concat(outcome.Votes.Select(vote => vote.Persona))
+                .Distinct(StringComparer.Ordinal);
+
+            return
+            [
+                .. seats.Select(seat =>
+                {
+                    var analysis = outcome.Analyses.FirstOrDefault(a => a.Persona == seat);
+                    var vote = outcome.Votes.FirstOrDefault(v => v.Persona == seat);
+                    var said = outcome.Discussion.Where(line => line.Speaker == seat).ToList();
+
+                    return new SeatOpinion(
+                        Seat: seat,
+                        Vote: vote?.Cast == true ? vote.Vote.ToString() : null,
+                        Probability: vote?.Probability ?? analysis?.Probability,
+                        Confidence: vote?.Cast == true ? vote.Confidence : analysis?.Confidence,
+                        Reasoning: vote?.Rationale ?? analysis?.Analysis,
+                        EvidenceJson: System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            initialVote = analysis?.InitialVote.ToString(),
+                            initialConfidence = analysis?.Confidence,
+                            analysis = analysis?.Analysis,
+                            supportingEvidence = analysis?.SupportingEvidence,
+                            risks = analysis?.Risks,
+                            said = said.Select(line => new { line.Round, line.Summary }),
+                            unresolvedRisk = vote?.UnresolvedRisk,
+                            fault = analysis?.Fault ?? vote?.Fault,
+                        }));
+                }),
+            ];
+        }
+    }
 
     public async Task<StrategyDecision> DecideAsync(
         StrategyContext context, CancellationToken cancellationToken)

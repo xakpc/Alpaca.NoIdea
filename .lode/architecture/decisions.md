@@ -482,6 +482,37 @@ search normally bills per call outside token counts. **Treat the number as a flo
 
 A failed call is still recorded, because a failed call is still billed.
 
+## ADR-026: The audit trail is written by the loop, and records rejections
+
+**Decision:** `TradingLoop` writes `evaluation_runs`, `forecasts` and `decisions`, and links
+`orders.decision_id`. It is the only place holding the market data, the risk verdict and the
+order id at once, and it already owns the store.
+
+It reads the seat detail through **`IExplainsDecision`**, which `WarRoomAgent` implements.
+The loop audits opinions without knowing a room produced them, so the stub agent and the
+replay path take the same code with no room detail.
+
+**A rejected action is recorded exactly like an accepted one.** A stored history of trades
+alone cannot show that a risk rule ever fired. `decisions.risk_result` names the rule and
+`evaluation_runs.status` separates accepted from rejected.
+
+**A failed audit write never stops a trade.** The audit describes a decision; it does not
+take part in one. Losing a row is bad; refusing to trade because a disk is full is worse.
+
+**`forecasts.probability` and `decisions.combined_probability` are nullable.** They were
+`NOT NULL` when four weighted experts each returned a number. A war-room seat argues and
+votes, and `ExposureRiskPersona` is plain C# that never produces a probability. Requiring
+one would drop exactly the seats that reason in words.
+
+**The reshape was a migration guarded on emptiness.** `DropEmptyReshapedTablesAsync` drops
+the four audit tables only while they hold no rows. A table with rows is left alone whatever
+its shape: silently deleting an audit trail to fit a schema change is the one outcome this
+must never have.
+
+**`agent_tool_calls` is deliberately still empty.** Filling it means instrumenting the tool
+path inside `FunctionInvokingChatClient`, which sits on the critical path of every research
+call.
+
 ## Related
 
 - [Critic agent](../war-room/summary.md)

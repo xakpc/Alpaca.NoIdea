@@ -22,6 +22,7 @@ using var loggerFactory = LoggerFactory.Create(builder => builder
 var log = loggerFactory.CreateLogger("Trader");
 
 if (!args.Contains("--smoke") && !args.Contains("--check-mcp") && !args.Contains("--import-history")
+    && !args.Contains("--audit")
     && !args.Contains("--live")
     && !args.Contains("--replay"))
 {
@@ -31,6 +32,41 @@ if (!args.Contains("--smoke") && !args.Contains("--check-mcp") && !args.Contains
         + "offline replay.");
     return 0;
 }
+
+// Reads the audit trail back. Offline, needs no credentials, and changes nothing: it exists
+// so the record can be inspected without a SQLite client, which is also how the demo shows
+// that a rejection was stored with the same care as a trade.
+if (args.Contains("--audit"))
+{
+    using var auditCancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+    var auditToken = auditCancellation.Token;
+
+    var auditStore = new TradingStore(TradingStore.ConnectionStringForFile(
+        DatabasePath(RepositoryRoot())));
+    await auditStore.CreateSchemaAsync(auditToken);
+
+    foreach (var (table, total) in await auditStore.AuditRowCountsAsync(auditToken))
+    {
+        log.LogInformation("  {Table}: {Total:N0} rows.", table, total);
+    }
+
+    foreach (var entry in await auditStore.RecentDecisionsAsync(
+        int.TryParse(ArgumentValue("--last"), out var last) ? last : 10, auditToken))
+    {
+        log.LogInformation(
+            "  {At} {Mode} {Status} {Action} {Symbol} p={Probability} market={Market} "
+            + "net={Net} risk=[{Risk}] seats={Seats} order={Order}",
+            DateTimeOffset.FromUnixTimeSeconds(entry.TimestampUtc).ToString("u"),
+            entry.Mode, entry.Status, entry.Action, entry.OptionSymbol,
+            entry.CombinedProbability?.ToString("P0") ?? "-",
+            entry.MarketProbability?.ToString("P0") ?? "-",
+            entry.NetVote?.ToString("F2") ?? "-",
+            entry.RiskResult, entry.SeatCount, entry.ClientOrderId ?? "-");
+    }
+
+    return 0;
+}
+
 
 // The import is offline and needs no Alpaca credentials, so it runs before anything
 // reads them. It loads data/raw into the SQLite cache that replay reads.

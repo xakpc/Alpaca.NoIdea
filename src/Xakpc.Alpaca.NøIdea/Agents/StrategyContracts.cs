@@ -114,6 +114,41 @@ public sealed record StrategyContext
     public required bool NewPositionsHalted { get; init; }
 }
 
+/// <summary>What one seat thought about the last decision.</summary>
+/// <remarks>
+/// The audit shape of an opinion, not the room's own. <c>Probability</c> and
+/// <c>Confidence</c> are nullable because a seat argues in words and need not produce a
+/// number: the plain-C# exposure seat never does, and requiring one would drop exactly the
+/// seats that reason rather than compute.
+/// </remarks>
+public sealed record SeatOpinion(
+    string Seat,
+    string? Vote,
+    decimal? Probability,
+    decimal? Confidence,
+    string? Reasoning,
+    string? EvidenceJson);
+
+/// <summary>
+/// An agent that can say who decided, and why, for the audit trail.
+/// </summary>
+/// <remarks>
+/// Optional. An agent with no room implements nothing and the loop records the decision
+/// without seat detail. This keeps the loop free of war-room types: it audits opinions, and
+/// does not know that a room produced them.
+/// </remarks>
+public interface IExplainsDecision
+{
+    /// <summary>An id for the sitting that produced the last decision, or null.</summary>
+    string? LastProposalId { get; }
+
+    /// <summary>The confidence-weighted net of the vote, or null when nobody voted.</summary>
+    decimal? LastNetVote { get; }
+
+    /// <summary>One entry per seat that took part in the last decision.</summary>
+    IReadOnlyList<SeatOpinion> LastOpinions { get; }
+}
+
 /// <summary>One closed trade, for the agent to learn from.</summary>
 public sealed record PastOutcome(
     DateTimeOffset OpenedUtc,

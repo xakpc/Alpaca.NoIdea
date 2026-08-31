@@ -430,9 +430,11 @@ public sealed class TradingLoop(
         var wantedType = action.Kind == StrategyActionKind.OpenCall ? "call" : "put";
         if (!string.Equals(candidate.Candidate.OptionType, wantedType, StringComparison.Ordinal))
         {
+            var mismatch = $"the agent asked to {action.Kind} but this is a {candidate.Candidate.OptionType}";
             _logger.LogWarning(
                 "The agent asked to {Kind} but {Symbol} is a {Type}. Rejected.",
                 action.Kind, candidate.Candidate.ContractSymbol, candidate.Candidate.OptionType);
+            await AuditAsync(action, candidate, "rejected", "contract type", mismatch, cancellationToken);
             return false;
         }
 
@@ -441,8 +443,14 @@ public sealed class TradingLoop(
         {
             _logger.LogInformation(
                 "Risk rejected {Symbol}: {Reason}.", candidate.Candidate.ContractSymbol, verdict.Reason);
+            await AuditAsync(action, candidate, "rejected", "risk guard", verdict.Reason, cancellationToken);
             return false;
         }
+
+        // The decision is durable before the order is. If the reserve or the submit then
+        // fails, the audit still explains what the system meant to do and why.
+        var decisionId = await AuditAsync(
+            action, candidate, "accepted", "allowed", verdict.Reason, cancellationToken);
 
         // Reserve the client order id BEFORE submitting. If the submit then fails with an
         // uncertain result the id is already durable, so recovery asks the broker what
@@ -462,6 +470,8 @@ public sealed class TradingLoop(
                 LimitPrice = limitPrice,
                 SubmittedUtc = _time.GetUtcNow().ToUnixTimeSeconds(),
                 Status = "reserved",
+                Mode = Mode,
+                DecisionId = decisionId,
             }, cancellationToken);
         }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -503,6 +513,111 @@ public sealed class TradingLoop(
         return true;
     }
 
+    // ------------------------------------------------------------------ audit
+
+    /// <summary>
+    /// Records one evaluated contract, every seat's opinion of it, and the verdict.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Called for a rejected action as well as an accepted one. A stored history of trades
+    /// alone cannot show that a risk rule ever fired, and the rejections are the evidence
+    /// that the guardrails work.
+    /// </para>
+    /// <para>
+    /// <b>A failed write never stops a trade.</b> The audit describes the decision; it does
+    /// not take part in it. Losing a row is bad, and refusing to trade because a disk is full
+    /// is worse — so this returns null and the caller carries on.
+    /// </para>
+    /// </remarks>
+    private async Task<long?> AuditAsync(
+        StrategyAction action,
+        CandidateView candidate,
+        string status,
+        string riskRule,
+        string riskDetail,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var now = _time.GetUtcNow().ToUnixTimeSeconds();
+            var contract = candidate.Candidate;
+            var explains = _agent as IExplainsDecision;
+
+            var runId = await _store.RecordEvaluationAsync(
+                new EvaluationRunRow
+                {
+                    TimestampUtc = now,
+                    Mode = Mode,
+                    ProposalId = explains?.LastProposalId,
+                    Symbol = contract.Underlying,
+                    CurrentPrice = candidate.UnderlyingPrice,
+                    OptionSymbol = contract.ContractSymbol,
+                    OptionType = contract.OptionType,
+                    Strike = contract.Strike,
+                    ExpirationUtc = new DateTimeOffset(
+                        contract.Expiration.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
+                        .ToUnixTimeSeconds(),
+                    MarketProbability = candidate.MarketProbability,
+                    Status = status,
+                    MarketSnapshotJson = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        contract.Bid,
+                        contract.Ask,
+                        contract.ReferencePrice,
+                        contract.Delta,
+                        quality = contract.Quality.ToString(),
+                        contract.QuoteTimestampUtc,
+                        candidate.RecentNewsCount,
+                    }),
+                },
+                cancellationToken);
+
+            if (explains?.LastOpinions is { Count: > 0 } opinions)
+            {
+                await _store.RecordForecastsAsync(
+                    [.. opinions.Select(opinion => new ForecastRow
+                    {
+                        RunId = runId,
+                        Forecaster = opinion.Seat,
+                        Vote = opinion.Vote,
+                        Probability = opinion.Probability,
+                        Confidence = opinion.Confidence,
+                        Reasoning = opinion.Reasoning,
+                        EvidenceJson = opinion.EvidenceJson,
+                        CreatedUtc = now,
+                    })],
+                    cancellationToken);
+            }
+
+            return await _store.RecordDecisionAsync(
+                new DecisionRow
+                {
+                    RunId = runId,
+                    CombinedProbability = action.Probability,
+                    MarketProbability = candidate.MarketProbability,
+                    Edge = action.Probability is { } p && candidate.MarketProbability is { } m
+                        ? p - m
+                        : null,
+                    NetVote = explains?.LastNetVote,
+                    Action = action.Kind.ToString(),
+                    Reason = action.Reasoning,
+                    RiskResult = string.Equals(riskRule, riskDetail, StringComparison.Ordinal)
+                        ? riskRule
+                        : $"{riskRule}: {riskDetail}",
+                    CreatedUtc = now,
+                },
+                cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            _logger.LogError(error, "Could not write the audit trail for {Symbol}.",
+                candidate.Candidate.ContractSymbol);
+            return null;
+        }
+    }
+
+    // ------------------------------------------------------------------ candidates
     // ------------------------------------------------------------------ candidates
 
     private async Task<IReadOnlyList<CandidateView>> BuildCandidatesAsync(

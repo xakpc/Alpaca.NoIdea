@@ -66,6 +66,7 @@ src/Xakpc.Alpaca.NøIdea/
         Schema.sql                        # cache, audit and score tables
         TradingStore.cs                   # audit half. The only class with SQL.
         TradingStore.Cache.cs             # cache half
+        TradingStore.Audit.cs             # evaluation_runs, forecasts, decisions
         BarAvailability.cs                # when a bar became knowable (ADR-015)
         RawJsonPages.cs                   # concatenated API pages reader
         HistoryImporter.cs                # data/raw -> SQLite, idempotent

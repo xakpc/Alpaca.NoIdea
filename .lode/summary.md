@@ -33,7 +33,7 @@ trained Historical ML Expert, and an empty trading host.
 | `src/…/Alpaca/AlpacaClients.cs` | **Done.** Three typed `Alpaca.Markets` clients on `Environments.Paper`. |
 | `src/…/Alpaca/AlpacaMcpClient.cs` + `McpToolCatalog.cs` | **Done.** One read-only MCP connection; 34 tools discovered, 25 approved, forbidden tools fail startup. |
 | `src/…/Alpaca/Gateways/` | **Done.** `IMarketDataGateway` and `ITradingGateway` over project-owned records, with the two live SDK implementations and `OccOptionSymbol` (ADR-014). |
-| `src/…/Storage/` | **Done.** The full schema, `TradingStore` (audit and cache), `RawJsonPages`, `HistoryImporter`, and `BarAvailability` (ADR-015). |
+| `src/…/Storage/` | **Done.** The full schema, `TradingStore` (cache, orders, and the audit trail), `RawJsonPages`, `HistoryImporter`, and `BarAvailability` (ADR-015). `TradingLoop` fills `evaluation_runs`, `forecasts` and `decisions` for accepted and rejected actions alike; `--audit` reads them back. `agent_tool_calls` stays empty (ADR-026). |
 | `src/…/Replay/` | **Done.** `ReplayClock`, `ReplayMarketDataGateway`, `ReplayTradingGateway`, `ReplayRunner`, `MarketCalendar`, and `OptionLadder`. |
 | `data/trader.db` | **Populated.** 122,444 bars, 16,088 news items, 195,824 contracts, 151,718 option bars, for 2026-02-01 to 2026-08-28. |
 | `scripts/acquire-news.sh` | **Done.** The paginated news backfill. 25,187 items. The old script captured one page per symbol. |

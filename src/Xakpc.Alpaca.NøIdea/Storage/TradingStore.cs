@@ -20,6 +20,21 @@ public sealed record OrderRecord
     public decimal? LimitPrice { get; init; }
     public long SubmittedUtc { get; init; }
     public string Status { get; init; } = "";
+
+    /// <summary>
+    /// Which run wrote this. A dry-run order must never be read back as a live one.
+    /// </summary>
+    public string Mode { get; init; } = "live";
+
+    /// <summary>
+    /// The decision this order came from, or null for the <c>--smoke</c> operator check.
+    /// </summary>
+    /// <remarks>
+    /// Null means exactly that: an operator check, not an agent decision. Inventing a
+    /// decisions row to satisfy a constraint would put a decision nobody made into the audit
+    /// trail, which is why the column carries no foreign key.
+    /// </remarks>
+    public long? DecisionId { get; init; }
 }
 
 /// <summary>
@@ -39,13 +54,69 @@ public sealed partial class TradingStore(string connectionString)
     public static string ConnectionStringForFile(string path) =>
         new SqliteConnectionStringBuilder { DataSource = path }.ToString();
 
+    /// <summary>
+    /// The audit tables whose shape changed when the war room replaced the weighted
+    /// combiner. Nothing ever wrote them, so an empty one can be rebuilt safely.
+    /// </summary>
+    private static readonly string[] ReshapedAuditTables =
+        ["decisions", "forecasts", "agent_tool_calls", "evaluation_runs"];
+
     public async Task CreateSchemaAsync(CancellationToken cancellationToken)
     {
         var schema = await File.ReadAllTextAsync(
             Path.Combine(AppContext.BaseDirectory, "Storage", "Schema.sql"), cancellationToken);
 
         await using var connection = await OpenAsync(cancellationToken);
+
+        await DropEmptyReshapedTablesAsync(connection, cancellationToken);
+
         await connection.ExecuteAsync(new CommandDefinition(schema, cancellationToken: cancellationToken));
+    }
+
+    /// <summary>
+    /// Rebuilds the audit tables that changed shape, and only while they hold no rows.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>CREATE TABLE IF NOT EXISTS</c> cannot widen a column, and SQLite cannot drop a
+    /// NOT NULL with <c>ALTER</c>. These four tables were written by nothing, so dropping an
+    /// empty one loses no history and the next statement recreates it correctly.
+    /// </para>
+    /// <para>
+    /// <b>A table with rows in it is left alone</b>, whatever its shape. Silently deleting an
+    /// audit trail to fit a schema change is the one outcome this must never have.
+    /// <c>orders</c> and <c>equity_snapshots</c> are not in the list at all: they carry real
+    /// history and their shape did not change.
+    /// </para>
+    /// </remarks>
+    private static async Task DropEmptyReshapedTablesAsync(
+        SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        foreach (var table in ReshapedAuditTables)
+        {
+            var exists = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @table",
+                new { table },
+                cancellationToken: cancellationToken));
+
+            if (exists == 0)
+            {
+                continue;
+            }
+
+            // The table name comes from a private readonly array, never from input, so the
+            // interpolation here cannot carry anything a caller chose.
+            var rows = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+                $"SELECT COUNT(*) FROM {table}", cancellationToken: cancellationToken));
+
+            if (rows > 0)
+            {
+                continue;
+            }
+
+            await connection.ExecuteAsync(new CommandDefinition(
+                $"DROP TABLE {table}", cancellationToken: cancellationToken));
+        }
     }
 
     /// <summary>
@@ -59,10 +130,10 @@ public sealed partial class TradingStore(string connectionString)
             """
             INSERT INTO orders (
                 client_order_id, option_symbol, side, quantity,
-                order_type, limit_price, submitted_utc, status)
+                order_type, limit_price, submitted_utc, status, mode, decision_id)
             VALUES (
                 @ClientOrderId, @OptionSymbol, @Side, @Quantity,
-                @OrderType, @LimitPrice, @SubmittedUtc, @Status)
+                @OrderType, @LimitPrice, @SubmittedUtc, @Status, @Mode, @DecisionId)
             """;
 
         await using var connection = await OpenAsync(cancellationToken);

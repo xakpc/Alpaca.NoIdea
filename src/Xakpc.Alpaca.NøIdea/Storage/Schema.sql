@@ -118,10 +118,13 @@ CREATE TABLE IF NOT EXISTS llm_cache (
 
 -- One row is one evaluated option event. The mode column separates live data
 -- from replay data.
+-- One row is one evaluated option event: the war room sat over this contract, and this is
+-- what the market looked like at the time. proposal_id ties it to the sitting in the log.
 CREATE TABLE IF NOT EXISTS evaluation_runs (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp_utc           INTEGER NOT NULL,
     mode                    TEXT NOT NULL,
+    proposal_id             TEXT,
     symbol                  TEXT NOT NULL,
     current_price           REAL NOT NULL,
     option_symbol           TEXT NOT NULL,
@@ -135,11 +138,17 @@ CREATE TABLE IF NOT EXISTS evaluation_runs (
 
 CREATE INDEX IF NOT EXISTS ix_evaluation_runs_time ON evaluation_runs (mode, timestamp_utc);
 
+-- One row is one seat's opinion of one evaluated contract.
+--
+-- probability is NULLABLE, and deliberately. A war-room seat argues and votes; it does not
+-- have to produce a number, and ExposureRiskPersona is plain C# that never will. Requiring a
+-- probability would drop exactly the seats that reason in words, which are most of them.
 CREATE TABLE IF NOT EXISTS forecasts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id          INTEGER NOT NULL,
     forecaster      TEXT NOT NULL,
-    probability     REAL NOT NULL,
+    vote            TEXT,
+    probability     REAL,
     confidence      REAL,
     reasoning       TEXT,
     evidence_json   TEXT,
@@ -164,12 +173,19 @@ CREATE TABLE IF NOT EXISTS agent_tool_calls (
 
 CREATE INDEX IF NOT EXISTS ix_agent_tool_calls_run ON agent_tool_calls (run_id);
 
+-- What the system decided about one evaluated contract, and whether the guardrails allowed
+-- it. A rejected action gets a row exactly like an accepted one: a run that records only its
+-- trades cannot show that the risk rules ever did anything.
+--
+-- combined_probability is NULLABLE for the same reason as forecasts.probability: the room
+-- votes, and a vote is not a probability. It holds the proposer's number when there is one.
 CREATE TABLE IF NOT EXISTS decisions (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id                  INTEGER NOT NULL,
-    combined_probability    REAL NOT NULL,
+    combined_probability    REAL,
     market_probability      REAL,
     edge                    REAL,
+    net_vote                REAL,
     action                  TEXT NOT NULL,
     reason                  TEXT,
     risk_result             TEXT,
