@@ -324,9 +324,28 @@ information rather than as instruction.
 market. A web search returns everything that has happened since the replay instant. Either
 would make a historical run look brilliant for the wrong reason.
 
-`--replay --agent llm` therefore passes an empty tool list. This is a code path, not a
-setting. The replay tool substitutes described in
+`--replay --agent llm` therefore passes an empty Alpaca tool list **and**
+`webSearchAvailable: false`. Both are necessary. An empty list alone does not stop web
+search, because a seat builds that tool itself.
+
+This is a code path, not a setting. The replay tool substitutes described in
 [replay mode](../replay/replay-mode.md) are the proper fix and are not built.
+
+### The host says what is available. The seat says what it wants.
+
+These are two different questions, and only the host can answer the first. A seat asks for
+web search by default (`WantsWebSearch`), but a replay must reach no live source, whatever a
+seat would prefer.
+
+**One place builds a hosted tool: `LlmPersona.ResearchTools`.** When the host also built one
+and put it in the list it supplies, each request held two tools with the name `web_search`.
+Anthropic refused every such request with `tools: Tool names must be unique`, a 400 that
+names no tool. The proposer failed on each call, the room never sat, and each cycle gave
+NO_TRADE that looked like a decision.
+
+`LlmPersona` now refuses a toolset that holds a `HostedWebSearchTool` at construction. A dead
+seat found at startup is a one-line correction before the open. The same seat found in a
+cycle is a dead seat at 09:31.
 
 ## ADR-018: The agent room, and the decider always has the final word
 

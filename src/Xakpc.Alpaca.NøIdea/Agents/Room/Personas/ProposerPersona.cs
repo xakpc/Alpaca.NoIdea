@@ -21,8 +21,9 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
 /// </para>
 /// </remarks>
 public sealed class ProposerPersona(
-    ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> alpacaTools)
-    : LlmPersona(clients, logger, alpacaTools), IProposingPersona
+    ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> alpacaTools,
+    bool webSearchAvailable)
+    : LlmPersona(clients, logger, alpacaTools, webSearchAvailable), IProposingPersona
 {
     private const string ProposeTool = "submit_proposal";
     private const string RebutTool = "submit_rebuttal";
@@ -81,7 +82,7 @@ public sealed class ProposerPersona(
             ? DescribeReview(market, position, allowedActions)
             : DescribeSearch(market, allowedActions);
 
-        var response = await SafeCallAsync(
+        var (fault, response) = await SafeCallAsync(
             purpose == WarRoomPurpose.PositionReview
                 ? ReviewPrompt(allowedActions)
                 : SearchPrompt(allowedActions),
@@ -90,10 +91,24 @@ public sealed class ProposerPersona(
             MaxOutputTokens,
             cancellationToken);
 
-        if (response is not null)
+        if (fault is not null)
         {
-            Logger.LogError("The proposer failed: {Fault}. Treating as NO_TRADE.", response);
+            Logger.LogError("The proposer failed: {Fault}. Treating as NO_TRADE.", fault);
             return ProposedOperation.Nothing("the proposer failed");
+        }
+
+        if (captured is null)
+        {
+            // A call that ends without the tool costs the same as one that uses it, and
+            // reads downstream as a considered NO_TRADE. Say why instead: a length finish
+            // means the budget ran out mid-search, and the text is what it said in place of
+            // the proposal.
+            Logger.LogWarning(
+                "The proposer ended its turn without calling {Tool}. Finish reason {Reason}. "
+                + "It said: {Text}",
+                ProposeTool,
+                response?.FinishReason?.ToString() ?? "none reported",
+                Truncate(response?.Text));
         }
 
         return captured ?? ProposedOperation.Nothing("the proposer submitted nothing");
@@ -125,7 +140,7 @@ public sealed class ProposerPersona(
             RebutTool,
             "Defend, modify, or withdraw your proposal. Call this exactly once, last.");
 
-        var fault = await SafeCallAsync(
+        var (fault, _) = await SafeCallAsync(
             $"""
             {Preamble}
 
@@ -163,6 +178,11 @@ public sealed class ProposerPersona(
 
         return captured ?? context.Operation;
     }
+
+    private static string Truncate(string? text) =>
+        string.IsNullOrWhiteSpace(text) ? "(nothing)"
+        : text.Length <= 400 ? text
+        : text[..400] + "…";
 
     // ------------------------------------------------------------------ shaping
 
@@ -239,7 +259,8 @@ public sealed class ProposerPersona(
         };
     }
 
-    private async Task<string?> SafeCallAsync(
+    /// <summary>The fault, or null; and the response, for whoever has to explain a silent turn.</summary>
+    private async Task<(string? Fault, ChatResponse? Response)> SafeCallAsync(
         string systemPrompt,
         string payload,
         IReadOnlyList<AITool> tools,
@@ -265,11 +286,11 @@ public sealed class ProposerPersona(
                 },
                 cancellationToken);
 
-            return null;
+            return (null, response);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            return error.Message;
+            return (error.Message, null);
         }
         finally
         {

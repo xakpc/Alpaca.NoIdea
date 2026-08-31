@@ -154,20 +154,22 @@ if (args.Contains("--replay"))
     {
         var replayFactory = new ChatClientFactory();
 
-        // Empty tool lists, passed explicitly. A live Alpaca call in replay reads today's
-        // market and a web search returns everything since the replay instant; either would
-        // make a historical run look brilliant for the wrong reason.
+        // No live source, passed explicitly: an empty Alpaca toolset AND no web search. A
+        // live Alpaca call in replay reads today's market and a web search returns everything
+        // since the replay instant; either would make a historical run look brilliant for the
+        // wrong reason. The seats ask for web search, so only the host can refuse it here.
         IReadOnlyList<Microsoft.Extensions.AI.AITool> noTools = [];
+        const bool noWebSearch = false;
 
         var replayPersonas = new List<IPersona>
         {
-            new SkepticPersona(replayFactory, log, noTools),
-            new QuantPersona(replayFactory, log, noTools),
-            new MarketPersona(replayFactory, log, noTools),
+            new SkepticPersona(replayFactory, log, noTools, noWebSearch),
+            new QuantPersona(replayFactory, log, noTools, noWebSearch),
+            new MarketPersona(replayFactory, log, noTools, noWebSearch),
             new ExposureRiskPersona(replayRisk),
         };
 
-        var replayProposer = new ProposerPersona(replayFactory, log, noTools);
+        var replayProposer = new ProposerPersona(replayFactory, log, noTools, noWebSearch);
 
         var replayMissing = ChatClientFactory.MissingKeys([replayProposer, .. replayPersonas]);
         if (replayMissing.Count > 0)
@@ -375,14 +377,18 @@ if (args.Contains("--live"))
             log.LogInformation("{Count} approved read-only Alpaca tools given to the agent.", approved.Count);
         }
 
-        if (!args.Contains("--no-web-search"))
+        // Server-side search. It widens the text channel beyond Alpaca's Benzinga feed,
+        // which matters because reading text is the only remaining alpha hypothesis after
+        // ADR-013. Web content is untrusted input: the prompt says so, and RiskGuard bounds
+        // what a poisoned page could ever cause. See ADR-017.
+        //
+        // The host says whether it is AVAILABLE. The seat builds the tool, because a request
+        // carrying two tools of one name is a 400 from Anthropic that names no tool.
+        var webSearch = !args.Contains("--no-web-search");
+
+        if (webSearch)
         {
-            // Server-side search. It widens the text channel beyond Alpaca's Benzinga feed,
-            // which matters because reading text is the only remaining alpha hypothesis after
-            // ADR-013. Web content is untrusted input: the prompt says so, and RiskGuard
-            // bounds what a poisoned page could ever cause. See ADR-017.
-            researchTools.Add(new Microsoft.Extensions.AI.HostedWebSearchTool());
-            log.LogInformation("Web search is enabled for the agent.");
+            log.LogInformation("Web search is available to the agent.");
         }
 
         // Every seat gets the same read-only tools. The diversity that matters is the model.
@@ -390,13 +396,13 @@ if (args.Contains("--live"))
 
         var personas = new List<IPersona>
         {
-            new SkepticPersona(factory, log, researchTools),   // Claude
-            new QuantPersona(factory, log, researchTools),     // GPT
-            new MarketPersona(factory, log, researchTools),    // Grok
+            new SkepticPersona(factory, log, researchTools, webSearch),   // Claude
+            new QuantPersona(factory, log, researchTools, webSearch),     // GPT
+            new MarketPersona(factory, log, researchTools, webSearch),    // Grok
             new ExposureRiskPersona(liveRiskOptions),          // plain C#, no tokens
         };
 
-        var roomProposer = new ProposerPersona(factory, log, researchTools);
+        var roomProposer = new ProposerPersona(factory, log, researchTools, webSearch);
 
         // Fail before the open, not at 09:31. A seat without a key is a dead seat.
         var missing = ChatClientFactory.MissingKeys([roomProposer, .. personas]);

@@ -10,8 +10,9 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
 /// C# and cannot get it wrong.
 /// </remarks>
 public sealed class SkepticPersona(
-    ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> alpacaTools)
-    : LlmPersona(clients, logger, alpacaTools)
+    ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> alpacaTools,
+    bool webSearchAvailable)
+    : LlmPersona(clients, logger, alpacaTools, webSearchAvailable)
 {
     public override string Name => "skeptic";
 

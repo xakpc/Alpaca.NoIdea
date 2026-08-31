@@ -33,6 +33,18 @@ Every tool a persona holds is read-only: the 25 approved Alpaca MCP tools, hoste
 and the structured-output tools it answers through. `submit_analysis`, `speak`, `cast_vote`
 and `submit_proposal` execute nothing — they are schemas, not actions.
 
+## Who owns a tool
+
+| Question | Owner |
+|---|---|
+| Is this tool available at all? | The host. `--no-mcp`, `--no-web-search`, and replay, which offers neither. |
+| Does this seat want it? | The seat. `WantsAlpacaTools`, `WantsWebSearch`. |
+| Who builds it? | `LlmPersona.ResearchTools`, and nothing else. |
+
+The host supplies the Alpaca tools and a flag. It must not put a `HostedWebSearchTool` in
+that list: the seat adds its own, and two tools with one name make the provider refuse the
+whole request (ADR-017). `LlmPersona` refuses such a list at construction.
+
 No MCP server this host runs holds an order tool at all (ADR-001), so there is no allowlist
 to misconfigure. `McpToolCatalog.AssertNoForbiddenTool` proves it at startup rather than
 assuming it.

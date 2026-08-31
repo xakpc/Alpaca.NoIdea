@@ -22,7 +22,8 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room;
 public abstract class LlmPersona(
     ChatClientFactory clients,
     ILogger logger,
-    IReadOnlyList<AITool> alpacaTools) : IPersona, ICostReporting
+    IReadOnlyList<AITool> alpacaTools,
+    bool webSearchAvailable) : IPersona, ICostReporting
 {
     private const string AnalyseTool = "submit_analysis";
     private const string SpeakTool = "speak";
@@ -30,7 +31,8 @@ public abstract class LlmPersona(
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    private readonly IReadOnlyList<AITool> _alpacaTools = alpacaTools ?? [];
+    private readonly IReadOnlyList<AITool> _alpacaTools = Vetted(alpacaTools);
+    private readonly bool _webSearchAvailable = webSearchAvailable;
     private readonly TokenLedger _ledger = new();
 
     protected ChatClientFactory Clients { get; } = clients ?? throw new ArgumentNullException(nameof(clients));
@@ -89,8 +91,24 @@ public abstract class LlmPersona(
     /// <summary>Read-only Alpaca tools. On by default: every seat may check the data itself.</summary>
     protected virtual bool WantsAlpacaTools => true;
 
+    /// <summary>Whether this seat asks for web search when the host offers it.</summary>
     protected virtual bool WantsWebSearch => true;
 
+    /// <summary>
+    /// What this seat may call.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The host decides what is available; a seat decides what it wants.</b> The two are
+    /// different questions and only the host can answer the first: a replay must reach no
+    /// live source at all, whatever a seat would prefer.
+    /// </para>
+    /// <para>
+    /// This is also the ONE place that builds a <see cref="HostedWebSearchTool"/>. Two places
+    /// building one put two tools of the same name in the same request, which Anthropic
+    /// rejects with "Tool names must be unique" and a 400 that names no tool.
+    /// </para>
+    /// </remarks>
     protected IReadOnlyList<AITool> ResearchTools
     {
         get
@@ -102,13 +120,44 @@ public abstract class LlmPersona(
                 tools.AddRange(_alpacaTools);
             }
 
-            if (WantsWebSearch)
+            if (WantsWebSearch && _webSearchAvailable)
             {
                 tools.Add(new HostedWebSearchTool());
             }
 
             return tools;
         }
+    }
+
+    /// <summary>
+    /// Refuses a toolset that already carries a hosted tool this class adds itself.
+    /// </summary>
+    /// <remarks>
+    /// The caller supplies the Alpaca tools and nothing else. When it also supplied a
+    /// <see cref="HostedWebSearchTool"/>, the request carried two tools named
+    /// <c>web_search</c> and Anthropic refused it with "Tool names must be unique" — a 400
+    /// that names no tool, on every call, so the room never sat at all.
+    ///
+    /// This throws at construction instead. A dead seat found at startup is a one-line fix
+    /// before the open; found mid-cycle it is a dead seat at 09:31.
+    /// </remarks>
+    private static IReadOnlyList<AITool> Vetted(IReadOnlyList<AITool>? alpacaTools)
+    {
+        if (alpacaTools is null)
+        {
+            return [];
+        }
+
+        if (alpacaTools.Any(tool => tool is HostedWebSearchTool))
+        {
+            throw new ArgumentException(
+                "The Alpaca toolset must not carry a HostedWebSearchTool. A seat adds web "
+                + "search itself when the host makes it available, and two tools of one name "
+                + "are refused by the provider.",
+                nameof(alpacaTools));
+        }
+
+        return alpacaTools;
     }
 
     public RoomCost DrainCost() => _ledger.Drain();

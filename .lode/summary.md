@@ -37,7 +37,7 @@ trained Historical ML Expert, and an empty trading host.
 | `src/…/Replay/` | **Done.** `ReplayClock`, `ReplayMarketDataGateway`, `ReplayTradingGateway`, `ReplayRunner`, `MarketCalendar`, and `OptionLadder`. |
 | `data/trader.db` | **Populated.** 122,444 bars, 16,088 news items, 195,824 contracts, 151,718 option bars, for 2026-02-01 to 2026-08-28. |
 | `scripts/acquire-news.sh` | **Done.** The paginated news backfill. 25,187 items. The old script captured one page per symbol. |
-| `tests/Trader.Tests` | **Done.** 110 tests: the paper guarantee, the tool policy, the no-leak rule, bar availability, the ladder, the OCC parser, the risk limits, the war-room flow with mock personas, the dry-run gateway, and the audit trail. |
+| `tests/Trader.Tests` | **Done.** 114 tests: the paper guarantee, the tool policy, the no-leak rule, bar availability, the ladder, the OCC parser, the risk limits, the war-room flow with mock personas, the dry-run gateway, the audit trail, and who owns a research tool. |
 | `src/…FeatureGenerator` (branch `phase-3-historical-ml-expert`) | **Done.** Shared library: bar reading, the regular-hours calendar, the contract catalog, the 14 features, and `HistoricalMlExpert`. |
 | `src/…Trainer` (branch `phase-3-historical-ml-expert`) | **Done.** Console: builds 1.36M labelled rows, splits by time, trains SDCA, evaluates, writes the report. |
 | `tests/Trader.Tests` (branch `phase-3-historical-ml-expert`) | **Done.** 46 xUnit tests, including the no-future-leak checks. |
