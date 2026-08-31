@@ -1,5 +1,16 @@
 # Operations
 
+```mermaid
+flowchart LR
+    O[Operator] --> H[Console host]
+    H --> P[Alpaca paper account]
+    H --> D[(Durable audit)]
+```
+
+```powershell
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --audit
+```
+
 How the system starts, runs, fails, and gets tested.
 
 ## Deployment

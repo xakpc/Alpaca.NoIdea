@@ -22,6 +22,7 @@ public sealed class LiveTradingGateway(AlpacaClients clients) : ITradingGateway
         {
             AccountNumber = account.AccountNumber ?? "",
             Equity = account.Equity ?? 0m,
+            PreviousCloseEquity = account.LastEquity,
             Cash = account.TradableCash,
             BuyingPower = account.BuyingPower ?? 0m,
             IsTradingBlocked = account.IsTradingBlocked,
@@ -51,6 +52,19 @@ public sealed class LiveTradingGateway(AlpacaClients clients) : ITradingGateway
     {
         var orders = await _clients.Trading.ListOrdersAsync(
             new ListOrdersRequest { OrderStatusFilter = OrderStatusFilter.Open }, cancellationToken);
+
+        return orders.Select(Map).ToArray();
+    }
+
+    public async Task<IReadOnlyList<OrderState>> ListOrdersSinceAsync(
+        DateTimeOffset fromUtc, CancellationToken cancellationToken)
+    {
+        var request = new ListOrdersRequest
+        {
+            OrderStatusFilter = OrderStatusFilter.All,
+            LimitOrderNumber = 500,
+        }.WithInterval(fromUtc.UtcDateTime.GetIntervalFromThat());
+        var orders = await _clients.Trading.ListOrdersAsync(request, cancellationToken);
 
         return orders.Select(Map).ToArray();
     }
@@ -90,15 +104,6 @@ public sealed class LiveTradingGateway(AlpacaClients clients) : ITradingGateway
 
     public Task CancelOrderAsync(string brokerOrderId, CancellationToken cancellationToken) =>
         _clients.Trading.CancelOrderAsync(Guid.Parse(brokerOrderId), cancellationToken);
-
-    public async Task<OrderState> ClosePositionAsync(
-        string contractSymbol, CancellationToken cancellationToken)
-    {
-        var order = await _clients.Trading.DeletePositionAsync(
-            new DeletePositionRequest(contractSymbol), cancellationToken);
-
-        return Map(order);
-    }
 
     private static OrderState Map(IOrder order) => new()
     {

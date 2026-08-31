@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Xakpc.Alpaca.NøIdea.Alpaca.Gateways;
 using Xakpc.Alpaca.NøIdea.Observability;
+using Xakpc.Alpaca.NøIdea.Agents.Room;
 
 namespace Xakpc.Alpaca.NøIdea.Trading;
 
@@ -10,12 +11,11 @@ namespace Xakpc.Alpaca.NøIdea.Trading;
 /// <remarks>
 /// <para>
 /// The session owns pacing and restart behaviour; the cycle itself is
-/// <see cref="TradingLoop"/>, unchanged from the one replay drives.
+/// <see cref="TradingLoop"/>.
 /// </para>
 /// <para>
-/// A cycle that throws does not stop the session. The window is four days and an unattended
-/// process that exits on one transient broker error is worse than one that logs it and tries
-/// again on the next cycle. A cancellation still stops it immediately.
+/// A transient market or broker fault does not stop the session. An audit persistence fault
+/// does stop it because a later trade without a durable record is not permitted.
 /// </para>
 /// </remarks>
 public sealed class LiveSession(
@@ -67,6 +67,7 @@ public sealed class LiveSession(
 
             try
             {
+                await _loop.InitializeAsync(cancellationToken);
                 var clock = await _marketData.GetClockAsync(cancellationToken);
 
                 if (clock.IsOpen || RunOnceIgnoringMarketHours)
@@ -89,10 +90,12 @@ public sealed class LiveSession(
 
                     _logger.LogInformation(
                         RunEvents.CycleFinished,
-                        "Cycle {Number}: {Offered} candidates, {Opened} opened, {Closed} closed, "
+                        "Cycle {Number}: {Offered} candidates, {Opened} open order(s), "
+                        + "{CloseSubmitted} close order(s), {Closed} confirmed closed, "
                         + "{Rejected} rejected, equity {Equity:N2} USD. Run cost {Cost}.",
                         cycles, result.CandidatesOffered, result.OrdersSubmitted,
-                        result.PositionsClosed, result.ActionsRejected, result.Equity,
+                        result.CloseOrdersSubmitted, result.PositionsClosed,
+                        result.ActionsRejected, result.Equity,
                         RunningCost());
 
                     if (RunOnceIgnoringMarketHours)
@@ -114,6 +117,10 @@ public sealed class LiveSession(
             catch (OperationCanceledException)
             {
                 break;
+            }
+            catch (AuditPersistenceException)
+            {
+                throw;
             }
             catch (Exception error)
             {

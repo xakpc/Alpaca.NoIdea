@@ -157,8 +157,10 @@ public class RiskGuardTests
     {
         // Down 6% on the day, against a 5% limit.
         var snapshot = Healthy with { Equity = 94_000m, DayOpeningEquity = 100_000m };
+        var verdict = Guard().CanConsiderNewPositions(snapshot);
 
-        Assert.True(Guard().NewPositionsHalted(snapshot));
+        Assert.False(verdict.Allowed);
+        Assert.Contains("daily loss 6.00%", verdict.Reason, StringComparison.Ordinal);
         Assert.False(Guard().CanOpen(
             Open(), Candidate(), snapshot, new StrategyPolicy()).Allowed);
     }
@@ -167,8 +169,20 @@ public class RiskGuardTests
     public void AnUnknownDailyBaselineHaltsTradingRatherThanAssumingItIsFine()
     {
         var snapshot = Healthy with { DayOpeningEquity = 0m };
+        var verdict = Guard().CanConsiderNewPositions(snapshot);
 
-        Assert.True(Guard().NewPositionsHalted(snapshot));
+        Assert.False(verdict.Allowed);
+        Assert.Equal("prior-close equity is unavailable", verdict.Reason);
+    }
+
+    [Fact]
+    public void UnknownPendingBuyRiskNamesTheBlockingCondition()
+    {
+        var verdict = Guard().CanConsiderNewPositions(
+            Healthy with { PendingRiskKnown = false });
+
+        Assert.False(verdict.Allowed);
+        Assert.Equal("a pending buy order has unknown remaining risk", verdict.Reason);
     }
 
     // ---------------------------------------------------------------- quote quality
@@ -194,7 +208,7 @@ public class RiskGuardTests
     {
         var candidate = Candidate() with
         {
-            Contract = Contract() with { Bid = 1.00m, Ask = 2.00m, ReferencePrice = 2.00m },
+            Contract = Contract() with { Bid = 1.00m, Ask = 2.00m },
         };
 
         var verdict = Guard().CheckContract(candidate, new StrategyPolicy());
@@ -302,7 +316,6 @@ public class RiskGuardTests
         Strike = 100m,
         Expiration = new DateOnly(2026, 9, 4),
         Quality = QuoteQuality.TwoSided,
-        ReferencePrice = 1.00m,
         Bid = 0.98m,
         Ask = 1.00m,
         QuoteTimestampUtc = Now.AddMinutes(-1),
@@ -310,7 +323,7 @@ public class RiskGuardTests
 
     private static TradeableContractView Candidate(decimal price = 1.00m) => new()
     {
-        Contract = Contract() with { ReferencePrice = price, Bid = price * 0.98m, Ask = price },
+        Contract = Contract() with { Bid = price * 0.98m, Ask = price },
         UnderlyingPrice = 100m,
     };
 }

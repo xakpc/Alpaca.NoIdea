@@ -114,29 +114,25 @@ public sealed class ProposalPreValidator(
                 return "REJECT_EXPIRATION";
             }
 
-            // Replay carries no quote at all, and says so. A live candidate must be tradeable.
-            if (contract.Quality != QuoteQuality.UnknownHistorical)
+            if (!contract.IsTradeableQuote)
             {
-                if (!contract.IsTradeableQuote)
-                {
-                    return "REJECT_BAD_QUOTE";
-                }
+                return "REJECT_BAD_QUOTE";
+            }
 
-                if (contract.Ask is not { } ask || ask <= 0m || contract.Spread is not { } spread)
-                {
-                    return "REJECT_BAD_QUOTE";
-                }
+            if (contract.Ask is not { } ask || ask <= 0m || contract.Spread is not { } spread)
+            {
+                return "REJECT_BAD_QUOTE";
+            }
 
-                if (spread / ask > _risk.MaxSpreadFraction)
-                {
-                    return "REJECT_LIQUIDITY";
-                }
+            if (spread / ask > _risk.MaxSpreadFraction)
+            {
+                return "REJECT_LIQUIDITY";
+            }
 
-                if (contract.QuoteTimestampUtc is not { } quotedAt
-                    || _time.GetUtcNow() - quotedAt > _risk.MaxQuoteAge)
-                {
-                    return "REJECT_BAD_QUOTE";
-                }
+            if (contract.QuoteTimestampUtc is not { } quotedAt
+                || _time.GetUtcNow() - quotedAt > _risk.MaxQuoteAge)
+            {
+                return "REJECT_BAD_QUOTE";
             }
 
             if (view.CostPerContract <= 0m)

@@ -80,7 +80,7 @@ public sealed record TradeableContractView
     public required decimal UnderlyingPrice { get; init; }
 
     /// <summary>The premium for one contract, in dollars.</summary>
-    public decimal CostPerContract => Contract.ReferencePrice * 100m;
+    public decimal CostPerContract => Contract.Ask.GetValueOrDefault() * 100m;
 }
 
 public sealed record UnderlyingSnapshot(
@@ -150,8 +150,11 @@ public sealed record StrategyContext
     /// <summary>How many positions may still be opened, after the hard limits.</summary>
     public required int RemainingPositionSlots { get; init; }
 
-    /// <summary>True when the daily loss circuit breaker has fired. No new positions.</summary>
+    /// <summary>True when an account-wide risk check prevents new positions.</summary>
     public required bool NewPositionsHalted { get; init; }
+
+    /// <summary>The exact failed risk check when <see cref="NewPositionsHalted"/> is true.</summary>
+    public string? NewPositionsHaltReason { get; init; }
 }
 
 /// <summary>What one seat thought about the last decision.</summary>
@@ -227,7 +230,7 @@ public interface IStrategyAgent
 /// An agent that can also judge an open position.
 /// </summary>
 /// <remarks>
-/// Separate from <see cref="IStrategyAgent"/> so a stub or a replay agent is not obliged to
+/// Separate from <see cref="IStrategyAgent"/> so a stub agent is not obliged to
 /// implement a review path it has no use for. The loop checks for this and falls back to the
 /// deterministic exits when an agent does not offer it, which means a position is never left
 /// unguarded by the absence of a reviewer.

@@ -81,7 +81,6 @@ public class StagedContextTests
             Strike = strike,
             Expiration = expiration,
             Quality = QuoteQuality.TwoSided,
-            ReferencePrice = 1m,
             Bid = 0.95m,
             Ask = 1m,
         },

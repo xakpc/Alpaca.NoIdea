@@ -114,4 +114,11 @@ public sealed class PositionReviewTriggers(ReviewTriggerOptions options, TimePro
         _lastReviewed[symbol] = _time.GetUtcNow();
         _lastNewsSeen[symbol] = newsCountAtReview;
     }
+
+    /// <summary>Restores one durable review cursor during session startup.</summary>
+    public void Restore(string symbol, DateTimeOffset lastReviewedUtc, long lastNewsSeen)
+    {
+        _lastReviewed[symbol] = lastReviewedUtc;
+        _lastNewsSeen[symbol] = lastNewsSeen;
+    }
 }

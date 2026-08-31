@@ -1,93 +1,34 @@
 # LLM Tool Policy
 
-LLM tools are **read-only**. This is ADR-005 and it is not negotiable.
-
-## The source of the tools
-
-The tools come from the **read-only Alpaca MCP connection** only. The trading MCP connection
-is a separate process. Its tools never enter an LLM tool list.
-
-## Allowed tool categories
-
-```text
-Stock bars and quotes
-News
-Exact-option snapshots, quotes, trades, and bars
-Greeks when available
-Reference-symbol market data
-Asset and contract metadata
-```
-
-The Research Agent and the Critic Agent use the same approved list. The exact MCP tool names
-come from the pinned server version. `McpToolCatalog` holds the allowlist.
-
-`get_option_chain` and `get_option_contracts` are not approved. C# builds the authoritative
-tradeable contract catalog once. The proposer can query that immutable in-memory catalog with
-the local `get_tradeable_contracts` tool. The local tool does not call Alpaca.
-
-```text
-get_tradeable_contracts(
-    underlying: "NVDA",
-    option_type: "call",
-    strike_from: 210,
-    strike_to: 230,
-    offset: 0)
-```
-
-## Forbidden
-
-```text
-Submit order
-Replace order
-Cancel order
-Close position
-Exercise option
-Run arbitrary shell command
-Read arbitrary file
-Read environment secrets
-```
-
-**Startup must fail if the read-only connection exposes any of these.**
-
-## Defence in depth
+Model personas receive read-only research tools only. They never receive account, order,
+position-change, file, shell, or database tools.
 
 ```mermaid
-flowchart LR
-    S[Read-only MCP server] -->|control 1: read-only toolsets| L[ListToolsAsync]
-    L -->|control 2: McpToolCatalog allowlist| C[ChatOptions.Tools]
-    C --> M[LLM agent]
-    T[Trading MCP server] --> G[ITradingGateway]
-    G --> E[Deterministic C# only]
+flowchart TD
+    D[Discovered MCP tools] --> A[Allowlist]
+    A --> R[Research tools]
+    A --> X[Reject forbidden tools]
+    R --> P[Personas]
 ```
 
-1. Start the research server instance with read-only toolsets only.
-2. Filter the discovered tools against the allowlist before the host registers them.
+```csharp
+var approved = McpToolCatalog.Approve(discoveredTools);
+```
 
-If control 1 fails silently after a server upgrade, control 2 still blocks the tool.
+The allowlist is explicit. Startup fails when a forbidden tool appears. The host can also
+start with `--no-mcp` or `--no-web-search` to remove a research source.
 
-## The isolation rule
+## Invariants
 
-There is no path from a model output to an account change. The model can request a read-only
-MCP tool. The host executes that tool on the read-only connection. Only `RiskGuard` and
-`ITradingGateway` can reach the trading connection.
+- No persona can submit, replace, cancel, or close an order.
+- No persona receives Alpaca credentials.
+- Web and MCP content is untrusted prompt input.
+- `RiskGuard` validates model actions after tool use and voting.
+- Each model tool request and result is written to `agent_tool_calls`.
 
-## Why the tool set is small
-
-A small approved tool set reduces:
-
-- Tool-selection errors.
-- Token use.
-- Latency.
-- Security risk.
-
-## Replay
-
-In replay mode the agent tools must read from the replay data source. **They must not
-connect to the live Alpaca MCP server.** See [replay mode](../replay/replay-mode.md).
-
-## Related
+## Related lodes
 
 - [MCP safety](../alpaca/mcp-safety.md)
+- [LLM summary](summary.md)
+- [Audit schema](../storage/schema.md)
 - [Risk guardrails](../trading/risk-guardrails.md)
-- [LLM stack](llm-stack.md)
-- [Tradeable contract catalog](../trading/tradeable-contract-catalog.md)

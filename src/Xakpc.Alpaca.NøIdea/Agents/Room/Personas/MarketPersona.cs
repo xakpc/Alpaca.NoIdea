@@ -9,8 +9,9 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
 /// hour to hour, which is why this seat leans on web search rather than the cached feed.
 /// </remarks>
 public sealed class MarketPersona(
-    ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> researchTools)
-    : LlmPersona(clients, logger, researchTools)
+    ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> researchTools,
+    IWarRoomAuditSink? audit = null)
+    : LlmPersona(clients, logger, researchTools, audit)
 {
     public override string Name => "market";
 

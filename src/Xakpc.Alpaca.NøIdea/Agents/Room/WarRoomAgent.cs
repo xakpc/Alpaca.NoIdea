@@ -12,7 +12,7 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room;
 /// <para>
 /// The loop does not know a room exists. It asks an <see cref="IStrategyAgent"/> what to do
 /// and applies <c>RiskGuard</c> to the answer, exactly as it does for the stub. That keeps
-/// replay, live trading and testing on one path.
+/// live trading and testing on one path.
 /// </para>
 /// <para>
 /// This adapter owns the two things the loop should not care about: giving each proposal an
@@ -22,14 +22,14 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room;
 public sealed class WarRoomAgent(
     WarRoomSession session,
     TimeProvider time,
-    ILogger logger) : IStrategyAgent, IPositionReviewer, IExplainsDecision
+    ILogger logger,
+    string mode = "test") : IStrategyAgent, IPositionReviewer, IExplainsDecision
 {
     private readonly WarRoomSession _session = session ?? throw new ArgumentNullException(nameof(session));
     private readonly TimeProvider _time = time ?? throw new ArgumentNullException(nameof(time));
     private readonly ILogger _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    private readonly string _mode = mode;
     private readonly TokenLedger _spend = new();
-
-    private int _proposalCounter;
 
     public string Name => "war-room";
 
@@ -104,6 +104,7 @@ public sealed class WarRoomAgent(
     public async Task<StrategyDecision> DecideAsync(
         StrategyContext context, CancellationToken cancellationToken)
     {
+        LastOutcome = null;
         ArgumentNullException.ThrowIfNull(context);
         LastOutcome = null;
 
@@ -111,7 +112,9 @@ public sealed class WarRoomAgent(
         if (context.NewPositionsHalted || context.RemainingPositionSlots <= 0)
         {
             return StrategyDecision.Nothing(
-                context.NewPositionsHalted ? "new positions are halted" : "no free position slot");
+                context.NewPositionsHalted
+                    ? context.NewPositionsHaltReason ?? "new positions are halted"
+                    : "no free position slot");
         }
 
         if (context.ContractCatalog.Count == 0)
@@ -123,6 +126,7 @@ public sealed class WarRoomAgent(
             new WarRoomRequest
             {
                 ProposalId = NextProposalId(),
+                Mode = _mode,
                 Purpose = WarRoomPurpose.NewTrade,
                 Market = context,
                 AllowedActions = [StrategyActionKind.OpenCall, StrategyActionKind.OpenPut],
@@ -149,6 +153,7 @@ public sealed class WarRoomAgent(
         int? daysToExpiration,
         CancellationToken cancellationToken)
     {
+        LastOutcome = null;
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(position);
         LastOutcome = null;
@@ -173,6 +178,7 @@ public sealed class WarRoomAgent(
             new WarRoomRequest
             {
                 ProposalId = NextProposalId(),
+                Mode = _mode,
                 Purpose = WarRoomPurpose.PositionReview,
                 Market = context,
                 Position = underReview,
@@ -226,6 +232,6 @@ public sealed class WarRoomAgent(
     private string NextProposalId()
     {
         var now = _time.GetUtcNow();
-        return $"proposal-{now:yyyyMMdd}-{Interlocked.Increment(ref _proposalCounter):D4}";
+        return $"proposal-{now:yyyyMMdd}-{Guid.NewGuid():N}";
     }
 }

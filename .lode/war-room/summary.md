@@ -152,8 +152,7 @@ a model answering.
 
 ## Related
 
-- [Architecture decisions](../architecture/decisions.md) — ADR-019 to ADR-022
-- [Critic agent](critic-agent.md) — the skeptic seat
+- [Architecture decisions](../architecture/decisions.md)
 - [Live cycle](../trading/live-cycle.md)
 - [Risk guardrails](../trading/risk-guardrails.md)
 - [Strategy parameters](../trading/strategy-parameters.md)

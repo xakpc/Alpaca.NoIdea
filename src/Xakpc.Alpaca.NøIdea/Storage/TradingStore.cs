@@ -1,17 +1,13 @@
 using Dapper;
 using Microsoft.Data.Sqlite;
+using Xakpc.Alpaca.NøIdea.Agents.Room;
 
 namespace Xakpc.Alpaca.NøIdea.Storage;
 
-/// <summary>One recorded order attempt.</summary>
-/// <remarks>
-/// Init-only properties, not a positional record: SQLite returns REAL as
-/// double and INTEGER as long, and Dapper converts those per property setter
-/// but not through strict constructor matching.
-/// </remarks>
 public sealed record OrderRecord
 {
-    public string ClientOrderId { get; init; } = "";
+    public string CorrelationId { get; init; } = "";
+    public string? ClientOrderId { get; init; }
     public string? AlpacaOrderId { get; init; }
     public string OptionSymbol { get; init; } = "";
     public string Side { get; init; } = "";
@@ -19,47 +15,31 @@ public sealed record OrderRecord
     public string OrderType { get; init; } = "";
     public decimal? LimitPrice { get; init; }
     public long SubmittedUtc { get; init; }
+    public long? ClosedUtc { get; init; }
     public string Status { get; init; } = "";
-
-    /// <summary>
-    /// Which run wrote this. A dry-run order must never be read back as a live one.
-    /// </summary>
-    public string Mode { get; init; } = "live";
-
-    /// <summary>
-    /// The decision this order came from, or null for the <c>--smoke</c> operator check.
-    /// </summary>
-    /// <remarks>
-    /// Null means exactly that: an operator check, not an agent decision. Inventing a
-    /// decisions row to satisfy a constraint would put a decision nobody made into the audit
-    /// trail, which is why the column carries no foreign key.
-    /// </remarks>
-    public long? DecisionId { get; init; }
+    public string? RawStatus { get; init; }
+    public int FilledQuantity { get; init; }
+    public decimal? AverageFillPrice { get; init; }
+    public long? ReconciledUtc { get; init; }
+    public string Mode { get; init; } = "smoke";
+    public long? AuditEventId { get; init; }
 }
 
-/// <summary>
-/// The audit trail. This is the only type that contains SQL.
-/// </summary>
-/// <remarks>
-/// The order row is written <em>before</em> the order is submitted. If the submit
-/// call then fails with an uncertain result, the client order id is already durable,
-/// so the recovery path can ask Alpaca what happened instead of sending a second
-/// order. The <c>UNIQUE</c> constraint on <c>client_order_id</c> enforces this.
-/// </remarks>
-public sealed partial class TradingStore(string connectionString)
+/// <summary>SQLite persistence for durable decisions, orders, and account history.</summary>
+public sealed partial class TradingStore(string connectionString) : IWarRoomAuditSink
 {
+    public const int CurrentSchemaVersion = 3;
+
     private readonly string _connectionString = connectionString
         ?? throw new ArgumentNullException(nameof(connectionString));
 
-    public static string ConnectionStringForFile(string path) =>
-        new SqliteConnectionStringBuilder { DataSource = path }.ToString();
-
-    /// <summary>
-    /// The audit tables whose shape changed when the war room replaced the weighted
-    /// combiner. Nothing ever wrote them, so an empty one can be rebuilt safely.
-    /// </summary>
-    private static readonly string[] ReshapedAuditTables =
-        ["decisions", "forecasts", "agent_tool_calls", "evaluation_runs"];
+    public static string ConnectionStringForFile(string path, bool readOnly = false) =>
+        new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = readOnly ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWriteCreate,
+            ForeignKeys = true,
+        }.ToString();
 
     public async Task CreateSchemaAsync(CancellationToken cancellationToken)
     {
@@ -67,82 +47,124 @@ public sealed partial class TradingStore(string connectionString)
             Path.Combine(AppContext.BaseDirectory, "Storage", "Schema.sql"), cancellationToken);
 
         await using var connection = await OpenAsync(cancellationToken);
+        await connection.ExecuteAsync(new CommandDefinition(
+            "PRAGMA busy_timeout = 30000;", cancellationToken: cancellationToken));
 
-        await DropEmptyReshapedTablesAsync(connection, cancellationToken);
+        var version = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            "PRAGMA user_version;", cancellationToken: cancellationToken));
+
+        if (version == 0 && await DatabaseHasTablesAsync(connection, cancellationToken))
+        {
+            throw new InvalidOperationException(
+                "The database has an obsolete schema. Start with a clean database file.");
+        }
+
+        if (version is not 0 && version != CurrentSchemaVersion)
+        {
+            throw new InvalidOperationException(
+                $"Database schema {version} is not supported; expected {CurrentSchemaVersion}. "
+                + "Stop the host, archive trader.db and its SQLite sidecars, then start with a clean file.");
+        }
 
         await connection.ExecuteAsync(new CommandDefinition(schema, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition(
+            $"PRAGMA user_version = {CurrentSchemaVersion};", cancellationToken: cancellationToken));
     }
 
-    /// <summary>
-    /// Rebuilds the audit tables that changed shape, and only while they hold no rows.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <c>CREATE TABLE IF NOT EXISTS</c> cannot widen a column, and SQLite cannot drop a
-    /// NOT NULL with <c>ALTER</c>. These four tables were written by nothing, so dropping an
-    /// empty one loses no history and the next statement recreates it correctly.
-    /// </para>
-    /// <para>
-    /// <b>A table with rows in it is left alone</b>, whatever its shape. Silently deleting an
-    /// audit trail to fit a schema change is the one outcome this must never have.
-    /// <c>orders</c> and <c>equity_snapshots</c> are not in the list at all: they carry real
-    /// history and their shape did not change.
-    /// </para>
-    /// </remarks>
-    private static async Task DropEmptyReshapedTablesAsync(
-        SqliteConnection connection, CancellationToken cancellationToken)
-    {
-        foreach (var table in ReshapedAuditTables)
-        {
-            var exists = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @table",
-                new { table },
-                cancellationToken: cancellationToken));
+    private static async Task<bool> DatabaseHasTablesAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken) =>
+        await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            cancellationToken: cancellationToken)) > 0;
 
-            if (exists == 0)
-            {
-                continue;
-            }
-
-            // The table name comes from a private readonly array, never from input, so the
-            // interpolation here cannot carry anything a caller chose.
-            var rows = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
-                $"SELECT COUNT(*) FROM {table}", cancellationToken: cancellationToken));
-
-            if (rows > 0)
-            {
-                continue;
-            }
-
-            await connection.ExecuteAsync(new CommandDefinition(
-                $"DROP TABLE {table}", cancellationToken: cancellationToken));
-        }
-    }
-
-    /// <summary>
-    /// Records the intent to submit an order. Call this before the submit, never after.
-    /// </summary>
     public async Task ReserveAsync(OrderRecord order, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(order);
+        const string sql =
+            """
+            INSERT INTO orders (
+                audit_event_id, mode, correlation_id, client_order_id, option_symbol,
+                side, quantity, order_type, limit_price, submitted_utc, status)
+            VALUES (
+                @AuditEventId, @Mode, @CorrelationId, @ClientOrderId, @OptionSymbol,
+                @Side, @Quantity, @OrderType, @LimitPrice, @SubmittedUtc, @Status)
+            """;
+
+        var clientOrderId = string.IsNullOrWhiteSpace(order.ClientOrderId)
+            ? throw new ArgumentException("An order needs a client order id.", nameof(order))
+            : order.ClientOrderId;
+        var correlationId = string.IsNullOrWhiteSpace(order.CorrelationId)
+            ? clientOrderId
+            : order.CorrelationId;
+
+        await using var connection = await OpenAsync(cancellationToken);
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                order.AuditEventId,
+                order.Mode,
+                CorrelationId = correlationId,
+                ClientOrderId = clientOrderId,
+                order.OptionSymbol,
+                order.Side,
+                order.Quantity,
+                order.OrderType,
+                order.LimitPrice,
+                order.SubmittedUtc,
+                order.Status,
+            },
+            cancellationToken: cancellationToken));
+    }
+
+    public async Task<long> RecordDecisionAndReserveAsync(
+        DecisionEventRow decision,
+        OrderRecord order,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(order.ClientOrderId))
+        {
+            throw new ArgumentException("An order needs a client order id.", nameof(order));
+        }
+
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var eventId = await InsertDecisionAsync(connection, transaction, decision, cancellationToken);
 
         const string sql =
             """
             INSERT INTO orders (
-                client_order_id, option_symbol, side, quantity,
-                order_type, limit_price, submitted_utc, status, mode, decision_id)
+                audit_event_id, mode, correlation_id, client_order_id, option_symbol,
+                side, quantity, order_type, limit_price, submitted_utc, status)
             VALUES (
-                @ClientOrderId, @OptionSymbol, @Side, @Quantity,
-                @OrderType, @LimitPrice, @SubmittedUtc, @Status, @Mode, @DecisionId)
+                @eventId, @Mode, @CorrelationId, @ClientOrderId, @OptionSymbol,
+                @Side, @Quantity, @OrderType, @LimitPrice, @SubmittedUtc, @Status)
             """;
-
-        await using var connection = await OpenAsync(cancellationToken);
-        await connection.ExecuteAsync(new CommandDefinition(sql, order, cancellationToken: cancellationToken));
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                eventId,
+                order.Mode,
+                order.CorrelationId,
+                order.ClientOrderId,
+                order.OptionSymbol,
+                order.Side,
+                order.Quantity,
+                order.OrderType,
+                order.LimitPrice,
+                order.SubmittedUtc,
+                order.Status,
+            },
+            transaction,
+            cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+        return eventId;
     }
 
-    /// <summary>Records what Alpaca did with a reserved order.</summary>
     public async Task RecordResultAsync(
-        string clientOrderId,
+        string correlationId,
         string? alpacaOrderId,
         string status,
         long? closedUtc,
@@ -152,36 +174,82 @@ public sealed partial class TradingStore(string connectionString)
             """
             UPDATE orders
             SET alpaca_order_id = @alpacaOrderId,
-                status          = @status,
-                closed_utc      = COALESCE(@closedUtc, closed_utc)
-            WHERE client_order_id = @clientOrderId
+                status = @status,
+                closed_utc = COALESCE(@closedUtc, closed_utc)
+            WHERE correlation_id = @correlationId OR client_order_id = @correlationId
             """;
-
         await using var connection = await OpenAsync(cancellationToken);
-        await connection.ExecuteAsync(new CommandDefinition(
-            sql,
-            new { clientOrderId, alpacaOrderId, status, closedUtc },
+        var changed = await connection.ExecuteAsync(new CommandDefinition(
+            sql, new { correlationId, alpacaOrderId, status, closedUtc },
             cancellationToken: cancellationToken));
+        if (changed != 1)
+        {
+            throw new InvalidOperationException(
+                $"Order reservation {correlationId} was not found for its broker result.");
+        }
     }
 
-    /// <summary>The reserved order with this client id, or null.</summary>
-    public async Task<OrderRecord?> FindAsync(string clientOrderId, CancellationToken cancellationToken)
+    public async Task RecordOrderStateAsync(
+        string clientOrderId,
+        string? alpacaOrderId,
+        string lifecycle,
+        string rawStatus,
+        int filledQuantity,
+        decimal? averageFillPrice,
+        long reconciledUtc,
+        long? closedUtc,
+        CancellationToken cancellationToken)
     {
         const string sql =
             """
-            SELECT client_order_id AS ClientOrderId,
-                   alpaca_order_id AS AlpacaOrderId,
-                   option_symbol   AS OptionSymbol,
-                   side            AS Side,
-                   quantity        AS Quantity,
-                   order_type      AS OrderType,
-                   limit_price     AS LimitPrice,
-                   submitted_utc   AS SubmittedUtc,
-                   status          AS Status
-            FROM orders
+            UPDATE orders
+            SET alpaca_order_id = COALESCE(@alpacaOrderId, alpaca_order_id),
+                status = @lifecycle,
+                raw_status = @rawStatus,
+                filled_quantity = @filledQuantity,
+                average_fill_price = @averageFillPrice,
+                reconciled_utc = @reconciledUtc,
+                closed_utc = COALESCE(@closedUtc, closed_utc)
             WHERE client_order_id = @clientOrderId
             """;
+        await using var connection = await OpenAsync(cancellationToken);
+        var changed = await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new
+            {
+                clientOrderId,
+                alpacaOrderId,
+                lifecycle,
+                rawStatus,
+                filledQuantity,
+                averageFillPrice,
+                reconciledUtc,
+                closedUtc,
+            },
+            cancellationToken: cancellationToken));
+        if (changed != 1)
+        {
+            throw new InvalidOperationException(
+                $"Order reservation {clientOrderId} was not found for reconciliation.");
+        }
+    }
 
+    public async Task<OrderRecord?> FindAsync(
+        string clientOrderId,
+        CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            SELECT correlation_id AS CorrelationId, client_order_id AS ClientOrderId,
+                   alpaca_order_id AS AlpacaOrderId, option_symbol AS OptionSymbol,
+                   side AS Side, quantity AS Quantity, order_type AS OrderType,
+                   limit_price AS LimitPrice, submitted_utc AS SubmittedUtc,
+                   closed_utc AS ClosedUtc, status AS Status, raw_status AS RawStatus,
+                   filled_quantity AS FilledQuantity, average_fill_price AS AverageFillPrice,
+                   reconciled_utc AS ReconciledUtc, mode AS Mode,
+                   audit_event_id AS AuditEventId
+            FROM orders WHERE client_order_id = @clientOrderId
+            """;
         await using var connection = await OpenAsync(cancellationToken);
         return await connection.QuerySingleOrDefaultAsync<OrderRecord>(new CommandDefinition(
             sql, new { clientOrderId }, cancellationToken: cancellationToken));

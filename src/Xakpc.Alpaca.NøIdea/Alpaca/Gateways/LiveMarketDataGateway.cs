@@ -109,7 +109,6 @@ public sealed class LiveMarketDataGateway(AlpacaClients clients) : IMarketDataGa
                     Strike = parsed.Strike,
                     Expiration = parsed.Expiration,
                     Quality = quality,
-                    ReferencePrice = quote?.AskPrice ?? 0m,
                     Bid = quote?.BidPrice,
                     Ask = quote?.AskPrice,
                     QuoteTimestampUtc = quote?.TimestampUtc,

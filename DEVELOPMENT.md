@@ -29,7 +29,7 @@ XAI_API_KEY=...         # market (Grok 4.6)
 
 **All three model keys are needed, not just the first.** The war room runs its seats on
 three different providers on purpose: a room of one model arguing with itself shares that
-model's blind spots (ADR-020). `--live` and `--replay --agent llm` refuse to start when any
+model's blind spots (ADR-020). `--live --agent llm` refuses to start when any
 is missing and name the ones they could not find, because a seat without a key is a dead
 seat and that failure belongs before the open rather than at 09:31.
 
@@ -111,6 +111,14 @@ dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live
 # Read the audit trail back.
 dotnet run --project src/Xakpc.Alpaca.NøIdea -- --audit --last 20
 ```
+
+`data/trader.db` is a live and dry-run audit database. The host creates the current schema in
+an empty file. It does not migrate an obsolete schema. Archive or remove an obsolete file
+before startup. The host does not import `data/raw/`.
+
+Every durable audit failure stops the live session. `--audit` opens the database in read-only
+mode and returns a failure code for an incomplete sitting, missing tool result, missing
+decision link, or unlinked live or dry-run order.
 
 A run writes to stdout, which is what `docker logs` collects. Every line that tells the
 story of the run carries an event id from `Observability/RunEvents.cs`, so a later view can

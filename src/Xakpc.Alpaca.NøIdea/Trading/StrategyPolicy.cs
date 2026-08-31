@@ -6,7 +6,7 @@ namespace Xakpc.Alpaca.NøIdea.Trading;
 /// <remarks>
 /// <para>
 /// These are the numbers that <c>.lode/trading/strategy-parameters.md</c> lists as TBD. No
-/// replay evidence sets them, because ADR-013 left the system with no forecaster that beats
+/// real-trade evidence sets them, because ADR-013 left the system with no forecaster that beats
 /// the option price, so there was nothing to calibrate a threshold against.
 /// </para>
 /// <para>

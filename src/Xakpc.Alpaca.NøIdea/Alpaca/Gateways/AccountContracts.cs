@@ -5,6 +5,8 @@ public sealed record AccountState
 {
     public required string AccountNumber { get; init; }
     public required decimal Equity { get; init; }
+    /// <summary>Equity at the previous US trading-day close. This is today's loss baseline.</summary>
+    public decimal? PreviousCloseEquity { get; init; }
     public required decimal Cash { get; init; }
     public required decimal BuyingPower { get; init; }
     public required bool IsTradingBlocked { get; init; }
@@ -30,12 +32,14 @@ public enum OrderLifecycle
 {
     /// <summary>Written to SQLite, not yet sent. The idempotency reservation.</summary>
     Reserved = 0,
-    Open = 1,
-    Filled = 2,
-    PartiallyFilled = 3,
-    Canceled = 4,
-    Expired = 5,
-    Rejected = 6,
+    /// <summary>The submit result is unknown and must be reconciled by client order id.</summary>
+    Uncertain = 1,
+    Open = 2,
+    Filled = 3,
+    PartiallyFilled = 4,
+    Canceled = 5,
+    Expired = 6,
+    Rejected = 7,
 }
 
 /// <summary>One order as the broker reports it.</summary>

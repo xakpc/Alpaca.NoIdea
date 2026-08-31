@@ -29,10 +29,11 @@ public class DryRunTests
         var account = await gateway.GetAccountAsync(CancellationToken.None);
         await gateway.ListPositionsAsync(CancellationToken.None);
         await gateway.ListOpenOrdersAsync(CancellationToken.None);
+        await gateway.ListOrdersSinceAsync(Now.AddDays(-1), CancellationToken.None);
         await gateway.FindOrderByClientIdAsync("x", CancellationToken.None);
 
         Assert.Equal("REAL", account.AccountNumber);
-        Assert.Equal(4, inner.Reads);
+        Assert.Equal(5, inner.Reads);
     }
 
     [Fact]
@@ -66,7 +67,14 @@ public class DryRunTests
         var inner = new RecordingGateway();
         var gateway = Wrap(inner);
 
-        await gateway.ClosePositionAsync("TEST260904C00100000", CancellationToken.None);
+        await gateway.SubmitOrderAsync(
+            new OrderRequest
+            {
+                ClientOrderId = "dry-close",
+                ContractSymbol = "TEST260904C00100000",
+                Quantity = 1,
+                IsBuy = false,
+            }, CancellationToken.None);
         await gateway.CancelOrderAsync("some-broker-id", CancellationToken.None);
 
         Assert.Equal(0, inner.Writes);
@@ -157,6 +165,13 @@ public class DryRunTests
             return Task.FromResult<OrderState?>(null);
         }
 
+        public Task<IReadOnlyList<OrderState>> ListOrdersSinceAsync(
+            DateTimeOffset fromUtc, CancellationToken cancellationToken)
+        {
+            Reads++;
+            return Task.FromResult<IReadOnlyList<OrderState>>([]);
+        }
+
         public Task<OrderState> SubmitOrderAsync(OrderRequest request, CancellationToken cancellationToken)
         {
             Writes++;
@@ -169,10 +184,5 @@ public class DryRunTests
             throw new InvalidOperationException("A dry run must never reach the broker.");
         }
 
-        public Task<OrderState> ClosePositionAsync(string contractSymbol, CancellationToken cancellationToken)
-        {
-            Writes++;
-            throw new InvalidOperationException("A dry run must never reach the broker.");
-        }
     }
 }

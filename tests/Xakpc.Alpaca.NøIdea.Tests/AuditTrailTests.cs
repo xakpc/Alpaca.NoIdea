@@ -45,220 +45,162 @@ public class AuditTrailTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ASittingIsStoredWithEverySeatAndReadBack()
+    public async Task ACompleteSittingToolCallDecisionAndOrderRemainLinked()
     {
-        var runId = await _store.RecordEvaluationAsync(Evaluation("accepted"), CancellationToken.None);
+        const string proposalId = "proposal-20260831-audit";
+        await _store.BeginSittingAsync(
+            proposalId, "live", WarRoomPurpose.NewTrade, 100, CancellationToken.None);
+        await _store.RecordToolCallsAsync(
+            proposalId,
+            [new AgentToolCallAudit("quant", "analysis", "model", "call-1", "search", "{}", "{}", "completed")],
+            CancellationToken.None);
 
-        await _store.RecordForecastsAsync(
+        var operation = new ProposedOperation
+        {
+            Actions =
             [
-                Forecast(runId, "skeptic", "Reject", 0.30m),
-                Forecast(runId, "quant", "Approve", 0.58m),
-
-                // The plain-C# seat votes and computes, but never produces a probability.
-                // A NOT NULL column here would silently drop it from the record.
-                Forecast(runId, "exposure", "Approve", probability: null),
+                new StrategyAction
+                {
+                    Kind = StrategyActionKind.OpenCall,
+                    ContractSymbol = "SPY260904C00770000",
+                    Contracts = 1,
+                    Reasoning = "test",
+                },
             ],
-            CancellationToken.None);
-
-        var decisionId = await _store.RecordDecisionAsync(
-            new DecisionRow
+            Thesis = "final thesis",
+            ThesisConditions = ["SPY stays above 765"],
+        };
+        await _store.CompleteSittingAsync(
+            proposalId,
+            WarRoomVerdict.Approved,
+            [new ProposalReviewPass
             {
-                RunId = runId,
-                CombinedProbability = 0.58m,
-                MarketProbability = 0.44m,
-                Edge = 0.14m,
-                NetVote = 0.21m,
-                Action = "OpenCall",
-                Reason = "the catalyst is not yet priced",
-                RiskResult = "allowed",
-                CreatedUtc = 1_756_000_000,
-            },
+                ProposalId = proposalId,
+                ProposalVersion = 1,
+                ReviewPass = 1,
+                Operation = operation,
+                Verdict = WarRoomVerdict.Approved,
+                Tally = VoteTally.Count([], requireEveryVoter: false),
+            }],
+            101,
             CancellationToken.None);
 
-        await _store.ReserveAsync(
+        var eventId = await _store.RecordDecisionAndReserveAsync(
+            Decision("accepted") with { ProposalId = proposalId },
             new OrderRecord
             {
+                CorrelationId = "live-abc",
                 ClientOrderId = "live-abc",
                 OptionSymbol = "SPY260904C00770000",
                 Side = "Buy",
-                Quantity = 2,
+                Quantity = 1,
                 OrderType = "Limit",
                 LimitPrice = 3.15m,
-                SubmittedUtc = 1_756_000_000,
-                Status = "reserved",
+                SubmittedUtc = 102,
+                Status = OrderLifecycle.Reserved.ToString(),
                 Mode = "live",
-                DecisionId = decisionId,
-            },
-            CancellationToken.None);
-
-        var entries = await _store.RecentDecisionsAsync(10, CancellationToken.None);
-        var entry = Assert.Single(entries);
-
-        Assert.Equal("accepted", entry.Status);
-        Assert.Equal("OpenCall", entry.Action);
-        Assert.Equal(0.58m, entry.CombinedProbability);
-        Assert.Equal(0.44m, entry.MarketProbability);
-        Assert.Equal(0.21m, entry.NetVote);
-        Assert.Equal(3, entry.SeatCount);
-        Assert.Equal("live-abc", entry.ClientOrderId);
-    }
-
-    [Fact]
-    public async Task ARejectionIsStoredWithTheRuleThatRefusedIt()
-    {
-        // A run that stores only its trades cannot show that a guardrail ever fired.
-        var runId = await _store.RecordEvaluationAsync(Evaluation("rejected"), CancellationToken.None);
-
-        await _store.RecordDecisionAsync(
-            new DecisionRow
-            {
-                RunId = runId,
-                Action = "OpenCall",
-                Reason = "the catalyst is not yet priced",
-                RiskResult = "risk guard: the spread is 14% of the ask, over the 10% limit",
-                CreatedUtc = 1_756_000_000,
             },
             CancellationToken.None);
 
         var entry = Assert.Single(await _store.RecentDecisionsAsync(10, CancellationToken.None));
+        Assert.True(eventId > 0);
+        Assert.Equal("accepted", entry.Outcome);
+        Assert.Equal(1, entry.ToolCallCount);
+        Assert.Equal("live-abc", entry.CorrelationId);
+        Assert.Empty(await _store.AuditIntegrityAsync(CancellationToken.None));
 
-        Assert.Equal("rejected", entry.Status);
-        Assert.Contains("over the 10% limit", entry.RiskResult);
-
-        // No order, and that is the point of the LEFT JOIN.
-        Assert.Null(entry.ClientOrderId);
-        Assert.Null(entry.CombinedProbability);
-    }
-
-    [Fact]
-    public async Task RowCountsStartAtZeroAndFollowTheWrites()
-    {
-        var before = await _store.AuditRowCountsAsync(CancellationToken.None);
-        Assert.Equal(0, before["evaluation_runs"]);
-        Assert.Equal(0, before["decisions"]);
-        Assert.Equal(0, before["proposal_review_passes"]);
-
-        var runId = await _store.RecordEvaluationAsync(Evaluation("accepted"), CancellationToken.None);
-        await _store.RecordForecastsAsync([Forecast(runId, "quant", "Approve", 0.6m)], CancellationToken.None);
-
-        var after = await _store.AuditRowCountsAsync(CancellationToken.None);
-        Assert.Equal(1, after["evaluation_runs"]);
-        Assert.Equal(0, after["decisions"]);
-    }
-
-    [Fact]
-    public async Task SupersededAndFinalProposalVersionsRemainAndFinalThesisJoinsThePosition()
-    {
-        await _store.RecordProposalReviewPassesAsync(
-            [
-                new ProposalReviewPassRow
-                {
-                    ProposalId = "proposal-20260831-0007",
-                    ProposalVersion = 1,
-                    ReviewPass = 1,
-                    Superseded = true,
-                    Verdict = "Rejected",
-                    OptionSymbol = "SPY260904C00775000",
-                    Thesis = "first thesis",
-                    ThesisConditionsJson = "[]",
-                },
-                new ProposalReviewPassRow
-                {
-                    ProposalId = "proposal-20260831-0007",
-                    ProposalVersion = 2,
-                    ReviewPass = 2,
-                    Verdict = "Approved",
-                    OptionSymbol = "SPY260904C00770000",
-                    Thesis = "final thesis",
-                    ThesisConditionsJson = "[\"SPY stays above 765\"]",
-                },
-            ],
-            CancellationToken.None);
-
-        var runId = await _store.RecordEvaluationAsync(Evaluation("accepted"), CancellationToken.None);
-        var decisionId = await _store.RecordDecisionAsync(
-            new DecisionRow { RunId = runId, Action = "OpenCall", CreatedUtc = 1 },
-            CancellationToken.None);
-        await _store.ReserveAsync(
-            new OrderRecord
-            {
-                ClientOrderId = "live-versioned",
-                OptionSymbol = "SPY260904C00770000",
-                Side = "Buy",
-                Quantity = 1,
-                OrderType = "Limit",
-                SubmittedUtc = 1,
-                Status = "reserved",
-                Mode = "live",
-                DecisionId = decisionId,
-            },
-            CancellationToken.None);
-
-        var counts = await _store.AuditRowCountsAsync(CancellationToken.None);
-        var theses = await _store.PositionThesesAsync(
-            "live", ["SPY260904C00770000"], CancellationToken.None);
-
-        Assert.Equal(2, counts["proposal_review_passes"]);
-        var thesis = Assert.Single(theses).Value;
+        var thesis = Assert.Single(await _store.PositionThesesAsync(
+            "live", ["SPY260904C00770000"], CancellationToken.None)).Value;
         Assert.Equal("final thesis", thesis.Thesis);
-        Assert.Equal(["SPY stays above 765"], thesis.Conditions);
     }
 
     [Fact]
-    public async Task ADryRunOrderIsNeverReadBackAsALiveOne()
+    public async Task ARejectedDecisionHasNoOrderAndKeepsTheRule()
     {
-        await _store.ReserveAsync(
-            new OrderRecord
+        await _store.RecordDecisionEventAsync(
+            Decision("rejected") with
             {
-                ClientOrderId = "dry-run-xyz",
-                OptionSymbol = "SPY260904C00770000",
-                Side = "Buy",
-                Quantity = 1,
-                OrderType = "Limit",
-                SubmittedUtc = 1_756_000_000,
-                Status = "reserved",
-                Mode = "dry-run",
+                RiskResult = "risk guard: spread over limit",
             },
             CancellationToken.None);
 
-        var runId = await _store.RecordEvaluationAsync(
-            Evaluation("accepted") with { Mode = "dry-run" }, CancellationToken.None);
-
-        await _store.RecordDecisionAsync(
-            new DecisionRow { RunId = runId, Action = "OpenCall", CreatedUtc = 1 },
-            CancellationToken.None);
-
         var entry = Assert.Single(await _store.RecentDecisionsAsync(10, CancellationToken.None));
-        Assert.Equal("dry-run", entry.Mode);
+        Assert.Equal("rejected", entry.Outcome);
+        Assert.Contains("spread over limit", entry.RiskResult);
+        Assert.Null(entry.CorrelationId);
     }
 
-    private static EvaluationRunRow Evaluation(string status) => new()
+    [Fact]
+    public async Task AuditCountsUseOnlyTheLiveOnlySchema()
+    {
+        var counts = await _store.AuditRowCountsAsync(CancellationToken.None);
+        Assert.Equal(TradingStore.CurrentSchemaVersion,
+            await _store.SchemaVersionAsync(CancellationToken.None));
+        Assert.Equal(6, counts.Count);
+        Assert.All(counts.Values, value => Assert.Equal(0, value));
+    }
+
+    [Fact]
+    public async Task ActivePolicyAndReviewCursorSurviveAStoreRestart()
+    {
+        var policy = new StrategyPolicy
+        {
+            TakeProfitFraction = 0.35m,
+            StopLossFraction = 0.25m,
+            Rationale = "durable test policy",
+        };
+        var reviewed = new DateTimeOffset(2026, 8, 31, 15, 30, 0, TimeSpan.Zero);
+
+        await _store.SavePolicyAsync("live", policy, reviewed, CancellationToken.None);
+        await _store.SavePositionReviewStateAsync(
+            "live", "SPY260904C00770000", reviewed, 7, CancellationToken.None);
+
+        var restarted = new TradingStore(TradingStore.ConnectionStringForFile(_databasePath));
+        Assert.Equal(policy, await restarted.LoadPolicyAsync("live", CancellationToken.None));
+        var cursor = Assert.Single(await restarted.LoadPositionReviewStateAsync(
+            "live", CancellationToken.None));
+        Assert.Equal(reviewed, cursor.LastReviewedUtc);
+        Assert.Equal(7, cursor.LastNewsSeen);
+    }
+
+    [Fact]
+    public async Task SchemaTwoRequiresAnExplicitArchiveBeforeSchemaThreeStarts()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"schema-two-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection(
+                             TradingStore.ConnectionStringForFile(path)))
+            {
+                await connection.OpenAsync();
+                await new Microsoft.Data.Sqlite.SqliteCommand(
+                    "PRAGMA user_version = 2;", connection).ExecuteNonQueryAsync();
+            }
+
+            var old = new TradingStore(TradingStore.ConnectionStringForFile(path));
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => old.CreateSchemaAsync(CancellationToken.None));
+            Assert.Contains("archive trader.db", error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(path);
+        }
+    }
+
+    private static DecisionEventRow Decision(string outcome) => new()
     {
         TimestampUtc = 1_756_000_000,
         Mode = "live",
-        ProposalId = "proposal-20260831-0007",
+        Purpose = "new-trade",
+        Action = "OpenCall",
+        Outcome = outcome,
+        Reason = "the catalyst is not yet priced",
         Symbol = "SPY",
-        CurrentPrice = 770.25m,
         OptionSymbol = "SPY260904C00770000",
         OptionType = "call",
         Strike = 770m,
-        ExpirationUtc = 1_756_900_000,
-        MarketProbability = 0.44m,
-        Status = status,
-        MarketSnapshotJson = """{"Bid":3.10,"Ask":3.20}""",
-    };
-
-    private static ForecastRow Forecast(
-        long runId, string seat, string vote, decimal? probability) => new()
-    {
-        RunId = runId,
-        Forecaster = seat,
-        Vote = vote,
-        Probability = probability,
-        Confidence = 0.7m,
-        Reasoning = "a rationale",
-        EvidenceJson = """{"initialVote":"Reject"}""",
-        CreatedUtc = 1_756_000_000,
     };
 }
 
@@ -354,7 +296,6 @@ public class SeatOpinionTests
                     Strike = 100m,
                     Expiration = new DateOnly(2026, 9, 4),
                     Quality = QuoteQuality.TwoSided,
-                    ReferencePrice = 1.20m,
                     Bid = 1.15m,
                     Ask = 1.20m,
                 },
@@ -372,7 +313,7 @@ public class SeatOpinionTests
         public ModelProvider Provider => ModelProvider.None;
 
         public Task<ProposedOperation> ProposeAsync(
-            StrategyContext market, WarRoomPurpose purpose, PositionUnderReview? position,
+            string proposalId, StrategyContext market, WarRoomPurpose purpose, PositionUnderReview? position,
             IReadOnlyList<StrategyActionKind> allowedActions, CancellationToken t) =>
             Task.FromResult(new ProposedOperation
             {
@@ -412,7 +353,7 @@ public class SeatOpinionTests
         public ModelProvider Provider => ModelProvider.None;
 
         public Task<ProposedOperation> ProposeAsync(
-            StrategyContext market, WarRoomPurpose purpose, PositionUnderReview? position,
+            string proposalId, StrategyContext market, WarRoomPurpose purpose, PositionUnderReview? position,
             IReadOnlyList<StrategyActionKind> allowedActions, CancellationToken t) =>
             Task.FromResult(ProposedOperation.Nothing("nothing worth doing"));
 

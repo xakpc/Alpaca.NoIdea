@@ -9,10 +9,12 @@ the loop reads the Alpaca market clock. `TradingLoop.RunCycleAsync` is the code.
 ```mermaid
 flowchart TD
     A[Start cycle] --> B[Sync account and positions]
-    B --> C{Account healthy?}
-    C -- No --> Z[Skip the cycle]
-    C -- Yes --> D[Hard exits: no agent is asked]
-    D --> E{Review trigger fired?}
+    B --> C[Reconcile local and broker orders]
+    C --> D[Hard exits: no agent is asked]
+    D --> R[Refresh positions and orders]
+    R --> Q{Account permits new risk?}
+    Q -- No --> Z[Record and skip model work]
+    Q -- Yes --> E{Review trigger fired?}
     E -- Yes --> F[Position war room]
     E -- No --> G[Leave the position]
     F --> H[Recalculate capacity]
@@ -42,8 +44,9 @@ flowchart TD
 
 ## 1. Sync
 
-Read equity, cash, positions, open orders and the market clock. **Alpaca is the source of
-truth**; SQLite holds what the agent thought and did. A blocked account skips the cycle.
+Read equity, cash, positions, open orders and the market clock. Reconcile all unsettled local
+orders by client ID. **Alpaca is the source of truth** for the current account. SQLite holds
+the durable decision, order intent, policy, and review cursors.
 
 ## 2. Hard exits
 
@@ -53,6 +56,11 @@ writes; the flatten time does not, because missing the measurement point cannot 
 from.
 
 A position with no current price is **held**, not closed blindly.
+
+Hard exits run before the account restriction check. A blocked account or disabled options
+level stops model work and new risk, but it does not stop a mandatory close attempt. The loop
+refreshes positions and orders after a close attempt. It does not review that position again
+in the same cycle.
 
 ## 3. Position review
 
@@ -64,7 +72,7 @@ anything — it asks whether the original thesis still holds. Five are built:
 | Expiration | Two days or fewer remain |
 | Profit milestone | Up 30% |
 | Loss milestone | Down 20%, short of the hard stop |
-| New news | Three or more fresh headlines since the last review |
+| New news | Rolling headline count rises to three or more |
 | Scheduled | 90 minutes since the last review |
 
 A triggered position goes to the **same** `WarRoomSession` a new trade goes to, with
@@ -72,11 +80,24 @@ A triggered position goes to the **same** `WarRoomSession` a new trade goes to, 
 validated.
 
 A review that fails leaves the position alone. It is still covered by the hard exits.
+Review time and the current news-count marker persist in SQLite. The news trigger does not yet
+compare stable headline IDs or publication times. This can miss replacement headlines in a
+capped rolling window.
 
 ## 4. Recalculate capacity
 
-Position count, positions opened today, exposure against equity, the daily loss state, and
-the remaining position slots.
+Position count, filled buy orders for the current US market day, exposure against equity,
+the prior-close equity baseline, and the remaining position slots.
+
+Alpaca prior-close equity is the normal daily-loss baseline. A new account can omit this
+value. The loop uses current equity as a process-local fallback only when the account has no
+position and no fill for the current US market day. It logs this fallback. If the fallback is
+not safe, the loop skips catalog construction and logs the exact failed risk check.
+
+```csharp
+var verdict = _riskGuard.CanConsiderNewPositions(snapshot);
+var halted = !verdict.Allowed;
+```
 
 ## 5. Tradeable contract catalog
 
@@ -109,8 +130,8 @@ and gets a new independent analysis, discussion, and private vote.
 
 `RiskGuard.CanOpen` checks per-trade risk, total exposure, position counts, the daily limit,
 contract quality, and the expiration window. Then the loop **reserves the client order id in
-SQLite before submitting**, so an uncertain result can be resolved by asking the broker
-instead of sending a second order.
+SQLite before submitting**, so an uncertain result can be resolved by client ID. This rule
+applies to buys and risk-reducing market sells.
 
 ## 8. Persist
 

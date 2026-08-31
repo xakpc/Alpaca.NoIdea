@@ -1,92 +1,45 @@
 # Component Model
 
-What runs inside the one .NET host, and where the boundaries are.
-
 ```mermaid
-flowchart TB
-    subgraph Host[".NET Trader Host"]
-        Loop[TradingLoop]
-        Session[LiveSession]
-        Triggers[PositionReviewTriggers]
-
-        subgraph Deterministic["Deterministic C# -- owns money"]
-            Guard[RiskGuard]
-            Options[RiskOptions]
-            Store[TradingStore]
-        end
-
-        subgraph Room["War room -- owns judgement"]
-            Proposer[ProposerPersona]
-            Skeptic[SkepticPersona]
-            Quant[QuantPersona]
-            Market[MarketPersona]
-            Exposure[ExposureRiskPersona]
-            War[WarRoomSession]
-            Tally[VoteTally]
-            Pre[ProposalPreValidator]
-        end
-
-        subgraph Seam["Gateways -- the replaceable seam"]
-            MD[IMarketDataGateway]
-            TG[ITradingGateway]
-        end
-    end
-
-    Loop --> Triggers
-    Loop --> War
-    War --> Proposer
-    War --> Skeptic
-    War --> Quant
-    War --> Market
-    War --> Exposure
-    War --> Pre
-    War --> Tally
-    Loop --> Guard
-    Guard --> Options
-    Loop --> Store
-    Loop --> MD
-    Loop --> TG
-
-    MD --> Live[Live gateways -> Alpaca SDK]
-    MD --> Rep[Replay gateways -> SQLite]
-    TG --> Live
-    TG --> Rep
-
-    Proposer -.read-only tools.-> Mcp[Alpaca MCP, read-only]
-    Skeptic -.-> Mcp
-    Quant -.-> Mcp
-    Market -.-> Mcp
+flowchart TD
+    LS[LiveSession] --> TL[TradingLoop]
+    TL --> MD[LiveMarketDataGateway]
+    TL --> WR[WarRoomAgent]
+    WR --> WS[WarRoomSession]
+    WS --> P[Personas]
+    TL --> RG[RiskGuard]
+    TL --> TG[ITradingGateway]
+    TL --> DB[TradingStore]
+    WS --> DB
+    P --> DB
 ```
 
-## The one boundary that matters
+```csharp
+public interface IWarRoomAuditSink
+{
+    Task BeginSittingAsync(...);
+    Task RecordToolCallsAsync(...);
+    Task CompleteSittingAsync(...);
+}
+```
 
-> **Agents decide what they want to do. Deterministic C# decides what they are permitted to
-> do.**
+## Component contracts
 
-The war room produces a `ProposedOperation` and a set of votes. That is data. Nothing in the
-room can submit, cancel or close an order: `ITradingGateway` is reached only from
-`TradingLoop`, and no MCP server this host runs holds an order tool at all (ADR-001, ADR-005,
-ADR-006).
+| Component | Responsibility |
+|---|---|
+| `LiveSession` | Schedule cycles from the live market clock. |
+| `TradingLoop` | Order exits, context, decisions, risk, execution, and audit. |
+| `WarRoomSession` | Propose, validate, review, discuss, rebut, and vote. |
+| Personas | Model-specific research and typed output. |
+| `RiskGuard` | Hard deterministic limits. |
+| `LiveMarketDataGateway` | Current Alpaca data in project-owned records. |
+| `LiveTradingGateway` | Paper-account reads and broker writes. |
+| `DryRunTradingGateway` | Delegate reads and intercept writes. |
+| `TradingStore` | Current audit schema and atomic order reservation. |
 
-`ExposureRiskPersona` sits inside the room but computes in C#. It votes on whether a legal
-trade is a sensible use of capacity; it does **not** replace `RiskGuard`, which enforces the
-hard limits and cannot be outvoted.
+## Related lodes
 
-## The three replacement seams
-
-| Seam | Live | Replay |
-|---|---|---|
-| `IMarketDataGateway` | Alpaca SDK | SQLite, clamped to the replay clock |
-| `ITradingGateway` | Alpaca SDK, the only write path | Simulated; holds no Alpaca client |
-| `TimeProvider` | `TimeProvider.System` | `ReplayClock`, moves forward only |
-
-`TradingLoop` has no mode flag. A branch on mode is how two paths drift apart, so the loop is
-given different gateways instead.
-
-## Related
-
-- [Application structure](application-structure.md)
+- [Architecture summary](summary.md)
+- [Live cycle](../trading/live-cycle.md)
 - [War room](../war-room/summary.md)
-- [Risk guardrails](../trading/risk-guardrails.md)
-- [Replay mode](../replay/replay-mode.md)
-- [Architecture decisions](decisions.md)
+- [Storage summary](../storage/summary.md)

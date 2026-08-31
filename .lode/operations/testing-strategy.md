@@ -1,86 +1,52 @@
 # Testing Strategy
 
-Three test projects: `Trader.Tests`, `Trader.IntegrationTests`, and `Trader.ReplayTests`.
-None exists yet.
+One xUnit project tests deterministic rules, room behavior, storage links, dry-run isolation,
+and transcript behavior. A live-data dry run verifies the external read path without sending
+an order.
 
-## Unit tests
+```mermaid
+flowchart TD
+    U[Unit tests] --> B[Build confidence]
+    S[SQLite audit tests] --> B
+    D[Dry-run gateway tests] --> B
+    L[Live-data dry run] --> O[Operational confidence]
+    A[Read-only audit check] --> O
+```
 
-Test every calculation that touches money, probability, or time:
+```powershell
+dotnet test Xakpc.Alpaca.NøIdea.slnx --no-restore
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live --dry-run --once --agent stub
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --audit
+```
 
-- Feature calculations.
-- Probability combination.
-- Brier score.
-- Expert weight calculation.
-- Option quote validation.
-- Risk rules.
-- Position exit rules.
-- Strategy parameter limits.
-- Time calculations.
-- The `McpToolCatalog` allowlist logic.
-- The mapping from an MCP result to a typed C# contract.
+## Required coverage
 
-Use an injected `TimeProvider` so that a time test is deterministic.
+- Quote, spread, expiration, capacity, and risk rejection.
+- Proposal pre-validation and private vote behavior.
+- Unique proposal IDs and immutable review passes.
+- Tool request and result persistence.
+- Decision and order linkage in one transaction.
+- Hold and rejection persistence without an order.
+- Audit integrity detection.
+- Dry-run broker-write isolation.
+- Mandatory exit behavior.
+- Duplicate-close suppression and close lifecycle counters.
+- Uncertain buy quarantine and same-ID sell recovery.
+- Durable policy and position-review state.
+- Mandatory exits on a blocked account.
+- Exact account-wide halt reasons.
+- Missing prior-close equity fallback for a new account with no position and no fill.
+- Fail-closed behavior when prior-close equity is missing after a fill.
 
-## MCP integration tests
+## Current result
 
-Run these against the **development** paper account, never the official account:
+The suite has 104 passing tests. The removed simulation-specific tests are not part of the
+current product. The 2026-08-31 live-data dry run sent no order and the audit command reported
+no fault.
 
-- Read-only MCP server startup.
-- Trading MCP server startup.
-- Approved research tool discovery.
-- **Confirmation that the read-only server does not expose a trading tool.**
-- Account read.
-- Clock read.
-- Bars read.
-- News read.
-- Option chain read.
-- Position read.
-- Paper option order with a safe test size.
-- Order lookup by client ID.
-- Order cancel.
-- Position close.
+## Related lodes
 
-**Run these tests before each competition session.** They are the detector for an Alpaca MCP
-tool name or schema change.
-
-Test a single-leg option order first. Test a multi-leg order only when the strategy needs
-one (KISS and YAGNI).
-
-## Replay tests
-
-Confirm that:
-
-- No future data is visible.
-- The same live strategy code runs in replay.
-- Agent tools use replay data, not live MCP data.
-- **A replay run starts no MCP client.**
-- ML training uses chronological splits.
-- Forecast results are recorded.
-- Expert scores update.
-- **Orders are simulated, not sent.**
-
-## Failure tests
-
-Force each failure and check the behavior in
-[fault handling](fault-handling.md):
-
-- The read-only MCP server exits.
-- The trading MCP server exits.
-- MCP call timeout.
-- An incompatible MCP tool schema.
-- A required MCP tool is missing.
-- LLM timeout.
-- LLM invalid result.
-- SQLite locked or unavailable.
-- Restart with an open position.
-- Duplicate order retry.
-- Thursday expiration and assignment behavior, in the development paper account.
-
-The duplicate order retry test is the most important one. It protects real competition
-equity.
-
-## Related
-
-- [Fault handling](fault-handling.md)
-- [MCP safety](../alpaca/mcp-safety.md)
-- [Replay mode](../replay/replay-mode.md)
+- [Risk guardrails](../trading/risk-guardrails.md)
+- [Schema](../storage/schema.md)
+- [Observability](observability.md)
+- [Local development](local-development.md)

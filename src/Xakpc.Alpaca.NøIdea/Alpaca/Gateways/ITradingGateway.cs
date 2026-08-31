@@ -4,11 +4,7 @@ namespace Xakpc.Alpaca.NøIdea.Alpaca.Gateways;
 /// Everything that touches the account or moves money. Only deterministic C# holds one of
 /// these; no LLM agent ever receives it (ADR-005, ADR-006).
 /// </summary>
-/// <remarks>
-/// The replay implementation simulates every write and <b>never sends an order</b>. That is
-/// the property the replay tests assert, and it is why the interface exists rather than the
-/// loop calling the SDK directly.
-/// </remarks>
+/// <remarks>The interface keeps broker writes behind one narrow, testable boundary.</remarks>
 public interface ITradingGateway
 {
     Task<AccountState> GetAccountAsync(CancellationToken cancellationToken);
@@ -17,6 +13,10 @@ public interface ITradingGateway
 
     /// <summary>Open orders only. Restart recovery reconciles against these.</summary>
     Task<IReadOnlyList<OrderState>> ListOpenOrdersAsync(CancellationToken cancellationToken);
+
+    /// <summary>All broker orders submitted after the supplied UTC instant.</summary>
+    Task<IReadOnlyList<OrderState>> ListOrdersSinceAsync(
+        DateTimeOffset fromUtc, CancellationToken cancellationToken);
 
     /// <summary>
     /// Submits one option order. The caller must already have reserved
@@ -33,6 +33,4 @@ public interface ITradingGateway
 
     Task CancelOrderAsync(string brokerOrderId, CancellationToken cancellationToken);
 
-    /// <summary>Closes the whole position in one contract.</summary>
-    Task<OrderState> ClosePositionAsync(string contractSymbol, CancellationToken cancellationToken);
 }

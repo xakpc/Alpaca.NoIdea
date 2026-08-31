@@ -44,24 +44,35 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
     private readonly RiskOptions _options = options ?? throw new ArgumentNullException(nameof(options));
     private readonly TimeProvider _time = time ?? throw new ArgumentNullException(nameof(time));
 
-    /// <summary>True once the day's loss limit has been reached. No new positions after this.</summary>
-    public bool NewPositionsHalted(RiskSnapshot snapshot)
+    /// <summary>Checks the account-wide conditions that can halt all new positions.</summary>
+    public RiskVerdict CanConsiderNewPositions(RiskSnapshot snapshot)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
 
         if (snapshot.DayOpeningEquity <= 0m)
         {
-            return true;   // Cannot confirm the day's baseline. Fail closed.
+            return RiskVerdict.Reject("prior-close equity is unavailable");
         }
 
         if (!snapshot.PendingRiskKnown)
         {
-            return true;
+            return RiskVerdict.Reject("a pending buy order has unknown remaining risk");
         }
 
         var loss = (snapshot.DayOpeningEquity - snapshot.Equity) / snapshot.DayOpeningEquity;
-        return loss >= _options.MaxDailyLossFraction;
+        if (loss >= _options.MaxDailyLossFraction)
+        {
+            return RiskVerdict.Reject(
+                $"daily loss {(loss * 100m).ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}% "
+                + $"reached the {(_options.MaxDailyLossFraction * 100m).ToString("F0", System.Globalization.CultureInfo.InvariantCulture)}% limit");
+        }
+
+        return RiskVerdict.Allow();
     }
+
+    /// <summary>True when an account-wide rule prevents all new positions.</summary>
+    public bool NewPositionsHalted(RiskSnapshot snapshot) =>
+        !CanConsiderNewPositions(snapshot).Allowed;
 
     /// <summary>
     /// Whether one proposed opening trade may be submitted.
@@ -86,9 +97,10 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
             return RiskVerdict.Reject("account equity is not positive");
         }
 
-        if (NewPositionsHalted(snapshot))
+        var accountVerdict = CanConsiderNewPositions(snapshot);
+        if (!accountVerdict.Allowed)
         {
-            return RiskVerdict.Reject("daily loss limit reached");
+            return accountVerdict;
         }
 
         if (snapshot.OpenPositions + snapshot.PendingOpenPositions >= _options.MaxConcurrentPositions)
@@ -182,19 +194,9 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
             return RiskVerdict.Reject("expires after the competition measurement point");
         }
 
-        switch (contract.Quality)
+        if (contract.Quality != QuoteQuality.TwoSided)
         {
-            case QuoteQuality.TwoSided:
-                break;
-
-            case QuoteQuality.UnknownHistorical:
-                // Replay. No quote exists, so no spread or age rule can run. The harness
-                // permits this deliberately; a live path never reaches it because a live
-                // gateway never produces this value.
-                return RiskVerdict.Allow();
-
-            default:
-                return RiskVerdict.Reject($"quote is {contract.Quality}");
+            return RiskVerdict.Reject($"quote is {contract.Quality}");
         }
 
         if (!contract.IsTradeableQuote)

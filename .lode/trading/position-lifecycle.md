@@ -1,96 +1,43 @@
 # Position Lifecycle
 
+Alpaca is the source of truth for open positions. The loop applies mandatory exits before it
+asks a model to review or open anything.
+
 ```mermaid
 stateDiagram-v2
-    [*] --> Candidate
-
-    Candidate --> Rejected: Expert or option checks fail
-    Candidate --> RiskCheck: Candidate survives expert review
-
-    RiskCheck --> Rejected: Risk rule fails
-    RiskCheck --> Submitted: Risk rules pass
-
-    Submitted --> Open: Order fills
-    Submitted --> Cancelled: Order is cancelled or expires
-
-    Open --> Open: Hold on next review
-    Open --> Closing: Exit rule triggers
-    Closing --> Closed: Exit fills
-
-    Rejected --> [*]
-    Cancelled --> [*]
-    Closed --> [*]
+    [*] --> Open: accepted order fills
+    Open --> Review: trigger fires
+    Review --> Open: room holds
+    Review --> Closing: room closes
+    Open --> Closing: mandatory exit
+    Closing --> [*]: filled sell and position gone
+    Closing --> Open: close fails
+    Closing --> Closing: sell is open or uncertain
 ```
 
-## States
+```csharp
+var reason = riskGuard.MandatoryExitReason(position, policy, position.CurrentPrice);
+```
 
-| State | Meaning |
-|---|---|
-| `Candidate` | One option contract and one price question under evaluation. |
-| `Rejected` | An expert check, an option check, or a risk rule failed. The reason is stored. |
-| `RiskCheck` | The candidate is at the [risk guardrails](risk-guardrails.md). |
-| `Submitted` | The order went to Alpaca. The fill is not confirmed. |
-| `Open` | The position exists in the account. |
-| `Closing` | An exit rule triggered. The exit order is not filled. |
-| `Closed` | The exit filled. The realized P&L is known. |
-| `Cancelled` | The order did not fill and it is no longer active. |
+Mandatory reasons include take profit, stop loss, and competition flatten time. Review
+triggers include material P&L change, expiration approach, and new headline context.
 
-## Exit policy
+A close is a reserved market sell with a client order ID. A pending or uncertain sell blocks
+another close and blocks war-room review for that position. An open or partially filled sell
+is a submitted close. Only a fill or a broker position refresh confirms a closed position.
 
-The `PositionManager` reviews open positions in step 2 of every
-[cycle](live-cycle.md). It can check:
+## Audit contract
 
-- The profit target.
-- The loss limit.
-- The time to expiration.
-- The quote validity.
-- Strategy invalidation.
-- The competition end rule. See below.
+- A hold stores the reviewed position and reason.
+- An invalid close stores a rejection.
+- A close stores a decision and linked market-order reservation.
+- Reconciliation updates the order and decision through fill, cancel, expiry, or rejection.
+- A pre-close audit failure does not prevent one risk-reducing close attempt.
+- The session stops after any close-path audit failure.
 
-The exact values are **TBD** until replay tests are complete. See
-[strategy parameters](strategy-parameters.md).
-
-## The competition end rule
-
-Alpaca evaluates total equity as of **end of day Thursday 2026-09-03**. Thursday-expiring
-exercises and assignments appear in that value. Friday 09:30 ET only closes the window
-formally.
-
-> Thursday end of day is the effective final portfolio state.
-
-**The `PositionManager` must not wait for a Friday quote or a Friday fill to improve the
-result.** The Thursday exit policy is a strategy parameter: close everything before the
-Thursday close, or allow a supported Thursday-expiration outcome. The choice must be
-deliberate and tested. See
-[competition constraints](../operations/competition-constraints.md).
-
-## Exit order types
-
-Alpaca supports market, limit, stop, and stop-limit orders for options. **It does not
-support a trailing stop for options.** A trailing exit must be a `PositionManager` check
-that submits a market or limit close order.
-
-## Two rules
-
-1. **The system does not close a position only because time passed.** The exit policy must
-   match the strategy.
-2. **The system must prevent accidental option expiration** if expiration handling is not
-   part of the strategy. The one exception is a deliberate, tested Thursday-expiration
-   policy.
-
-## LLM re-check
-
-An LLM re-check of an open position runs only when a trigger exists: important new news, a
-large price change, a large change in the numerical forecast, or a scheduled long-interval
-review. Do not call the LLM for every position on every 30-minute cycle.
-
-## Persistence
-
-The `Rejected` path is as important as the `Closed` path. Every skip and every rejection
-gets a row with a reason. This audit trail is required for the hackathon demo. See
-[observability](../operations/observability.md).
-
-## Related
+## Related lodes
 
 - [Live cycle](live-cycle.md)
-- [Storage schema](../storage/schema.md)
+- [Risk guardrails](risk-guardrails.md)
+- [Proposal review audit](../storage/proposal-review-audit.md)
+- [Restart recovery](../operations/restart-recovery.md)

@@ -7,12 +7,11 @@ namespace Xakpc.Alpaca.NøIdea.Agents;
 /// <para>
 /// This exists to test the harness, not to trade well. It proves the loop wakes, filters,
 /// decides, sizes, submits idempotently, manages positions, and records — everything except
-/// whether the reasoning is any good. Running it over stored history is how the plumbing gets
-/// checked while the market is closed.
+/// whether the reasoning is any good. A live-data dry run checks the plumbing without orders.
 /// </para>
 /// <para>
 /// Its rule is intentionally simple and carries no claimed edge: take the cheapest tradeable
-/// contract, one contract, and only when a position slot is free. <b>Do not read its replay P&amp;L as evidence about the
+/// contract, one contract, and only when a position slot is free. <b>Do not read its dry-run result as evidence about the
 /// strategy.</b> It is evidence about the code.
 /// </para>
 /// </remarks>
@@ -27,7 +26,8 @@ public sealed class StubStrategyAgent : IStrategyAgent
 
         if (context.NewPositionsHalted)
         {
-            return Task.FromResult(StrategyDecision.Nothing("new positions are halted"));
+            return Task.FromResult(StrategyDecision.Nothing(
+                context.NewPositionsHaltReason ?? "new positions are halted"));
         }
 
         if (context.RemainingPositionSlots <= 0)

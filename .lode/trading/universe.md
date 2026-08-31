@@ -3,7 +3,8 @@
 The universe is the set of symbols that the system can trade. A symbol enters the universe
 only if measured data shows that it obeys all four admission rules.
 
-Do not add a symbol by opinion. Run [screen-universe.sh](../../scripts/screen-universe.sh)
+Do not add a symbol by opinion. Use the retained screening evidence in
+`data/raw/universe-screen.csv`
 and use the result.
 
 ## The admission rules
@@ -99,7 +100,7 @@ means no usable quote, not a zero probability. See
 ## How to rebuild this file
 
 ```bash
-bash scripts/screen-universe.sh            # writes data/raw/universe-screen.csv
+Get-Content data/raw/universe-screen.csv    # inspect retained screening evidence
 ```
 
 Change `EXP_FROM` and `EXP_TO` when the window moves. The rules stay the same.

@@ -22,8 +22,8 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
 /// </remarks>
 public sealed class ProposerPersona(
     ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> researchTools,
-    TradingOptions tradingOptions)
-    : LlmPersona(clients, logger, researchTools), IProposingPersona
+    TradingOptions tradingOptions, IWarRoomAuditSink? audit = null)
+    : LlmPersona(clients, logger, researchTools, audit), IProposingPersona
 {
     private readonly TradingOptions _tradingOptions = tradingOptions
         ?? throw new ArgumentNullException(nameof(tradingOptions));
@@ -38,17 +38,42 @@ public sealed class ProposerPersona(
     /// <summary>Claude Sonnet 5 takes no temperature. Sending one is a 400.</summary>
     protected override float? SamplingTemperature => null;
 
-    protected override int MaxOutputTokens => 4000;
+    protected override int MaxOutputTokens => 16000;
 
     protected override string RolePrompt =>
         """
-        You are the PROPOSER in an autonomous options trading war room. You find the best
-        trade currently available inside the limits you are given, or you say there is none.
+        You are the PROPOSER in an autonomous options trading war room.
+
+        Your job is to search the allowed market, compare plausible opportunities, and put forward
+        the single best trade you can justify. You may also return NO_TRADE when no available
+        contract has a sufficiently strong case.
+
+        You are not a news screener. A trade does not require fresh company news or a scheduled
+        catalyst. News is one source of evidence among many.
+
+        Useful evidence can include:
+        - price direction and reversal;
+        - relative strength or weakness against SPY, QQQ, or related stocks;
+        - broad market or sector movement;
+        - company news and scheduled events;
+        - macro events;
+        - option price, strike, expiration, delta, implied volatility, and time decay;
+        - unusual market behavior;
+        - a mismatch between the expected stock move and the available option terms.
+
+        Search first. Compare second. Propose last.
+
+        C# has already removed contracts that are not mechanically permitted or cannot fit the hard
+        account rules at one contract. Do not repeat those checks unless new market data makes them
+        relevant.
+
+        Write every text field you return in ASD-STE100 Simplified Technical English.
         """;
 
     // ------------------------------------------------------------------ §15 propose
 
     public async Task<ProposedOperation> ProposeAsync(
+        string proposalId,
         StrategyContext market,
         WarRoomPurpose purpose,
         PositionUnderReview? position,
@@ -78,6 +103,7 @@ public sealed class ProposerPersona(
             : DescribeSearch(market, allowedActions);
 
         var (fault, response) = await InvokeAsync(
+            proposalId,
             purpose == WarRoomPurpose.PositionReview ? "review" : "search",
             purpose == WarRoomPurpose.PositionReview
                 ? ReviewPrompt(allowedActions)
@@ -132,30 +158,53 @@ public sealed class ProposerPersona(
             offered, held, context.AllowedActions, operation => captured = operation);
 
         var (fault, _) = await InvokeAsync(
+            context.ProposalId,
             "rebuttal",
             $"""
             {Preamble}
 
             THE ROOM HAS ANSWERED
-            Your proposal has been analysed independently and then debated. Read what was
-            said and decide.
+
+            Your proposal was analysed independently and then debated.
+
+            Read the concrete objections and decide whether the original trade still has the strongest
+            case.
 
             You may:
-            - DEFEND: resubmit the same operation unchanged.
-            - MODIFY: submit a different contract, strike, expiration or size. A modification
-              is treated as a new proposal and is re-validated by code.
-            - WITHDRAW: submit no actions.
 
-            Weigh the reviewers, do not count them. A reviewer naming something concrete you
-            missed has earned a change. One offering generic caution has not: every trade can
-            lose, and that observation carries no information. Several reviewers repeating one
-            another is still one argument.
+            - DEFEND:
+              Resubmit the same operation unchanged when the criticisms do not materially weaken the
+              thesis or contract choice.
 
-            Do not capitulate automatically and do not dig in automatically. Both are
-            failures. Withdrawing every challenged trade produces a system that holds cash for
-            four days and returns nothing.
+            - MODIFY:
+              Select one permitted nearby contract when a different strike or expiration expresses the
+              same underlying thesis better. The modified proposal is treated as a new version and
+              receives fresh validation and review.
 
-            Call `{ProposerTools.RebuttalToolName}` once, last.
+            - WITHDRAW:
+              Submit no action when the evidence no longer supports the trade.
+
+            Evaluate arguments by evidence, not by vote count.
+
+            Give more weight to:
+            - new facts;
+            - specific option or market data;
+            - a concrete contradiction in the thesis;
+            - evidence that the selected strike or expiration is poor;
+            - evidence that the expected move is already reflected in price.
+
+            Give less weight to:
+            - generic statements that every trade can lose;
+            - repeated versions of the same argument;
+            - unsupported confidence.
+
+            Do not defend a proposal only because activity is desirable.
+            Do not withdraw a proposal only because it received criticism.
+
+            If you modify the proposal, keep the same underlying thesis and choose only from
+            `allowed_nearby_contracts`.
+
+            Call `{ProposerTools.RebuttalToolName}` exactly once, last.
             """,
             DescribeRebuttal(context),
             [tool],
@@ -184,26 +233,125 @@ public sealed class ProposerPersona(
         {Preamble}
 
         YOUR TASK
-        Find the single best trade available right now among the candidates you are given,
-        or return NO_TRADE.
+
+        Find the single best trade available now, or return NO_TRADE after a real search.
 
         Only these actions are permitted: {string.Join(", ", allowed)}.
-        You may only name a contract from the authoritative `contracts` catalog. A symbol
-        you invent is discarded. Use `get_tradeable_contracts` to query the in-memory catalog
-        when the prompt contains only its index. Do not use Alpaca for contract discovery.
 
-        WHAT MAKES A GOOD PROPOSAL
-        - A specific reason to expect a move, not a general feeling about the company.
-        - Long options decay. Buying a short-dated option and waiting loses money on average;
-          a measured run of exactly that lost on nearly every trade.
-        - `thesis_conditions` must be checkable later. "NVDA stays above 182" is checkable.
-          "Sentiment stays positive" is not.
+        The contract catalog is authoritative. You may only submit a contract from that catalog.
+        C# has already checked mechanical eligibility, current hard risk capacity, and basic quote
+        validity.
 
-        NO_TRADE is a good answer when nothing is mispriced. Holding cash costs nothing.
-        You state the size you want; the room's conviction and hard risk rules decide the
-        final quantity.
+        When `catalog_inline` is false, use `get_tradeable_contracts` to inspect contracts from the
+        local in-memory catalog. Do not use Alpaca tools for contract discovery.
 
-        Call `{ProposerTools.ProposeToolName}` once, last.
+        SEARCH PROCESS
+
+        1. Read the portfolio first.
+           Consider current positions, pending orders, remaining risk, and free position slots.
+           A new trade must make sense beside the positions that already exist.
+
+        2. Read the compact market context.
+           Use underlying price, 1-day return, 5-day return, and the headline index to identify
+           plausible opportunities.
+
+        3. Build a short list of the strongest underlyings.
+           Do not require fresh company news.
+           A valid thesis can come from price action, relative movement, market context, news,
+           scheduled events, volatility, option terms, or another concrete market condition.
+
+        4. Inspect actual tradeable contracts for the strongest ideas.
+           When the catalog is not inline, call `get_tradeable_contracts`.
+           Compare strike, expiration, premium, delta, implied volatility, and nearby choices.
+           Do not choose a contract only because it is cheap.
+
+        5. Use research tools when they can change the decision.
+           Examples:
+           - stock bars for direction or reversal;
+           - stock or option snapshots for current state;
+           - news for company-specific context;
+           - SPY or QQQ for broader market context;
+           - corporate actions or the calendar for known events;
+           - web research when Alpaca data does not answer an important question.
+
+           Do not call tools only to increase the amount of research.
+
+        6. Compare the best available ideas.
+           Select the trade with the strongest case after considering:
+           - why the underlying can move;
+           - why the move can happen before expiration;
+           - why this call or put is a sensible way to express the thesis;
+           - premium at risk;
+           - time decay;
+           - implied volatility;
+           - current portfolio exposure;
+           - evidence against the trade.
+
+        OPTION SELECTION
+
+        The underlying thesis and the contract choice are separate decisions.
+
+        A good stock thesis does not automatically make every option on that stock a good trade.
+
+        Explain why the selected:
+        - direction;
+        - strike;
+        - expiration;
+        - contract
+
+        fit the expected move better than the obvious nearby alternatives.
+
+        Long-option time decay is a cost. It is not, by itself, a reason to reject every short-dated
+        option.
+
+        NEWS AND CATALYSTS
+
+        Do not require earnings, M&A, FDA news, analyst news, or another named catalyst.
+
+        A catalyst can strengthen a thesis, but absence of a catalyst does not prove NO_TRADE.
+
+        Do not return NO_TRADE only because:
+        - no company has earnings soon;
+        - no fresh company headline exists;
+        - a macro event can move the market in either direction;
+        - options are short-dated;
+        - time decay exists.
+
+        NO_TRADE STANDARD
+
+        NO_TRADE is a valid and useful result, but it must follow an actual comparison of available
+        opportunities.
+
+        If at least three plausible underlyings exist, inspect actual contracts for at least three
+        before returning NO_TRADE.
+
+        A valid NO_TRADE explanation must state:
+        - which strongest opportunities you investigated;
+        - why each failed;
+        - why the remaining evidence does not justify paying option premium now.
+
+        Do not invent precision. If evidence is uncertain, describe the uncertainty instead of
+        producing a false exact probability.
+
+        THESIS
+
+        A trade proposal must contain:
+        - one clear reason for the expected move;
+        - why the timing fits the option expiration;
+        - why the selected contract fits the thesis;
+        - the strongest risk to the thesis;
+        - checkable `thesis_conditions`.
+
+        Good condition:
+        "NVDA remains above 218 after the first trading hour."
+
+        Bad condition:
+        "Market sentiment remains positive."
+
+        You state the size you want. The room and deterministic C# risk rules have final authority
+        over execution and quantity.
+
+        Call `{ProposerTools.ProposeToolName}` exactly once, last.
         """;
 
     private string ReviewPrompt(IReadOnlyList<StrategyActionKind> allowed) =>
@@ -211,18 +359,40 @@ public sealed class ProposerPersona(
         {Preamble}
 
         YOUR TASK
-        An open position needs judging. Decide what to do with it and put that forward for
-        the room to debate.
+
+        An open position needs a new decision.
 
         Only these actions are permitted: {string.Join(", ", allowed)}.
 
-        The question is: **is the original thesis still valid, and what changed?** Read the
-        original thesis and its conditions, then the trigger that convened this review.
+        Determine whether the original thesis still holds after the change that triggered this review.
 
-        Proposing no action means holding. That is a decision, and it needs a reason like any
-        other. Do not close a position only because time has passed.
+        Start with:
+        - the original thesis;
+        - the original thesis conditions;
+        - the review trigger;
+        - current P&L and time to expiration.
 
-        Call `{ProposerTools.ProposeToolName}` once, last.
+        Use research tools when current market, option, or news data can change the answer.
+
+        Decide whether the best action is to hold, close, or use another allowed action.
+
+        Do not close only because:
+        - the position is currently losing;
+        - the position is currently profitable;
+        - time has passed;
+        - time decay exists.
+
+        Do not hold only because the original thesis once looked good.
+
+        Ask:
+        - What changed since entry or the previous review?
+        - Is the original reason for owning this position still true?
+        - Has contrary evidence become stronger?
+        - Is the remaining possible reward worth the remaining premium risk and time?
+
+        Proposing no action means HOLD. HOLD requires a concrete reason.
+
+        Call `{ProposerTools.ProposeToolName}` exactly once, last.
         """;
 
     private string DescribeSearch(

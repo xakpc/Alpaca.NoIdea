@@ -1,5 +1,9 @@
 # System Context
 
+```powershell
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live --dry-run --once
+```
+
 The system has one human role and two external systems.
 
 ```mermaid
@@ -8,7 +12,7 @@ C4Context
 
     Person(operator, "Operator", "Starts the agent and monitors the TUI. Does not approve individual trades.")
 
-    System(agentSystem, "Autonomous Options Trading Agent", "Finds option opportunities, uses AI and ML forecasts, applies hard risk rules, and trades an Alpaca paper account.")
+    System(agentSystem, "Autonomous Options Trading Agent", "Finds option opportunities, uses a multi-model war room, applies hard risk rules, and trades an Alpaca paper account.")
 
     System_Ext(alpaca, "Alpaca Platform", "Paper trading, account data, stock data, news, and option data.")
     System_Ext(llmProvider, "LLM Provider", "The language model for the Research Agent and the Critic Agent.")

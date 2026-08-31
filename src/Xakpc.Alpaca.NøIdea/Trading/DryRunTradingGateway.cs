@@ -71,6 +71,10 @@ public sealed class DryRunTradingGateway(
     public Task<IReadOnlyList<OrderState>> ListOpenOrdersAsync(CancellationToken cancellationToken) =>
         _inner.ListOpenOrdersAsync(cancellationToken);
 
+    public Task<IReadOnlyList<OrderState>> ListOrdersSinceAsync(
+        DateTimeOffset fromUtc, CancellationToken cancellationToken) =>
+        _inner.ListOrdersSinceAsync(fromUtc, cancellationToken);
+
     public Task<OrderState?> FindOrderByClientIdAsync(
         string clientOrderId, CancellationToken cancellationToken) =>
         _inner.FindOrderByClientIdAsync(clientOrderId, cancellationToken);
@@ -83,7 +87,8 @@ public sealed class DryRunTradingGateway(
 
         Record(new PlannedOrder(
             _time.GetUtcNow(), request.ClientOrderId, request.ContractSymbol,
-            request.Quantity, request.IsBuy, request.LimitPrice, "open"));
+            request.Quantity, request.IsBuy, request.LimitPrice,
+            request.IsBuy ? "open" : "close"));
 
         _logger.LogWarning(
             "DRY RUN: would {Side} {Contracts}x {Symbol} at {Limit:N2} ({Notional:N2} USD). Not sent.",
@@ -97,25 +102,6 @@ public sealed class DryRunTradingGateway(
             ClientOrderId = request.ClientOrderId,
             BrokerOrderId = $"dryrun-{_planned.Count}",
             ContractSymbol = request.ContractSymbol,
-            Lifecycle = OrderLifecycle.Open,
-            FilledQuantity = 0,
-            RawStatus = "dry_run_not_sent",
-        });
-    }
-
-    public Task<OrderState> ClosePositionAsync(string contractSymbol, CancellationToken cancellationToken)
-    {
-        Record(new PlannedOrder(
-            _time.GetUtcNow(), $"dryrun-close-{contractSymbol}", contractSymbol,
-            0, false, null, "close"));
-
-        _logger.LogWarning("DRY RUN: would close {Symbol}. Not sent.", contractSymbol);
-
-        return Task.FromResult(new OrderState
-        {
-            ClientOrderId = "",
-            BrokerOrderId = null,
-            ContractSymbol = contractSymbol,
             Lifecycle = OrderLifecycle.Open,
             FilledQuantity = 0,
             RawStatus = "dry_run_not_sent",

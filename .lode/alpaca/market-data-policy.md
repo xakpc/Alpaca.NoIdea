@@ -1,68 +1,37 @@
-# Free Market Data Policy
+# Market-Data Policy
 
-The project uses the **free Alpaca Basic plan with the Indicative options feed** (ADR-010).
-The project will not purchase Algo Trader Plus or OPRA. The hackathon permits the free tier.
+The runtime reads current Alpaca paper-market data. It does not import stored market pages
+into SQLite. Completed daily bars can provide short return context, but the current option
+quote controls trade admission and price.
 
-## What the Basic plan gives
+```mermaid
+flowchart TD
+    T[Latest stock trade] --> C[Catalog context]
+    Q[Current option quote] --> G[Quote and spread gates]
+    B[Completed daily bars] --> C
+    N[Current news window] --> W[War room]
+    G --> W
+    C --> W
+```
 
-The official hackathon FAQ resolves the timing question. The rule is not "the free feed is
-delayed". The rule depends on **which** option data you ask for.
+```csharp
+if (!contract.IsTradeableQuote || contract.Ask is null)
+{
+    return RiskVerdict.Reject("a valid two-sided quote is required");
+}
+```
 
-| Data | Basic plan behavior |
-|---|---|
-| Latest option quote | **Real time.** No 15-minute delay. |
-| Latest option chain | **Real time.** No 15-minute delay. |
-| Historical option bars | 15-minute restriction applies. |
-| Historical option trades | 15-minute restriction applies. |
-| Option Greeks in a snapshot | Available. |
-| Full consolidated OPRA | Not included. Requires Algo Trader Plus. |
+## Invariants
 
-Two more facts:
+- A missing, one-sided, crossed, stale, or wide quote cannot open a position.
+- The ask sets the limit price and premium risk.
+- The runtime does not substitute a daily close for a missing quote.
+- The application does not name an Alpaca feed. Account entitlement selects the feed.
+- A partial option-chain read excludes that underlying for the cycle.
 
-- The Alpaca **dashboard charts can lag**. The dashboard is not a data source.
-- **The agent must decide from API / MCP data only.** Never from a chart.
+## Related lodes
 
-## The effect on the live strategy
-
-The live path is stronger than revision 1 and 2 of the architecture assumed. The system
-**can** use the current option quote for a live decision.
-
-The limit that remains is quality, not freshness:
-
-> The Indicative feed is not the full consolidated OPRA feed. Do not assume that the two are
-> identical.
-
-The [Options Evaluator](../trading/risk-guardrails.md) must therefore:
-
-- Require a **meaningful** pricing difference. Do not trade a very small quote difference.
-- Reject a stale quote.
-- Reject a missing quote.
-- Reject a one-sided quote.
-- Reject an otherwise unusable quote.
-
-The quote-age check stays. It now guards against a broken or frozen quote, not against a
-known feed delay.
-
-## The effect on replay
-
-The historical path keeps the old limits. Historical option bars and trades carry the
-15-minute restriction and can be incomplete.
-
-Therefore:
-
-- Replay must account for the delay and the availability limits of historical option data.
-- Historical option-chain snapshots can differ from live option-chain data.
-- **Replay P&L is only as accurate as the stored historical option data.**
-
-See [replay mode](../replay/replay-mode.md).
-
-## Disclosure requirement
-
-The project must state the use of the free Indicative feed in the final hackathon
-submission. This is an honesty requirement, not an optional item.
-
-## Related
-
-- [MCP integration](mcp-integration.md)
-- [Options Evaluator](../trading/risk-guardrails.md)
-- [Main risks](../plans/main-risks.md)
+- [Contract catalog](../trading/tradeable-contract-catalog.md)
+- [Risk guardrails](../trading/risk-guardrails.md)
+- [Alpaca summary](summary.md)
+- [Historical model evidence](../research/historical-model-evidence.md)

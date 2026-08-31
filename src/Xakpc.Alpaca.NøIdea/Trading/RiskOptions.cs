@@ -16,7 +16,7 @@ namespace Xakpc.Alpaca.NøIdea.Trading;
 /// this record allows.
 /// </para>
 /// <para>
-/// The fractional limits are <b>chosen, not measured</b>. No replay evidence sets them,
+/// The fractional limits are <b>chosen, not measured</b>. No real-trade evidence sets them,
 /// because risk appetite is a decision rather than a prediction. They are recorded as chosen
 /// in <c>.lode/trading/strategy-parameters.md</c>.
 /// </para>
@@ -53,8 +53,7 @@ public sealed record RiskOptions
     public int HardMaxContractsPerTrade { get; init; } = 5;
 
     /// <summary>
-    /// The widest bid/ask spread that can still be traded, as a fraction of the ask. Live
-    /// only: replay cannot measure a spread, because Alpaca serves no historical quote.
+    /// The widest live bid/ask spread that can still be traded, as a fraction of the ask.
     /// </summary>
     public decimal MaxSpreadFraction { get; init; } = 0.15m;
 

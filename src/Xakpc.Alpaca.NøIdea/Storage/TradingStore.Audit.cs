@@ -1,106 +1,108 @@
+using System.Data.Common;
+using System.Text.Json;
 using Dapper;
+using Microsoft.Data.Sqlite;
+using Xakpc.Alpaca.NøIdea.Agents.Room;
 
 namespace Xakpc.Alpaca.NøIdea.Storage;
 
-/// <summary>One evaluated option event: the room sat over this contract at this price.</summary>
-public sealed record EvaluationRunRow
+public sealed record DecisionEventRow
 {
     public long TimestampUtc { get; init; }
     public string Mode { get; init; } = "live";
     public string? ProposalId { get; init; }
-    public string Symbol { get; init; } = "";
-    public decimal CurrentPrice { get; init; }
-    public string OptionSymbol { get; init; } = "";
-    public string OptionType { get; init; } = "";
-    public decimal Strike { get; init; }
-    public long ExpirationUtc { get; init; }
-    public decimal? MarketProbability { get; init; }
-    public string Status { get; init; } = "";
+    public string Purpose { get; init; } = "new-trade";
+    public string Action { get; init; } = "Hold";
+    public string Outcome { get; init; } = "held";
+    public string? Reason { get; init; }
+    public string? RiskResult { get; init; }
+    public string? Symbol { get; init; }
+    public string? OptionSymbol { get; init; }
+    public string? OptionType { get; init; }
+    public decimal? Strike { get; init; }
+    public long? ExpirationUtc { get; init; }
+    public decimal? UnderlyingPrice { get; init; }
+    public decimal? Probability { get; init; }
+    public decimal? NetVote { get; init; }
     public string? MarketSnapshotJson { get; init; }
 }
 
-/// <summary>One seat's opinion of one evaluated contract.</summary>
-public sealed record ForecastRow
-{
-    public long RunId { get; init; }
-    public string Forecaster { get; init; } = "";
-    public string? Vote { get; init; }
-    public decimal? Probability { get; init; }
-    public decimal? Confidence { get; init; }
-    public string? Reasoning { get; init; }
-    public string? EvidenceJson { get; init; }
-    public long CreatedUtc { get; init; }
-}
-
-/// <summary>What the system decided, and what the guardrails said about it.</summary>
-public sealed record DecisionRow
-{
-    public long RunId { get; init; }
-    public decimal? CombinedProbability { get; init; }
-    public decimal? MarketProbability { get; init; }
-    public decimal? Edge { get; init; }
-    public decimal? NetVote { get; init; }
-    public string Action { get; init; } = "";
-    public string? Reason { get; init; }
-    public string? RiskResult { get; init; }
-    public long CreatedUtc { get; init; }
-}
-
-/// <summary>One immutable proposal version and all evidence from its review pass.</summary>
-public sealed record ProposalReviewPassRow
-{
-    public string ProposalId { get; init; } = "";
-    public int ProposalVersion { get; init; }
-    public int ReviewPass { get; init; }
-    public bool Superseded { get; init; }
-    public string Verdict { get; init; } = "";
-    public string? RejectionCode { get; init; }
-    public string? OptionSymbol { get; init; }
-    public string Thesis { get; init; } = "";
-    public string ThesisConditionsJson { get; init; } = "[]";
-    public string OperationJson { get; init; } = "{}";
-    public string AnalysesJson { get; init; } = "[]";
-    public string DiscussionJson { get; init; } = "[]";
-    public string VotesJson { get; init; } = "[]";
-    public long CreatedUtc { get; init; }
-}
-
-/// <summary>The thesis that belongs to an open position's executed proposal.</summary>
 public sealed record PositionThesis(
     string ContractSymbol,
     string Thesis,
     IReadOnlyList<string> Conditions);
 
-/// <summary>
-/// The audit-trail writes. What the agent thought, and what the guardrails allowed.
-/// </summary>
-/// <remarks>
-/// <para>
-/// These answer the questions in <c>.lode/operations/observability.md</c>: what each seat
-/// said, what the option market showed at the time, why the system traded, which rule
-/// stopped it, and which order Alpaca received. The log tells the same story in prose; this
-/// is the half that can be queried.
-/// </para>
-/// <para>
-/// <b>A rejected action is recorded exactly like an accepted one.</b> A run that stores only
-/// its trades cannot demonstrate that a risk rule ever fired.
-/// </para>
-/// </remarks>
 public sealed partial class TradingStore
 {
-    public async Task RecordProposalReviewPassesAsync(
-        IReadOnlyCollection<ProposalReviewPassRow> passes,
+    public async Task BeginSittingAsync(
+        string proposalId,
+        string mode,
+        WarRoomPurpose purpose,
+        long startedUtc,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(passes);
-        if (passes.Count == 0)
+        const string sql =
+            """
+            INSERT INTO war_room_sittings (
+                proposal_id, mode, purpose, started_utc, status)
+            VALUES (@proposalId, @mode, @purpose, @startedUtc, 'running')
+            """;
+        await using var connection = await OpenAsync(cancellationToken);
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql,
+            new { proposalId, mode, purpose = purpose.ToString(), startedUtc },
+            cancellationToken: cancellationToken));
+    }
+
+    public async Task RecordToolCallsAsync(
+        string proposalId,
+        IReadOnlyCollection<AgentToolCallAudit> calls,
+        CancellationToken cancellationToken)
+    {
+        if (calls.Count == 0)
         {
             return;
         }
 
         const string sql =
             """
-            INSERT OR IGNORE INTO proposal_review_passes (
+            INSERT INTO agent_tool_calls (
+                proposal_id, persona, phase, model, call_id, tool_name,
+                arguments_json, result_json, status, captured_utc)
+            VALUES (
+                @ProposalId, @Persona, @Phase, @Model, @CallId, @ToolName,
+                @ArgumentsJson, @ResultJson, @Status, unixepoch())
+            """;
+        var rows = calls.Select(call => new
+        {
+            ProposalId = proposalId,
+            call.Persona,
+            call.Phase,
+            call.Model,
+            call.CallId,
+            call.ToolName,
+            call.ArgumentsJson,
+            call.ResultJson,
+            call.Status,
+        });
+
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql, rows, transaction, cancellationToken: cancellationToken));
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task CompleteSittingAsync(
+        string proposalId,
+        WarRoomVerdict verdict,
+        IReadOnlyCollection<ProposalReviewPass> passes,
+        long completedUtc,
+        CancellationToken cancellationToken)
+    {
+        const string insert =
+            """
+            INSERT INTO proposal_review_passes (
                 proposal_id, proposal_version, review_pass, superseded, verdict,
                 rejection_code, option_symbol, thesis, thesis_conditions_json,
                 operation_json, analyses_json, discussion_json, votes_json, created_utc)
@@ -109,12 +111,103 @@ public sealed partial class TradingStore
                 @RejectionCode, @OptionSymbol, @Thesis, @ThesisConditionsJson,
                 @OperationJson, @AnalysesJson, @DiscussionJson, @VotesJson, @CreatedUtc)
             """;
+        const string complete =
+            """
+            UPDATE war_room_sittings
+            SET completed_utc = @completedUtc, verdict = @verdict, status = 'completed'
+            WHERE proposal_id = @proposalId
+            """;
+
+        var rows = passes.Select(pass => new
+        {
+            pass.ProposalId,
+            pass.ProposalVersion,
+            pass.ReviewPass,
+            pass.Superseded,
+            Verdict = pass.Verdict.ToString(),
+            pass.RejectionCode,
+            OptionSymbol = pass.Operation.Actions
+                .FirstOrDefault(action => action.Kind != Agents.StrategyActionKind.Hold)
+                ?.ContractSymbol,
+            pass.Operation.Thesis,
+            ThesisConditionsJson = JsonSerializer.Serialize(pass.Operation.ThesisConditions),
+            OperationJson = JsonSerializer.Serialize(pass.Operation),
+            AnalysesJson = JsonSerializer.Serialize(pass.Analyses),
+            DiscussionJson = JsonSerializer.Serialize(pass.Discussion),
+            VotesJson = JsonSerializer.Serialize(pass.Votes),
+            CreatedUtc = completedUtc,
+        }).ToArray();
 
         await using var connection = await OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-        await connection.ExecuteAsync(new CommandDefinition(
-            sql, passes, transaction, cancellationToken: cancellationToken));
+        if (rows.Length > 0)
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                insert, rows, transaction, cancellationToken: cancellationToken));
+        }
+        var changed = await connection.ExecuteAsync(new CommandDefinition(
+            complete,
+            new { proposalId, verdict = verdict.ToString(), completedUtc },
+            transaction,
+            cancellationToken: cancellationToken));
+        if (changed != 1)
+        {
+            throw new InvalidOperationException($"Sitting {proposalId} was not started.");
+        }
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<long> RecordDecisionEventAsync(
+        DecisionEventRow decision,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        return await InsertDecisionAsync(connection, null, decision, cancellationToken);
+    }
+
+    internal static async Task<long> InsertDecisionAsync(
+        SqliteConnection connection,
+        DbTransaction? transaction,
+        DecisionEventRow decision,
+        CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            INSERT INTO decision_events (
+                timestamp_utc, mode, proposal_id, purpose, action, outcome,
+                reason, risk_result, symbol, option_symbol, option_type, strike,
+                expiration_utc, underlying_price, probability, net_vote,
+                market_snapshot_json)
+            VALUES (
+                @TimestampUtc, @Mode, @ProposalId, @Purpose, @Action, @Outcome,
+                @Reason, @RiskResult, @Symbol, @OptionSymbol, @OptionType, @Strike,
+                @ExpirationUtc, @UnderlyingPrice, @Probability, @NetVote,
+                @MarketSnapshotJson);
+            SELECT last_insert_rowid();
+            """;
+        return await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            sql, decision, transaction, cancellationToken: cancellationToken));
+    }
+
+    public async Task UpdateDecisionOutcomeAsync(
+        long eventId,
+        string outcome,
+        string? riskResult,
+        CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            UPDATE decision_events
+            SET outcome = @outcome, risk_result = COALESCE(@riskResult, risk_result)
+            WHERE id = @eventId
+            """;
+        await using var connection = await OpenAsync(cancellationToken);
+        var changed = await connection.ExecuteAsync(new CommandDefinition(
+            sql, new { eventId, outcome, riskResult }, cancellationToken: cancellationToken));
+        if (changed != 1)
+        {
+            throw new InvalidOperationException($"Decision event {eventId} was not found.");
+        }
     }
 
     public async Task<IReadOnlyDictionary<string, PositionThesis>> PositionThesesAsync(
@@ -129,44 +222,138 @@ public sealed partial class TradingStore
 
         const string sql =
             """
-            SELECT r.option_symbol AS ContractSymbol,
-                   p.thesis AS Thesis,
+            SELECT o.option_symbol AS ContractSymbol, p.thesis AS Thesis,
                    p.thesis_conditions_json AS ConditionsJson
             FROM orders o
-            JOIN decisions d ON d.id = o.decision_id
-            JOIN evaluation_runs r ON r.id = d.run_id
-            JOIN proposal_review_passes p ON p.proposal_id = r.proposal_id
-            WHERE o.mode = @mode
-              AND o.option_symbol IN @contractSymbols
+            JOIN decision_events e ON e.id = o.audit_event_id
+            JOIN proposal_review_passes p ON p.proposal_id = e.proposal_id
+            WHERE o.mode = @mode AND o.option_symbol IN @contractSymbols
               AND p.superseded = 0
             ORDER BY p.id DESC
             """;
-
         await using var connection = await OpenAsync(cancellationToken);
         var rows = await connection.QueryAsync<PositionThesisDbRow>(new CommandDefinition(
             sql, new { mode, contractSymbols }, cancellationToken: cancellationToken));
-
-        return rows
-            .GroupBy(row => row.ContractSymbol, StringComparer.Ordinal)
+        return rows.GroupBy(row => row.ContractSymbol, StringComparer.Ordinal)
             .ToDictionary(
                 group => group.Key,
-                group =>
-                {
-                    var row = group.First();
-                    IReadOnlyList<string> conditions;
-                    try
-                    {
-                        conditions = System.Text.Json.JsonSerializer.Deserialize<string[]>(
-                            row.ConditionsJson) ?? [];
-                    }
-                    catch (System.Text.Json.JsonException)
-                    {
-                        conditions = [];
-                    }
-
-                    return new PositionThesis(row.ContractSymbol, row.Thesis, conditions);
-                },
+                group => new PositionThesis(
+                    group.Key,
+                    group.First().Thesis,
+                    JsonSerializer.Deserialize<string[]>(group.First().ConditionsJson) ?? []),
                 StringComparer.Ordinal);
+    }
+
+    public async Task RecordEquityAsync(
+        long timestampUtc,
+        string mode,
+        decimal equity,
+        decimal cash,
+        CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            INSERT OR REPLACE INTO equity_snapshots (timestamp_utc, mode, equity, cash)
+            VALUES (@timestampUtc, @mode, @equity, @cash)
+            """;
+        await using var connection = await OpenAsync(cancellationToken);
+        await connection.ExecuteAsync(new CommandDefinition(
+            sql, new { timestampUtc, mode, equity, cash }, cancellationToken: cancellationToken));
+    }
+
+    public async Task<IReadOnlyList<AuditEntry>> RecentDecisionsAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            SELECT e.timestamp_utc AS TimestampUtc, e.mode AS Mode,
+                   e.purpose AS Purpose, e.outcome AS Outcome, e.action AS Action,
+                   e.option_symbol AS OptionSymbol, e.reason AS Reason,
+                   e.risk_result AS RiskResult, e.proposal_id AS ProposalId,
+                   (SELECT COUNT(*) FROM agent_tool_calls t
+                    WHERE t.proposal_id = e.proposal_id) AS ToolCallCount,
+                   o.correlation_id AS CorrelationId, o.status AS OrderStatus
+            FROM decision_events e
+            LEFT JOIN orders o ON o.audit_event_id = e.id
+            ORDER BY e.id DESC LIMIT @limit
+            """;
+        await using var connection = await OpenAsync(cancellationToken);
+        var rows = await connection.QueryAsync<AuditEntry>(new CommandDefinition(
+            sql, new { limit }, cancellationToken: cancellationToken));
+        return [.. rows];
+    }
+
+    public async Task<IReadOnlyDictionary<string, long>> AuditRowCountsAsync(
+        CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            SELECT 'war_room_sittings' AS TableName, COUNT(*) AS Rows FROM war_room_sittings
+            UNION ALL SELECT 'proposal_review_passes', COUNT(*) FROM proposal_review_passes
+            UNION ALL SELECT 'agent_tool_calls', COUNT(*) FROM agent_tool_calls
+            UNION ALL SELECT 'decision_events', COUNT(*) FROM decision_events
+            UNION ALL SELECT 'orders', COUNT(*) FROM orders
+            UNION ALL SELECT 'equity_snapshots', COUNT(*) FROM equity_snapshots
+            """;
+        await using var connection = await OpenAsync(cancellationToken);
+        var rows = await connection.QueryAsync<(string TableName, long Rows)>(
+            new CommandDefinition(sql, cancellationToken: cancellationToken));
+        return rows.ToDictionary(row => row.TableName, row => row.Rows, StringComparer.Ordinal);
+    }
+
+    public async Task<IReadOnlyList<AuditIntegrityIssue>> AuditIntegrityAsync(
+        CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            SELECT 'incomplete_sitting' AS Code, proposal_id AS Reference
+            FROM war_room_sittings
+            WHERE status = 'running'
+            UNION ALL
+            SELECT 'missing_review_pass', proposal_id
+            FROM war_room_sittings s
+            WHERE status = 'completed'
+              AND NOT EXISTS (
+                  SELECT 1 FROM proposal_review_passes p
+                  WHERE p.proposal_id = s.proposal_id)
+            UNION ALL
+            SELECT 'missing_sitting_decision', proposal_id
+            FROM war_room_sittings s
+            WHERE status = 'completed'
+              AND NOT EXISTS (
+                  SELECT 1 FROM decision_events e
+                  WHERE e.proposal_id = s.proposal_id)
+            UNION ALL
+            SELECT 'incomplete_tool_call',
+                   proposal_id || ':' || persona || ':' || phase || ':' || call_id
+            FROM agent_tool_calls
+            WHERE status <> 'completed' OR result_json IS NULL
+            UNION ALL
+            SELECT 'unlinked_autonomous_order', correlation_id
+            FROM orders
+            WHERE mode IN ('live', 'dry-run') AND audit_event_id IS NULL
+            UNION ALL
+            SELECT 'missing_order_decision', correlation_id
+            FROM orders o
+            WHERE audit_event_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM decision_events e WHERE e.id = o.audit_event_id)
+            UNION ALL
+            SELECT 'foreign_key_fault',
+                   "table" || ':' || rowid || ':' || parent
+            FROM pragma_foreign_key_check
+            """;
+        await using var connection = await OpenAsync(cancellationToken);
+        var rows = await connection.QueryAsync<AuditIntegrityIssue>(
+            new CommandDefinition(sql, cancellationToken: cancellationToken));
+        return [.. rows];
+    }
+
+    public async Task<long> SchemaVersionAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        return await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            "PRAGMA user_version;", cancellationToken: cancellationToken));
     }
 
     private sealed record PositionThesisDbRow
@@ -175,154 +362,26 @@ public sealed partial class TradingStore
         public string Thesis { get; init; } = "";
         public string ConditionsJson { get; init; } = "[]";
     }
-
-    /// <summary>Records one evaluated contract and returns its id.</summary>
-    public async Task<long> RecordEvaluationAsync(
-        EvaluationRunRow run, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(run);
-
-        const string sql =
-            """
-            INSERT INTO evaluation_runs (
-                timestamp_utc, mode, proposal_id, symbol, current_price, option_symbol,
-                option_type, strike, expiration_utc, market_probability, status,
-                market_snapshot_json)
-            VALUES (
-                @TimestampUtc, @Mode, @ProposalId, @Symbol, @CurrentPrice, @OptionSymbol,
-                @OptionType, @Strike, @ExpirationUtc, @MarketProbability, @Status,
-                @MarketSnapshotJson);
-            SELECT last_insert_rowid();
-            """;
-
-        await using var connection = await OpenAsync(cancellationToken);
-        return await connection.ExecuteScalarAsync<long>(
-            new CommandDefinition(sql, run, cancellationToken: cancellationToken));
-    }
-
-    /// <summary>Records every seat's opinion of one evaluated contract.</summary>
-    public async Task RecordForecastsAsync(
-        IReadOnlyCollection<ForecastRow> forecasts, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(forecasts);
-
-        if (forecasts.Count == 0)
-        {
-            return;
-        }
-
-        const string sql =
-            """
-            INSERT INTO forecasts (
-                run_id, forecaster, vote, probability, confidence, reasoning,
-                evidence_json, created_utc)
-            VALUES (
-                @RunId, @Forecaster, @Vote, @Probability, @Confidence, @Reasoning,
-                @EvidenceJson, @CreatedUtc)
-            """;
-
-        await using var connection = await OpenAsync(cancellationToken);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-
-        await connection.ExecuteAsync(new CommandDefinition(
-            sql, forecasts, transaction, cancellationToken: cancellationToken));
-
-        await transaction.CommitAsync(cancellationToken);
-    }
-
-    /// <summary>Records one decision and returns its id, for the order row to point at.</summary>
-    public async Task<long> RecordDecisionAsync(
-        DecisionRow decision, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(decision);
-
-        const string sql =
-            """
-            INSERT INTO decisions (
-                run_id, combined_probability, market_probability, edge, net_vote,
-                action, reason, risk_result, created_utc)
-            VALUES (
-                @RunId, @CombinedProbability, @MarketProbability, @Edge, @NetVote,
-                @Action, @Reason, @RiskResult, @CreatedUtc);
-            SELECT last_insert_rowid();
-            """;
-
-        await using var connection = await OpenAsync(cancellationToken);
-        return await connection.ExecuteScalarAsync<long>(
-            new CommandDefinition(sql, decision, cancellationToken: cancellationToken));
-    }
-
-    /// <summary>
-    /// The most recent decisions, newest first, joined to their evaluation and order.
-    /// </summary>
-    /// <remarks>
-    /// A LEFT JOIN on orders, deliberately: a rejected decision has no order, and it is
-    /// precisely those rows that show the guardrails doing their job.
-    /// </remarks>
-    public async Task<IReadOnlyList<AuditEntry>> RecentDecisionsAsync(
-        int limit, CancellationToken cancellationToken)
-    {
-        const string sql =
-            """
-            SELECT r.timestamp_utc         AS TimestampUtc,
-                   r.mode                  AS Mode,
-                   r.status                AS Status,
-                   d.action                AS Action,
-                   r.option_symbol         AS OptionSymbol,
-                   d.combined_probability  AS CombinedProbability,
-                   d.market_probability    AS MarketProbability,
-                   d.net_vote              AS NetVote,
-                   d.risk_result           AS RiskResult,
-                   (SELECT COUNT(*) FROM forecasts f WHERE f.run_id = r.id) AS SeatCount,
-                   o.client_order_id       AS ClientOrderId
-            FROM decisions d
-            JOIN evaluation_runs r ON r.id = d.run_id
-            LEFT JOIN orders o ON o.decision_id = d.id
-            ORDER BY d.id DESC
-            LIMIT @limit
-            """;
-
-        await using var connection = await OpenAsync(cancellationToken);
-        var rows = await connection.QueryAsync<AuditEntry>(
-            new CommandDefinition(sql, new { limit }, cancellationToken: cancellationToken));
-
-        return [.. rows];
-    }
-
-    /// <summary>Row counts for the audit tables, for the tests and the operator.</summary>
-    public async Task<IReadOnlyDictionary<string, long>> AuditRowCountsAsync(
-        CancellationToken cancellationToken)
-    {
-        const string sql =
-            """
-            SELECT 'evaluation_runs' AS TableName, COUNT(*) AS Rows FROM evaluation_runs
-            UNION ALL SELECT 'forecasts', COUNT(*) FROM forecasts
-            UNION ALL SELECT 'decisions', COUNT(*) FROM decisions
-            UNION ALL SELECT 'proposal_review_passes', COUNT(*) FROM proposal_review_passes
-            UNION ALL SELECT 'orders', COUNT(*) FROM orders
-            UNION ALL SELECT 'equity_snapshots', COUNT(*) FROM equity_snapshots
-            """;
-
-        await using var connection = await OpenAsync(cancellationToken);
-        var rows = await connection.QueryAsync<(string TableName, long Rows)>(
-            new CommandDefinition(sql, cancellationToken: cancellationToken));
-
-        return rows.ToDictionary(row => row.TableName, row => row.Rows, StringComparer.Ordinal);
-    }
 }
 
-/// <summary>One decision, joined to its evaluation and its order, for reading back.</summary>
 public sealed record AuditEntry
 {
     public long TimestampUtc { get; init; }
     public string Mode { get; init; } = "";
-    public string Status { get; init; } = "";
+    public string Purpose { get; init; } = "";
+    public string Outcome { get; init; } = "";
     public string Action { get; init; } = "";
-    public string OptionSymbol { get; init; } = "";
-    public decimal? CombinedProbability { get; init; }
-    public decimal? MarketProbability { get; init; }
-    public decimal? NetVote { get; init; }
+    public string? OptionSymbol { get; init; }
+    public string? Reason { get; init; }
     public string? RiskResult { get; init; }
-    public long SeatCount { get; init; }
-    public string? ClientOrderId { get; init; }
+    public string? ProposalId { get; init; }
+    public long ToolCallCount { get; init; }
+    public string? CorrelationId { get; init; }
+    public string? OrderStatus { get; init; }
+}
+
+public sealed record AuditIntegrityIssue
+{
+    public string Code { get; init; } = "";
+    public string Reference { get; init; } = "";
 }

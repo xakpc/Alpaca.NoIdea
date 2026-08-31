@@ -11,7 +11,7 @@ namespace Xakpc.Alpaca.NøIdea.Tests;
 /// <remarks>
 /// The rule is one line: <b>the host's list is the seat's toolset</b>. A seat that builds a
 /// tool of its own has broken a live run twice — once with two tools of one name, which
-/// Anthropic refuses outright, and once by reaching the open web from a replay that thought
+/// Anthropic refuses outright, and once by reaching the open web from a historical test that thought
 /// it had passed an empty toolbox.
 /// </remarks>
 public class PersonaToolsTests
@@ -37,8 +37,8 @@ public class PersonaToolsTests
     [Fact]
     public void AHostThatOffersNothingGetsASeatWithNothing()
     {
-        // The replay guarantee, and the whole of it. A live Alpaca call reads today's market
-        // and a web search returns everything published since the replay instant, so a
+        // Historical tests must not receive live tools. A live Alpaca call reads today's market
+        // and a web search returns everything published since the test instant, so a
         // historical run that reaches either looks brilliant for the wrong reason.
         var persona = new TestPersona([]);
 

@@ -1,107 +1,75 @@
 # Project Summary
 
-`Xakpc.Alpaca.NøIdea` is an autonomous AI options trading agent for the Alpaca AI Trading
-Agents Hackathon. One .NET 10 console application finds, evaluates, opens, monitors, and
-closes option positions in an Alpaca **paper** account without human approval for each
-trade. Decisions come from a **war room** of agents running on three different model
-providers: a proposer searches the allowed universe and puts one operation forward, reviewers
-analyse it independently, the room debates, the proposer defends or modifies or withdraws, and
-everyone votes privately. Confidence-weighted votes set the position size, and a deterministic
-`RiskGuard` validates again immediately before submission. The application reaches Alpaca
-through **one read-only MCP connection** for the agents and the typed `Alpaca.Markets` SDK for
-anything that moves money, and it uses SQLite for the full audit trail of proposals, analyses,
-votes, decisions, and orders. The build follows **KISS and YAGNI**: the window is four days, so
-the system builds the simplest thing that meets each requirement. The core design rule is:
-**agents decide what they want to do; deterministic C# decides what they are permitted to do.**
-The MCP security rule is: **LLMs see only a read-only Alpaca MCP toolset, and no MCP server
-this host runs holds an order tool at all.**
+`Xakpc.Alpaca.NøIdea` is a .NET 10 autonomous options trader for an Alpaca paper
+account. It uses current Alpaca market data only. A multi-model war room proposes and reviews
+actions. Deterministic C# owns contract admission, risk limits, order submission, and exits.
+SQLite stores the durable evidence for every sitting, tool call and result, review pass,
+decision, order, and equity snapshot. A failed audit write stops the live session.
 
-## Current state of the code
+```mermaid
+flowchart LR
+    A[Live Alpaca data] --> C[Tradeable catalog]
+    C --> W[War room]
+    W --> R[Risk guard]
+    R --> B[Paper broker]
+    W --> D[(Durable audit)]
+    R --> D
+    B --> D
+```
 
-> Phase 3 was built and measured on branch `phase-3-historical-ml-expert`. **That code is not on this branch**: the
-> model lost to the option price, so only the finding was brought across. The library it
-> leaves behind (the option ladder, the market calendar, the Brier scoring) is worth
-> recovering from that branch when Phase 1 needs it.
+## Current runtime
 
-The repository has an architecture vision document, a working Alpaca MCP container setup, a
-trained Historical ML Expert, and an empty trading host.
+```powershell
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live --dry-run --once --agent stub
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --audit --last 20
+```
 
-| Item | State |
-|---|---|
-| `alpaca-autonomous-options-agent-avd.md` | Revision 4. **Seeded this lode; no longer a source of truth.** Revision 4 records that the war room replaced the weighted combiner (ADR-019) and that the ML expert is excluded (ADR-013). |
-| `src/Xakpc.Alpaca.NøIdea/Program.cs` | Five modes. `--live` runs the war room against the paper account; `--smoke` runs the full order path; `--check-mcp` proves the read-only tool isolation; `--import-history` loads `data/raw` into SQLite; `--replay` runs the offline replay. The trading loop runs. |
-| `src/…/Alpaca/AlpacaClients.cs` | **Done.** Three typed `Alpaca.Markets` clients on `Environments.Paper`. |
-| `src/…/Alpaca/AlpacaMcpClient.cs` + `McpToolCatalog.cs` | **Done.** One read-only MCP connection; 23 research tools are approved. Option-chain discovery tools are excluded because C# owns the catalog. Forbidden tools fail startup. |
-| `src/…/Alpaca/Gateways/` | **Done.** `IMarketDataGateway` and `ITradingGateway` over project-owned records, with the two live SDK implementations and `OccOptionSymbol` (ADR-014). |
-| `src/…/Storage/` | **Done.** The full schema, `TradingStore` (cache, orders, and the audit trail), `RawJsonPages`, `HistoryImporter`, and `BarAvailability` (ADR-015). `proposal_review_passes` keeps every immutable proposal version. The final decision alone can link to an order. `agent_tool_calls` stays empty (ADR-026). |
-| `src/…/Replay/` | **Done.** `ReplayClock`, `ReplayMarketDataGateway`, `ReplayTradingGateway`, `ReplayRunner`, `MarketCalendar`, and `OptionLadder`. |
-| `data/trader.db` | **Populated.** 122,444 bars, 16,088 news items, 195,824 contracts, 151,718 option bars, for 2026-02-01 to 2026-08-28. |
-| `scripts/acquire-news.sh` | **Done.** The paginated news backfill. 25,187 items. The old script captured one page per symbol. |
-| `tests/Xakpc.Alpaca.NøIdea.Tests` | **Done.** 125 tests cover safety, catalog context, headline selection, nearby reviewer contracts, versioned review passes, risk, replay, audit, dry run, and transcripts. |
-| `src/…FeatureGenerator` (branch `phase-3-historical-ml-expert`) | **Done.** Shared library: bar reading, the regular-hours calendar, the contract catalog, the 14 features, and `HistoricalMlExpert`. |
-| `src/…Trainer` (branch `phase-3-historical-ml-expert`) | **Done.** Console: builds 1.36M labelled rows, splits by time, trains SDCA, evaluates, writes the report. |
-| `tests/Trader.Tests` (branch `phase-3-historical-ml-expert`) | **Done.** 46 xUnit tests, including the no-future-leak checks. |
-| `data/historical-model.zip` | **Trained, and measured against the market: it loses.** Test Brier 0.13988 against a 0.24959 base rate, but 0.17142 against the option price's 0.15345 on the same questions. |
-| `data/raw/option-bars/` | 416 files, 94 MB. Near-money call ladders, 2024-01-18 to 2026-08-28. |
-| `src/Xakpc.Alpaca.NøIdea/Dockerfile` | Builds the .NET host together with the pinned MCP server. The host starts stdio children. |
-| `external/alpaca-mcp-server` submodule | Present, pinned. Package version `2.3.0`. |
-| `compose.dev.yaml` + `docker/alpaca-mcp.dev.Dockerfile` | **One** permanent development server on `127.0.0.1:8100`. The trading server was deleted (ADR-001). |
-| `scripts/*.sh` (branch `phase-3-historical-ml-expert`) | Universe screening, history, contracts, and option bars. Deterministic, no LLM. |
-| `data/raw/` | 133 MB of bars and news, 2023-01-03 to 2026-08-28, plus 370 MB of expired option contracts, 2024-01-18 to 2026-08-28. Git-ignored. |
-| `src/…/Trading/` | **Done.** `TradingLoop` builds the complete mechanically valid `TradeableContractCatalog`, compact underlying and headline context, and pending-order-aware capacity. `RiskGuard` performs the final check. |
-| `src/…/Agents/Room/` | **Done.** The proposer gets the full catalog or its size-aware index. Reviewers get nearby contracts and portfolio context. A modified rebuttal creates version 2 and gets a fresh review pass. |
-| `src/…/Agents/` | **Done.** The typed action space and `StubStrategyAgent`. |
-| `src/…/Observability/` | **Done.** `RunEvents`, the permanent `EventId` of each event that tells the story of a run, and `ChatTranscript`, which writes each seat's whole conversation with its model — the prompts, the turns, each tool call with its arguments, each answer, and a tally — under one block of ids per seat (ADR-027). There is no terminal view: the run writes to the console (ADR-024). |
-| Options Evaluator as a separate class | Not implemented. The evaluator's checks live in `RiskGuard.CheckContract`. |
+The host supports `--live`, `--smoke`, `--check-mcp`, and read-only `--audit` operations.
+`--dry-run` replaces only the trading gateway. It still reads live data and writes the audit.
+The host has no data-import or market-simulation operation.
 
-**The strategy is decided by a war room (ADR-019).** A proposer searches the allowed universe
-and puts one operation forward. Reviewers analyse it **independently**, then debate, then the
-proposer may defend, modify or withdraw, then everyone votes **privately**. Confidence-weighted
-votes set the position size; `RiskGuard` then validates again immediately before submission and
-cannot be outvoted.
+## Current storage
 
-One class, `WarRoomSession`, serves both new trades and position reviews. A persona is a class
-rather than a configuration row, and the seats run on **three different models**  --  Claude, GPT
-and Grok  --  because a room of one model arguing with itself shares that model's blind spots. One
-seat, `exposure`, is plain C#: it computes portfolio arithmetic, costs nothing, and cannot
-hallucinate.
+`data/trader.db` starts with schema version `3`. It contains six audit tables:
 
-`TokenLedger` reports what each sitting cost. Token counts are fact; the dollar figure is an
-estimate and a floor.
+- `war_room_sittings`
+- `proposal_review_passes`
+- `agent_tool_calls`
+- `decision_events`
+- `orders`
+- `equity_snapshots`
 
-C# builds an authoritative tradeable contract catalog from all pages of the broad option
-chain. It admits contracts by quote, spread, expiration, duplicate-position, cash, slot, and
-hard-risk rules. It does not use market probability, news, premium rank, or a quality score
-as trade strategy. See [tradeable contract catalog](trading/tradeable-contract-catalog.md).
+It also contains two runtime-state tables:
 
-`--live` runs the loop against the paper account. `--replay --agent llm` runs the same room over
-stored history with **no research tools at all**, because a live tool in a historical run reads
-the present and is a future-data leak.
+- `strategy_state`
+- `position_review_state`
 
-> **The Historical ML Expert does not beat the option price (ADR-013).** It beats ignorance easily, but
-> the market wins in every period, and the wider the two disagree the more wrong the model is.
-> So the cheap filter cannot key on a model-versus-market gap, and the ML expert is not a
-> source of edge. See [model against the market](replay/model-vs-market.md).
->
-> What survives: the ladder-slope market probability (Brier 0.13787, well calibrated) and the
-> measurement machinery that will score the remaining three experts.
+The database does not migrate an obsolete schema. Startup requires an empty file or schema
+version `3`. `data/raw/` remains separate research input and is not read by the live host.
 
-## Competition window
+## Safety contracts
 
-- The official paper account starts at **$100,000**.
-- The P&L window starts **Monday 2026-08-31 at 09:30 ET**.
-- The window formally ends **Friday 2026-09-04 at 09:30 ET**.
-- Alpaca evaluates total equity as of **end of day Thursday 2026-09-03**.
+- Agents have read-only research tools and have no broker tool.
+- The typed Alpaca SDK is the only broker-write path.
+- `RiskGuard` validates every open action after the war-room vote.
+- Open decisions and order reservations commit in one SQLite transaction.
+- Close decisions use the same client-ID reservation and broker reconciliation path as buys.
+- Pending sells block duplicate mandatory and war-room close requests.
+- Policy, review cursors, order lifecycle, prior-close equity, and daily fills survive restart.
+- A risk-reducing close is attempted once even if its first audit write fails. The session
+  stops after that attempt.
+- `--audit` is read-only and returns failure when it finds an incomplete or broken link.
 
-> **Thursday end of day is the effective final portfolio state.** The system must not depend
-> on Friday option-market activity.
+## Current verification
 
-See [competition constraints](operations/competition-constraints.md).
+The solution has 104 passing tests. A live-data dry run on 2026-08-31 read the paper account,
+sent no order, and wrote one hold decision and one equity snapshot. The audit integrity check
+reported no fault.
 
-## Where to look next
+## Related lodes
 
-- [Lode map](lode-map.md) — index of all lode files.
-- [Terminology](terminology.md) — finance and project terms.
-- [Architecture summary](architecture/summary.md) — containers and components.
-- [MCP integration](alpaca/mcp-integration.md) — the two connections and the two gateways.
-- [MVP roadmap](plans/mvp-roadmap.md) — the implementation order.
+- [Lode map](lode-map.md)
+- [Live cycle](trading/live-cycle.md)
+- [Audit schema](storage/schema.md)
+- [Observability](operations/observability.md)
+- [Historical model evidence](research/historical-model-evidence.md)

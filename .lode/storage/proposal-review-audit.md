@@ -1,62 +1,61 @@
 # Proposal Review Audit
 
-The audit keeps each proposal version as an immutable row. A new version does not overwrite
-the reviews for an old version.
+Each war-room sitting gets a globally unique proposal ID. The ID connects model work,
+review evidence, the final decision, and an optional order.
 
 ```mermaid
-flowchart LR
-    A[Proposal ID] --> B[Version 1 review pass]
-    B -->|modified| C[Version 1 superseded]
-    C --> D[Version 2 review pass]
-    D --> E[Final decision]
-    E --> F[Order]
+sequenceDiagram
+    participant Room
+    participant Model
+    participant DB
+    participant Broker
+    Room->>DB: Begin sitting
+    Room->>Model: Analyse, discuss, vote
+    Model->>DB: Store each tool call and result
+    Room->>DB: Store passes and complete sitting
+    Room->>DB: Store decision and reserve order
+    Room->>Broker: Submit order
+    Broker->>DB: Store broker result
 ```
 
-## Contract
+```csharp
+var proposalId = $"proposal-{today:yyyyMMdd}-{Guid.NewGuid():N}";
+```
 
-`proposal_review_passes` has one unique row for the tuple `proposal_id`, `proposal_version`,
-and `review_pass`. The row stores these items:
+## Contracts
 
-- The superseded state and verdict.
-- The selected contract, thesis, and thesis conditions.
-- The complete proposed operation.
-- Independent analyses.
-- Discussion contributions.
-- Private votes.
-- A rejection code when one exists.
+- A proposal ID is unique across process restarts.
+- Every sitting starts before the first model call.
+- Every exit from the room completes the sitting and stores at least one review pass.
+- A modified proposal keeps version 1 as superseded and stores version 2 separately.
+- Tool arguments and results are stored with persona, phase, model, and call ID.
+- Every action becomes a decision event, including hold and rejection.
+- An accepted open and its order reservation use one transaction.
+
+## Failure rule
+
+An audit write throws `AuditPersistenceException`. Agent and cycle catch blocks do not convert
+this exception into a normal hold. `LiveSession` rethrows it and the host exits with failure.
+
+A mandatory close has one exception to write-before-action ordering. If its first audit write
+fails, the host still attempts the risk-reducing close once. It then throws the audit failure
+and stops.
+
+## Thesis recovery
 
 ```sql
-UNIQUE (proposal_id, proposal_version, review_pass)
+SELECT p.thesis, p.thesis_conditions_json
+FROM orders o
+JOIN decision_events e ON e.id = o.audit_event_id
+JOIN proposal_review_passes p ON p.proposal_id = e.proposal_id
+WHERE o.option_symbol = @symbol AND p.superseded = 0;
 ```
 
-An `INSERT OR IGNORE` makes a repeated persistence call safe. It does not edit the first
-recorded evidence.
+Position reviews use the final non-superseded thesis.
 
-## Order link
+## Related lodes
 
-Only `decisions` can link to `orders`. A superseded review pass has no direct order link. The
-final decision reaches its proposal through `evaluation_runs.proposal_id`.
-
-The original thesis of an open position is read with this path:
-
-```text
-orders -> decisions -> evaluation_runs -> final proposal_review_passes row
-```
-
-The query requires `superseded = 0`. A position review therefore receives the thesis and its
-checkable conditions from the executed proposal.
-
-## Invariants
-
-- A modified rebuttal creates version 2 and review pass 2.
-- Version 1 stays in storage with `superseded = 1`.
-- Version 2 gets new analyses, discussion, and votes.
-- A withdrawal and a pre-validation rejection also get a row.
-- No audit failure can authorize or block a trade.
-
-## Related
-
-- [Storage schema](schema.md)
-- [Staged war-room context](../war-room/staged-context.md)
-- [Live cycle](../trading/live-cycle.md)
+- [Schema](schema.md)
+- [War room](../war-room/summary.md)
+- [Position lifecycle](../trading/position-lifecycle.md)
 - [Observability](../operations/observability.md)

@@ -347,6 +347,7 @@ public class WarRoomTests
     private static WarRoomRequest Request() => new()
     {
         ProposalId = "proposal-test-0001",
+        Mode = "test",
         Purpose = WarRoomPurpose.NewTrade,
         AllowedActions = [StrategyActionKind.OpenCall, StrategyActionKind.OpenPut],
         Market = new StrategyContext
@@ -377,7 +378,7 @@ public class WarRoomTests
         public bool ThrowOnRebut { get; set; }
 
         public Task<ProposedOperation> ProposeAsync(
-            StrategyContext market, WarRoomPurpose purpose, PositionUnderReview? position,
+            string proposalId, StrategyContext market, WarRoomPurpose purpose, PositionUnderReview? position,
             IReadOnlyList<StrategyActionKind> allowedActions, CancellationToken cancellationToken) =>
             Task.FromResult(operation);
 
@@ -402,7 +403,7 @@ public class WarRoomTests
         public ModelProvider Provider => ModelProvider.None;
 
         public Task<ProposedOperation> ProposeAsync(
-            StrategyContext m, WarRoomPurpose p, PositionUnderReview? pos,
+            string proposalId, StrategyContext m, WarRoomPurpose p, PositionUnderReview? pos,
             IReadOnlyList<StrategyActionKind> a, CancellationToken t) =>
             Task.FromResult(ProposedOperation.Nothing("the proposer failed"));
 

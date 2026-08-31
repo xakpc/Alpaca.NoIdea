@@ -10,8 +10,9 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
 /// independent.
 /// </remarks>
 public sealed class QuantPersona(
-    ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> researchTools)
-    : LlmPersona(clients, logger, researchTools)
+    ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> researchTools,
+    IWarRoomAuditSink? audit = null)
+    : LlmPersona(clients, logger, researchTools, audit)
 {
     public override string Name => "quant";
 

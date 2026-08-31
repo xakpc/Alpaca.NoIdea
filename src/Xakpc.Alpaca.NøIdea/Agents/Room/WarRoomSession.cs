@@ -7,6 +7,7 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room;
 public sealed record WarRoomRequest
 {
     public required string ProposalId { get; init; }
+    public required string Mode { get; init; }
     public required WarRoomPurpose Purpose { get; init; }
     public required StrategyContext Market { get; init; }
 
@@ -110,7 +111,8 @@ public sealed class WarRoomSession(
     WarRoomOptions options,
     Func<ProposedOperation, WarRoomRequest, string?> preValidate,
     TimeProvider time,
-    ILogger logger)
+    ILogger logger,
+    IWarRoomAuditSink? audit = null)
 {
     private readonly IProposingPersona _proposer = proposer ?? throw new ArgumentNullException(nameof(proposer));
     private readonly IReadOnlyList<IPersona> _reviewers = reviewers ?? throw new ArgumentNullException(nameof(reviewers));
@@ -121,6 +123,7 @@ public sealed class WarRoomSession(
     private readonly TimeProvider _time = time ?? throw new ArgumentNullException(nameof(time));
 
     private readonly ILogger _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    private readonly IWarRoomAuditSink _audit = audit ?? NullWarRoomAuditSink.Instance;
 
     public async Task<WarRoomOutcome> RunAsync(
         WarRoomRequest request, CancellationToken cancellationToken)
@@ -131,9 +134,15 @@ public sealed class WarRoomSession(
         var startedAt = _time.GetUtcNow();
         var deadline = startedAt + _options.Deadline;
 
+        await AuditWriteAsync(
+            () => _audit.BeginSittingAsync(
+                request.ProposalId, request.Mode, request.Purpose,
+                startedAt.ToUnixTimeSeconds(), cancellationToken),
+            $"Could not start audit for {request.ProposalId}.");
+
         // ---- Propose (spec §15). NO_TRADE ends the sitting before any reviewer is paid.
         var operation = await _proposer.ProposeAsync(
-            request.Market, request.Purpose, request.Position, request.AllowedActions,
+            request.ProposalId, request.Market, request.Purpose, request.Position, request.AllowedActions,
             cancellationToken);
 
         CollectCost(ledger, _proposer);
@@ -148,7 +157,7 @@ public sealed class WarRoomSession(
         if (!operation.TradesAnything && request.Purpose == WarRoomPurpose.NewTrade)
         {
             _logger.LogInformation("{Id}: proposer returned NO_TRADE. The room does not sit.", request.ProposalId);
-            return NoProposal(request, operation, ledger);
+            return await CompleteAsync(NoProposal(request, operation, ledger), cancellationToken);
         }
 
         // A review that proposes HOLD is still worth discussing: holding is a decision, and
@@ -156,7 +165,7 @@ public sealed class WarRoomSession(
         if (!operation.TradesAnything && request.Purpose == WarRoomPurpose.PositionReview
             && request.Position is null)
         {
-            return NoProposal(request, operation, ledger);
+            return await CompleteAsync(NoProposal(request, operation, ledger), cancellationToken);
         }
 
         // ---- C# pre-validation (spec §17), before the room spends tokens.
@@ -165,7 +174,8 @@ public sealed class WarRoomSession(
             _logger.LogInformation(
                 RunEvents.ProposalRejectedEarly,
                 "{Id}: pre-validation rejected: {Code}.", request.ProposalId, rejection);
-            return Rejected(request, operation, ledger, rejection);
+            return await CompleteAsync(
+                Rejected(request, operation, ledger, rejection), cancellationToken);
         }
 
         var context = new RoomContext
@@ -211,7 +221,8 @@ public sealed class WarRoomSession(
                 _logger.LogInformation(
                     RunEvents.RebuttalMade,
                     "{Id}: the proposer withdrew after the debate.", request.ProposalId);
-                return Withdrawn(request, answered, ledger, analyses, discussion);
+                return await CompleteAsync(
+                    Withdrawn(request, answered, ledger, analyses, discussion), cancellationToken);
             }
 
             modified = !string.Equals(
@@ -249,7 +260,7 @@ public sealed class WarRoomSession(
                         request.ProposalId, rejectedAfterChange);
 
                     var rejected = Rejected(request, answered, ledger, rejectedAfterChange);
-                    return rejected with
+                    var modifiedRejection = rejected with
                     {
                         ProposalWasModified = true,
                         ReviewPasses =
@@ -267,6 +278,7 @@ public sealed class WarRoomSession(
                             },
                         ],
                     };
+                    return await CompleteAsync(modifiedRejection, cancellationToken);
                 }
 
                 // A changed proposal starts a clean review pass. The old opinions stay in
@@ -320,7 +332,7 @@ public sealed class WarRoomSession(
             Votes = votes,
         };
 
-        return new WarRoomOutcome
+        return await CompleteAsync(new WarRoomOutcome
         {
             ProposalId = request.ProposalId,
             Verdict = tally.SizeMultiplier > 0m ? WarRoomVerdict.Approved : WarRoomVerdict.Rejected,
@@ -332,7 +344,32 @@ public sealed class WarRoomSession(
             Votes = votes,
             ProposalWasModified = modified,
             ReviewPasses = [.. reviewPasses, finalPass],
-        };
+        }, cancellationToken);
+    }
+
+    private async Task<WarRoomOutcome> CompleteAsync(
+        WarRoomOutcome outcome,
+        CancellationToken cancellationToken)
+    {
+        await AuditWriteAsync(
+            () => _audit.CompleteSittingAsync(
+                outcome.ProposalId, outcome.Verdict, outcome.ReviewPasses,
+                _time.GetUtcNow().ToUnixTimeSeconds(), cancellationToken),
+            $"Could not complete audit for {outcome.ProposalId}.");
+        return outcome;
+    }
+
+    private static async Task AuditWriteAsync(Func<Task> write, string message)
+    {
+        try
+        {
+            await write();
+        }
+        catch (Exception error) when (error is not OperationCanceledException
+                                      and not AuditPersistenceException)
+        {
+            throw new AuditPersistenceException(message, error);
+        }
     }
 
     // ------------------------------------------------------------------ phases
@@ -353,7 +390,8 @@ public sealed class WarRoomSession(
                 CollectCost(ledger, reviewer);
                 return analysis;
             }
-            catch (Exception error) when (error is not OperationCanceledException)
+            catch (Exception error) when (error is not OperationCanceledException
+                                          and not AuditPersistenceException)
             {
                 _logger.LogError(error, "{Persona} failed its independent analysis.", reviewer.Name);
                 return PersonaAnalysis.Failed(reviewer.Name, error.Message);
@@ -381,7 +419,8 @@ public sealed class WarRoomSession(
 
             return contribution;
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException
+                                      and not AuditPersistenceException)
         {
             // Skipped, never fatal. A seat that throws must not end the sitting.
             _logger.LogError(error, "{Persona} failed to speak.", reviewer.Name);
@@ -436,7 +475,8 @@ public sealed class WarRoomSession(
             CollectCost(ledger, _proposer);
             return answered;
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException
+                                      and not AuditPersistenceException)
         {
             // A failed rebuttal leaves the original standing. The room still votes on it, so
             // a broken proposer cannot quietly withdraw a proposal it already justified.
@@ -456,7 +496,8 @@ public sealed class WarRoomSession(
                 CollectCost(ledger, reviewer);
                 return vote;
             }
-            catch (Exception error) when (error is not OperationCanceledException)
+            catch (Exception error) when (error is not OperationCanceledException
+                                          and not AuditPersistenceException)
             {
                 _logger.LogError(error, "{Persona} failed to vote.", reviewer.Name);
                 return PersonaVote.Abstained(reviewer.Name, error.Message);

@@ -1,5 +1,17 @@
 # Competition Constraints
 
+```mermaid
+timeline
+    title Effective competition window
+    2026-08-31 09:30 ET : Start
+    2026-09-03 15:30 ET : Forced flatten boundary
+    2026-09-04 09:30 ET : Formal end
+```
+
+```json
+{ "CompetitionFlattenUtc": "2026-09-03T19:30:00Z" }
+```
+
 These items come from the latest official LabLab / Alpaca FAQ supplied for this project.
 
 ## The window and the effective finish line
@@ -30,7 +42,7 @@ choice must be deliberate and tested.** See
 - P&L is important, but P&L is not the only criterion.
 - The judges also evaluate **creativity**, **autonomy**, and **robustness**.
 - **There is no live scoreboard.** Do not build one and do not plan around one.
-- The official result comes from the dedicated live paper account. Historical replay and
+- The official result comes from the dedicated live paper account. Research experiments and
   simulated shocks are **supporting evidence only**, never the score.
 - A graphical user interface is not required.
 
@@ -70,9 +82,9 @@ choice must be deliberate and tested.** See
 | Options trading | All live trade execution uses option contracts. MCP supports single-leg and multi-leg orders. |
 | Basic option data | The system uses real-time latest Indicative quotes and chains through MCP and accepts the historical-data limits. |
 | P&L | The system trades the official paper account. Thursday EOD is the effective final state. |
-| Creativity | The system combines independent numerical and LLM forecasts and measures expert reliability. |
+| Creativity | The system combines independent model reviews with deterministic risk checks. |
 | Autonomy | The system finds, researches, evaluates, opens, monitors, and closes trades without approval. |
-| Robustness | Separate read-only and trading MCP connections, deterministic risk rules, paper-mode enforcement, idempotent orders, restart recovery, stale-data checks, and full persistence. |
+| Robustness | Read-only MCP research, typed SDK trading, deterministic risk rules, paper-mode enforcement, idempotent orders, restart recovery, stale-data checks, and full persistence. |
 | UI not required | A small TUI is used for monitoring only. |
 
 ## References

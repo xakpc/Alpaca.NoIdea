@@ -1,76 +1,34 @@
 # Technology Stack
 
-| Area | Technology | Reason |
-|---|---|---|
-| Runtime | .NET 10 | Good support for console, async I/O, process control, and `TimeProvider`. |
-| Language | C# | The main project language. |
-| Terminal output | `ILogger` to the console | There is no terminal view. Each event that tells the story of a run carries a `RunEvents` id (ADR-024). Spectre.Console stays in the project file, unused, for a later attempt. |
-| AI abstraction | `Microsoft.Extensions.AI` | Gives `IChatClient`, AI tools, and tool invocation. |
-| LLM provider | `Anthropic` (the official C# SDK) | Gives `IChatClient` through `AsIChatClient()`. Hosted provider tools are NOT used: they are shaped differently on each provider, so web research is an MCP server instead (ADR-017). |
-| Agent tool loop | `FunctionInvokingChatClient` | Completes the tool-call loop for the model. |
-| Proposer payload format | `Toon.DotNet` | TOON encodes a uniform array one time as a header and then as rows, in place of a field name in each object. The proposer sends the largest payload and sends it again on each turn of its tool loop (ADR-028). Prompts only: everything stored or read back stays JSON. |
-| MCP client | C# MCP SDK (`ModelContextProtocol`) | Connects the host to two servers: read-only Alpaca, and Keenable for web research. Gives their tools to `IChatClient`. |
-| Alpaca access (deterministic C#) | `Alpaca.Markets` NuGet | Typed REST access for account, orders, market data, and option chains. Returns `decimal` money, so no parsing layer is needed (ADR-001). |
-| Alpaca access (LLM agents) | Alpaca MCP Server, read-only | Bars, quotes, news, option chains, and greeks as MCP tools. One connection (ADR-012). |
-| MCP transport | `HttpClientTransport` in development, `StdioClientTransport` when deployed | A URL selects HTTP, a command selects stdio. Both or neither fails startup. |
-| Numerical ML | ML.NET | Keeps historical prediction in-process in C#. |
-| Initial ML model | `SdcaLogisticRegressionBinaryTrainer` | Simple, fast, calibrated, easy to evaluate. |
-| Database | SQLite | One local file. No server is required. |
-| SQLite driver | `Microsoft.Data.Sqlite` | The ADO.NET provider for SQLite. |
-| SQLite mapping | Dapper | Maps a SQL result to a record. Removes the reader and parameter boilerplate. |
-| Logging | `Microsoft.Extensions.Logging` | The built-in logging is sufficient. |
-| Time | `TimeProvider` | Lets the same code run with live time and replay time. |
-
-## Installed now
-
-```xml
-<PackageReference Include="Alpaca.Markets" Version="7.2.2" />
-<PackageReference Include="Anthropic" Version="12.44.0" />
-<PackageReference Include="Dapper" Version="2.1.79" />
-<PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
-<PackageReference Include="Microsoft.Extensions.AI" Version="10.9.0" />
-<PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.9.0" />
-<PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
-<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.11" />
-<PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.24.1-preview.1" />
-<PackageReference Include="ModelContextProtocol" Version="2.2.0" />
-<PackageReference Include="Spectre.Console" Version="0.57.2" />
+```mermaid
+flowchart LR
+    N[.NET 10] --> H[Console host]
+    AI[Microsoft.Extensions.AI] --> H
+    AP[Alpaca.Markets] --> H
+    MC[Model Context Protocol] --> H
+    SQ[SQLite and Dapper] --> H
+    X[xUnit] --> H
 ```
 
-The container-tools package supports the Visual Studio tooling and is not part of the trading
-architecture. The `Anthropic` package carries `Microsoft.Extensions.AI.Abstractions`, so the
-Claude seats and the OpenAI-protocol seats give the same `IChatClient` to the war room.
+| Need | Choice | Reason |
+|---|---|---|
+| Runtime | .NET 10, C# | Typed async host and records. |
+| Broker and market | `Alpaca.Markets` | Typed paper-account API. |
+| Model abstraction | `Microsoft.Extensions.AI` | One `IChatClient` contract. |
+| Research tools | MCP | Discoverable read-only tools. |
+| Storage | SQLite and Dapper | Small durable store with visible SQL. |
+| Logging | `Microsoft.Extensions.Logging` | Structured console events. |
+| Tests | xUnit | Fast deterministic suite. |
 
-The Alpaca MCP server submodule (`external/alpaca-mcp-server`) and its Docker image exist and
-run. The old Alpaca CLI binary is at `cli_0.0.14_windows_amd64/alpaca.exe`. **No application
-code calls it** (ADR-001); it is for humans and offline scripts.
+```xml
+<TargetFramework>net10.0</TargetFramework>
+```
 
-## Rejected technology
+The project does not use an ORM, a hosted web UI, a second broker abstraction, or a runtime
+historical-data engine.
 
-- **Semantic Kernel** — The required LLM flow is small. `Microsoft.Extensions.AI` and the
-  MCP SDK give the same behavior with less framework code. This also reduces experimental
-  API risk (ADR-002).
-- **Alpaca CLI, as an application dependency** — the CLI is capable (`--jq` extracts a
-  scalar, `--schema` prints the response shape, `order get-by-client-id` is a first-class
-  command), but it is a process per call with stdout parsing and no typed error model. The
-  `Alpaca.Markets` SDK gives deterministic C# the same data already typed (ADR-001). The CLI
-  stays for humans and offline scripts.
-- **A trading MCP connection** — deleted. Once deterministic C# moved to the SDK, the second
-  server had no consumer, and removing it means no MCP server this host runs holds an order
-  tool. That is a stronger isolation claim than the toolset split it replaces (ADR-006).
-- **The Anthropic SDK server-side MCP connector** (`mcp_toolset` /
-  `BetaRequestMcpServerUrlDefinition`) — it makes Anthropic's infrastructure dial the MCP
-  server by URL. Ours binds to `127.0.0.1` without authentication and is a stdio child when
-  deployed, so it is unreachable either way. Decisively, it would hand the model the entire
-  discovered toolset and remove `McpToolCatalog`, which is control 2 of the defence in depth.
-- **Claude Agent SDK process** — A separate agent process is not required.
-- **A full ORM** (Entity Framework, NHibernate) — The project writes its own SQL and maps
-  the result with Dapper. Change tracking, migrations, and query translation are not needed
-  for this data volume (ADR-004).
+## Related lodes
 
-The full reasoning is in [architecture decisions](decisions.md).
-
-## Related
-
-- [LLM stack](../llm/llm-stack.md)
-- [MCP integration](../alpaca/mcp-integration.md)
+- [Practices](../practices.md)
+- [Architecture decisions](decisions.md)
+- [Application structure](application-structure.md)

@@ -19,9 +19,8 @@ namespace Xakpc.Alpaca.NøIdea.Alpaca.Gateways;
 /// strike is exact in decimal and is not in double.
 /// </para>
 /// <para>
-/// Both the live chain and the replay chain need this. Live, Alpaca returns the contract
-/// symbol as a chain key with no parsed parts; in replay, the option bar map is keyed by the
-/// same string.
+/// Alpaca returns the contract symbol as a chain key with no parsed parts. This parser gives
+/// the live loop and the durable audit one interpretation of strike and expiration.
 /// </para>
 /// </remarks>
 public readonly record struct OccOptionSymbol(

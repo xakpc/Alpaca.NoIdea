@@ -283,6 +283,7 @@ public interface IProposingPersona : IPersona
     /// <c>NO_TRADE</c>.
     /// </summary>
     Task<ProposedOperation> ProposeAsync(
+        string proposalId,
         StrategyContext market,
         WarRoomPurpose purpose,
         PositionUnderReview? position,

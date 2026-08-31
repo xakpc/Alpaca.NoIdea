@@ -1,8 +1,8 @@
 using Microsoft.Extensions.Logging;
 using Xakpc.Alpaca.NøIdea.Agents;
+using Xakpc.Alpaca.NøIdea.Agents.Room;
 using Xakpc.Alpaca.NøIdea.Alpaca.Gateways;
 using Xakpc.Alpaca.NøIdea.Observability;
-using Xakpc.Alpaca.NøIdea.Replay;
 using Xakpc.Alpaca.NøIdea.Storage;
 
 namespace Xakpc.Alpaca.NøIdea.Trading;
@@ -13,6 +13,7 @@ public sealed record CycleResult
     public required DateTimeOffset AtUtc { get; init; }
     public int CandidatesOffered { get; init; }
     public int PositionsClosed { get; init; }
+    public int CloseOrdersSubmitted { get; init; }
     public int OrdersSubmitted { get; init; }
     public int ActionsRejected { get; init; }
     public bool PolicyRevised { get; init; }
@@ -20,7 +21,7 @@ public sealed record CycleResult
 }
 
 /// <summary>
-/// One pass of the trading cycle. The same code runs live and in replay.
+/// One pass of the live-data trading cycle.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -30,8 +31,7 @@ public sealed record CycleResult
 /// exceed a hard limit. The agent sits in the middle and only ever produces data.
 /// </para>
 /// <para>
-/// Live and replay differ only in which gateways and which agent are injected. There is no
-/// mode flag inside this class, because a branch on mode is how the two paths drift apart.
+/// A dry run uses the same market-data path and replaces only the trading gateway.
 /// </para>
 /// </remarks>
 public sealed class TradingLoop(
@@ -64,10 +64,12 @@ public sealed class TradingLoop(
     private readonly PositionReviewTriggers? _triggers =
         agent is IPositionReviewer ? new PositionReviewTriggers(new ReviewTriggerOptions(), time) : null;
 
-    private readonly Dictionary<DateOnly, int> _openedPerDay = [];
-    private readonly Dictionary<DateOnly, decimal> _dayOpeningEquity = [];
-
     private StrategyPolicy _policy = new();
+    private OrderCoordinator? _orderCoordinator;
+    private bool _initialized;
+    private bool _startupOrdersReconciled;
+    private DateOnly? _fallbackBaselineDate;
+    private decimal? _fallbackDayOpeningEquity;
 
     /// <summary>
     /// The policy in force. The agent revises it; the setter clamps it.
@@ -86,55 +88,133 @@ public sealed class TradingLoop(
     /// <summary>The symbols the loop looks at each cycle.</summary>
     public IReadOnlyList<string> TrackedSymbols => _tradingOptions.TrackedSymbols;
 
-    /// <summary>The mode string written to the audit trail: <c>live</c> or <c>replay</c>.</summary>
+    /// <summary>The mode string written to the audit trail: <c>live</c> or <c>dry-run</c>.</summary>
     public required string Mode { get; init; }
+
+    /// <summary>Loads durable runtime state and reconciles outstanding orders once.</summary>
+    public async Task InitializeAsync(CancellationToken cancellationToken)
+    {
+        if (_initialized)
+        {
+            return;
+        }
+
+        try
+        {
+            if (await _store.LoadPolicyAsync(Mode, cancellationToken) is { } policy)
+            {
+                _policy = policy.ClampTo(_riskOptions);
+            }
+            if (_triggers is not null)
+            {
+                foreach (var state in await _store.LoadPositionReviewStateAsync(Mode, cancellationToken))
+                {
+                    _triggers.Restore(
+                        state.OptionSymbol, state.LastReviewedUtc, state.LastNewsSeen);
+                }
+            }
+        }
+        catch (Exception error) when (error is not OperationCanceledException
+                                      and not AuditPersistenceException)
+        {
+            throw new AuditPersistenceException("Could not restore durable trading state.", error);
+        }
+
+        _orderCoordinator = new OrderCoordinator(
+            _trading, _store, _time, _logger, Mode);
+        await _orderCoordinator.ReconcileAndListPendingAsync(
+            replayMissingSells: true, cancellationToken);
+        _startupOrdersReconciled = true;
+        _initialized = true;
+    }
 
     public async Task<CycleResult> RunCycleAsync(CancellationToken cancellationToken)
     {
+        await InitializeAsync(cancellationToken);
         var now = _time.GetUtcNow();
-        var today = DateOnly.FromDateTime(now.UtcDateTime);
+        var todayEastern = MarketCalendar.ToEastern(now).Date;
+        var dayStartUtc = MarketCalendar.ToUtc(todayEastern);
 
         // 1. Account state. Alpaca is the source of truth, never SQLite.
         var account = await _trading.GetAccountAsync(cancellationToken);
         var positions = await _trading.ListPositionsAsync(cancellationToken);
-        var pendingOrders = await _trading.ListOpenOrdersAsync(cancellationToken);
-
-        if (account.IsTradingBlocked || account.IsAccountBlocked)
-        {
-            _logger.LogError("Trading is blocked on the account. Skipping the cycle.");
-            return new CycleResult { AtUtc = now, Equity = account.Equity };
-        }
-
-        if (!_dayOpeningEquity.ContainsKey(today))
-        {
-            _dayOpeningEquity[today] = account.Equity;
-        }
+        var pendingOrders = await _orderCoordinator!.ReconcileAndListPendingAsync(
+            replayMissingSells: !_startupOrdersReconciled, cancellationToken);
+        _startupOrdersReconciled = false;
+        var dailyOrders = await _trading.ListOrdersSinceAsync(dayStartUtc, cancellationToken);
+        var openedToday = dailyOrders
+            .Where(order => order.IsBuy && order.FilledQuantity > 0)
+            .Select(order => string.IsNullOrWhiteSpace(order.ClientOrderId)
+                ? order.BrokerOrderId ?? order.ContractSymbol
+                : order.ClientOrderId)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
 
         // 2. Deterministic exits, BEFORE the agent is consulted. A stop-loss must not depend
         //    on a model answering.
-        var closed = await ManageOpenPositionsAsync(positions, cancellationToken);
+        var mandatory = await ManageOpenPositionsAsync(
+            positions, pendingOrders, cancellationToken);
+        var closed = mandatory.ConfirmedClosed;
+        var closeSubmitted = mandatory.Submitted;
+        var rejected = mandatory.Rejected;
+
+        if (mandatory.AttemptedSymbols.Count > 0)
+        {
+            positions = await _trading.ListPositionsAsync(cancellationToken);
+            pendingOrders = await _orderCoordinator.ReconcileAndListPendingAsync(
+                replayMissingSells: false, cancellationToken);
+            account = await _trading.GetAccountAsync(cancellationToken);
+        }
+
+        if (account.IsTradingBlocked || account.IsAccountBlocked
+            || account.OptionsTradingLevel is null or <= 0)
+        {
+            var reason = account.IsTradingBlocked || account.IsAccountBlocked
+                ? "trading is blocked on the account"
+                : "options trading is disabled on the account";
+            _logger.LogError("{Reason}. Mandatory exits were handled; skipping model work.", reason);
+            await RecordDecisionAsync(
+                StrategyAction.Hold(reason), null,
+                "cycle", "held", "account restricted", reason, cancellationToken);
+            await RecordEquityAsync(account, cancellationToken);
+            return new CycleResult
+            {
+                AtUtc = now,
+                PositionsClosed = closed,
+                CloseOrdersSubmitted = closeSubmitted,
+                ActionsRejected = rejected,
+                Equity = account.Equity,
+            };
+        }
 
         // 2b. War-room position review (spec §10, §11). Runs only where a trigger fired and
         //     only after the hard exits, so a stop-loss never waits on a model answering.
         if (_reviewer is not null && _triggers is not null)
         {
-            closed += await ReviewPositionsAsync(
-                positions, pendingOrders, account, cancellationToken);
-        }
-        if (closed > 0)
-        {
-            positions = await _trading.ListPositionsAsync(cancellationToken);
-            account = await _trading.GetAccountAsync(cancellationToken);
+            var reviewed = await ReviewPositionsAsync(
+                positions, pendingOrders, mandatory.AttemptedSymbols, account, cancellationToken);
+            closed += reviewed.ConfirmedClosed;
+            closeSubmitted += reviewed.Submitted;
+            rejected += reviewed.Rejected;
+            if (reviewed.AttemptedSymbols.Count > 0)
+            {
+                positions = await _trading.ListPositionsAsync(cancellationToken);
+                pendingOrders = await _orderCoordinator.ReconcileAndListPendingAsync(
+                    replayMissingSells: false, cancellationToken);
+                account = await _trading.GetAccountAsync(cancellationToken);
+            }
         }
 
+        var dayOpeningEquity = ResolveDayOpeningEquity(
+            DateOnly.FromDateTime(todayEastern), account, positions, dailyOrders);
         var snapshot = new RiskSnapshot
         {
             Equity = account.Equity,
             Cash = account.Cash,
-            DayOpeningEquity = _dayOpeningEquity[today],
+            DayOpeningEquity = dayOpeningEquity,
             OpenPositions = positions.Count,
             OpenPositionCost = positions.Sum(p => p.AverageEntryPrice * Math.Abs(p.Quantity) * 100m),
-            PositionsOpenedToday = _openedPerDay.GetValueOrDefault(today),
+            PositionsOpenedToday = openedToday,
             PendingOpenPositions = pendingOrders
                 .Where(order => order.IsBuy && order.RemainingQuantity > 0)
                 .Select(order => order.ContractSymbol)
@@ -149,7 +229,17 @@ public sealed class TradingLoop(
                 .All(order => order.RemainingNotional is not null),
         };
 
-        var halted = _riskGuard.NewPositionsHalted(snapshot);
+        var newPositionVerdict = _riskGuard.CanConsiderNewPositions(snapshot);
+        var halted = !newPositionVerdict.Allowed;
+
+        if (halted)
+        {
+            _logger.LogWarning(
+                "New positions halted before catalog build: {Reason}. "
+                + "Equity {Equity:N2}, day baseline {Baseline:N2}, pending risk known {PendingRiskKnown}.",
+                newPositionVerdict.Reason, snapshot.Equity, snapshot.DayOpeningEquity,
+                snapshot.PendingRiskKnown);
+        }
 
         // 3. Mechanical filter. Every row is executable under current hard constraints.
         //    C# does not decide if its probability, premium, or thesis is attractive.
@@ -205,18 +295,22 @@ public sealed class TradingLoop(
             RecentOutcomes = [],
             RemainingPositionSlots = freeSlots,
             NewPositionsHalted = halted,
+            NewPositionsHaltReason = halted ? newPositionVerdict.Reason : null,
         };
 
         StrategyDecision decision;
         try
         {
             decision = await _agent.DecideAsync(context, cancellationToken);
-            await RecordReviewPassesAsync(_agent as IExplainsDecision, cancellationToken);
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException
+                                      and not AuditPersistenceException)
         {
             // Fail closed: an agent fault skips the cycle. It never opens a position.
             _logger.LogError(error, "The agent failed. Skipping new positions this cycle.");
+            await RecordDecisionAsync(
+                StrategyAction.Hold($"the agent failed: {error.Message}"), null,
+                "new-trade", "held", "agent failure", null, cancellationToken);
             return new CycleResult
             {
                 AtUtc = now,
@@ -241,12 +335,20 @@ public sealed class TradingLoop(
                     clamped.TakeProfitFraction, clamped.StopLossFraction, clamped.Rationale);
             }
 
+            try
+            {
+                await _store.SavePolicyAsync(Mode, clamped, _time.GetUtcNow(), cancellationToken);
+            }
+            catch (Exception error) when (error is not OperationCanceledException
+                                          and not AuditPersistenceException)
+            {
+                throw new AuditPersistenceException("Could not store the active strategy policy.", error);
+            }
             _policy = clamped;
         }
 
         // 6. Every action through the risk guard, then execute.
         var submitted = 0;
-        var rejected = 0;
 
         foreach (var action in decision.Actions)
         {
@@ -260,23 +362,24 @@ public sealed class TradingLoop(
                     // shows a cycle that does nothing and explains nothing, which reads as a
                     // broken agent rather than a working one with nothing to do.
                     _logger.LogInformation(RunEvents.Hold, "{Why}", action.Reasoning);
+                    await RecordDecisionAsync(
+                        action, null, "new-trade", "held", "hold", null, cancellationToken);
                     break;
 
                 case StrategyActionKind.ClosePosition:
-                    if (await TryCloseAsync(action, positions, cancellationToken))
+                    if (await TryCloseAsync(action, positions, pendingOrders, cancellationToken)
+                        is { } closeResult)
                     {
-                        closed++;
-                    }
-                    else
-                    {
-                        rejected++;
+                        closeSubmitted += closeResult.Submitted;
+                        closed += closeResult.ConfirmedClosed;
+                        rejected += closeResult.Rejected;
                     }
 
                     break;
 
                 case StrategyActionKind.OpenCall:
                 case StrategyActionKind.OpenPut:
-                    if (await TryOpenAsync(action, catalog, snapshot, today, cancellationToken))
+                    if (await TryOpenAsync(action, catalog, snapshot, cancellationToken))
                     {
                         submitted++;
                         snapshot = snapshot with { OpenPositions = snapshot.OpenPositions + 1 };
@@ -298,6 +401,7 @@ public sealed class TradingLoop(
             AtUtc = now,
             CandidatesOffered = catalog.Count,
             PositionsClosed = closed,
+            CloseOrdersSubmitted = closeSubmitted,
             OrdersSubmitted = submitted,
             ActionsRejected = rejected,
             PolicyRevised = revised,
@@ -307,13 +411,23 @@ public sealed class TradingLoop(
 
     // ------------------------------------------------------------------ exits
 
-    private async Task<int> ManageOpenPositionsAsync(
-        IReadOnlyList<PositionState> positions, CancellationToken cancellationToken)
+    private async Task<CloseBatchResult> ManageOpenPositionsAsync(
+        IReadOnlyList<PositionState> positions,
+        IReadOnlyList<OrderState> pendingOrders,
+        CancellationToken cancellationToken)
     {
-        var closed = 0;
+        var result = new CloseBatchResult();
 
         foreach (var position in positions)
         {
+            if (HasPendingClose(position.Symbol, pendingOrders))
+            {
+                _logger.LogInformation(
+                    "A close for {Symbol} is already pending. No duplicate close was sent.",
+                    position.Symbol);
+                continue;
+            }
+
             var reason = _riskGuard.MandatoryExitReason(position, Policy, position.CurrentPrice);
             if (reason is null)
             {
@@ -327,8 +441,23 @@ public sealed class TradingLoop(
 
             try
             {
-                await _trading.ClosePositionAsync(position.Symbol, cancellationToken);
-                closed++;
+                var submitted = await CloseWithAuditAsync(
+                    new StrategyAction
+                    {
+                        Kind = StrategyActionKind.ClosePosition,
+                        ContractSymbol = position.Symbol,
+                        Contracts = Math.Abs(position.Quantity),
+                        Reasoning = reason,
+                    },
+                    position,
+                    "mandatory-exit",
+                    reason,
+                    cancellationToken);
+                result = result.Add(position.Symbol, submitted.Order);
+            }
+            catch (AuditPersistenceException)
+            {
+                throw;
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
@@ -337,24 +466,40 @@ public sealed class TradingLoop(
             }
         }
 
-        return closed;
+        return result;
     }
 
-    private async Task<bool> TryCloseAsync(
-        StrategyAction action, IReadOnlyList<PositionState> positions, CancellationToken cancellationToken)
+    private async Task<CloseBatchResult?> TryCloseAsync(
+        StrategyAction action,
+        IReadOnlyList<PositionState> positions,
+        IReadOnlyList<OrderState> pendingOrders,
+        CancellationToken cancellationToken)
     {
         if (action.ContractSymbol is not { } symbol
-            || positions.All(p => !string.Equals(p.Symbol, symbol, StringComparison.Ordinal)))
+            || positions.FirstOrDefault(p => string.Equals(p.Symbol, symbol, StringComparison.Ordinal))
+                is not { } position)
         {
             _logger.LogWarning(
                 "The agent asked to close {Symbol}, which is not an open position. Ignored.",
                 action.ContractSymbol ?? "(none)");
-            return false;
+            await RecordDecisionAsync(
+                action, null, "position-review", "rejected", "position", "not open",
+                cancellationToken);
+            return new CloseBatchResult { Rejected = 1 };
+        }
+
+        if (HasPendingClose(symbol, pendingOrders))
+        {
+            await RecordPositionDecisionAsync(
+                action, position, "position-review", "held", "close pending",
+                "a sell order is already pending", cancellationToken);
+            return new CloseBatchResult();
         }
 
         _logger.LogInformation("Closing {Symbol} on the agent's request: {Why}", symbol, action.Reasoning);
-        await _trading.ClosePositionAsync(symbol, cancellationToken);
-        return true;
+        var submitted = await CloseWithAuditAsync(
+            action, position, "position-review", action.Reasoning, cancellationToken);
+        return new CloseBatchResult().Add(symbol, submitted.Order);
     }
 
 
@@ -366,13 +511,14 @@ public sealed class TradingLoop(
     /// the room proposes, the room votes, and only an approved close reaches the broker. A
     /// position that fails to review is simply left alone, still guarded by the hard exits.
     /// </remarks>
-    private async Task<int> ReviewPositionsAsync(
+    private async Task<CloseBatchResult> ReviewPositionsAsync(
         IReadOnlyList<PositionState> positions,
         IReadOnlyList<OrderState> pendingOrders,
+        IReadOnlySet<string> excludedSymbols,
         AccountState account,
         CancellationToken cancellationToken)
     {
-        var closed = 0;
+        var result = new CloseBatchResult();
         var now = _time.GetUtcNow();
         var portfolio = await BuildPortfolioPositionsAsync(positions, cancellationToken);
         IReadOnlyList<NewsItem>? headlineIndex = null;
@@ -381,6 +527,12 @@ public sealed class TradingLoop(
         foreach (var position in positions)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (excludedSymbols.Contains(position.Symbol)
+                || HasPendingClose(position.Symbol, pendingOrders))
+            {
+                continue;
+            }
 
             int? daysToExpiration = OccOptionSymbol.TryParse(position.Symbol, out var parsed)
                 ? parsed.Expiration.DayNumber - DateOnly.FromDateTime(now.UtcDateTime).DayNumber
@@ -444,24 +596,44 @@ public sealed class TradingLoop(
                         [.. underlyingSnapshots.Values], headlineIndex, now),
                     position, trigger.ToString(), unrealizedFraction, daysToExpiration,
                     cancellationToken);
-                await RecordReviewPassesAsync(_agent as IExplainsDecision, cancellationToken);
             }
-            catch (Exception error) when (error is not OperationCanceledException)
+            catch (Exception error) when (error is not OperationCanceledException
+                                          and not AuditPersistenceException)
             {
                 // A failed review leaves the position alone. It is still covered by the hard
                 // exits, so a broken room cannot strand a position without protection.
                 _logger.LogError(error, "The review of {Symbol} failed. Holding.", position.Symbol);
-                _triggers.MarkReviewed(position.Symbol, newsCount);
+                await RecordPositionDecisionAsync(
+                    StrategyAction.Hold($"the review failed: {error.Message}"), position,
+                    "position-review", "held", "review failure", trigger.ToString(),
+                    cancellationToken);
+                await MarkReviewedAsync(position.Symbol, newsCount, cancellationToken);
                 continue;
             }
 
-            _triggers.MarkReviewed(position.Symbol, newsCount);
+            await MarkReviewedAsync(position.Symbol, newsCount, cancellationToken);
 
-            foreach (var action in decision.Actions
-                         .Where(item => item.Kind == StrategyActionKind.ClosePosition))
+            if (decision.RevisedPolicy is { } revisedPolicy)
             {
-                if (!string.Equals(action.ContractSymbol, position.Symbol, StringComparison.Ordinal))
+                await ApplyPolicyAsync(revisedPolicy, cancellationToken);
+            }
+
+            foreach (var action in decision.Actions)
+            {
+                if (action.Kind == StrategyActionKind.Hold)
                 {
+                    await RecordPositionDecisionAsync(
+                        action, position, "position-review", "held", "review", trigger.ToString(),
+                        cancellationToken);
+                    continue;
+                }
+
+                if (action.Kind != StrategyActionKind.ClosePosition
+                    || !string.Equals(action.ContractSymbol, position.Symbol, StringComparison.Ordinal))
+                {
+                    await RecordPositionDecisionAsync(
+                        action, position, "position-review", "rejected", "position",
+                        "the review can only hold or close the reviewed position", cancellationToken);
                     continue;
                 }
 
@@ -470,8 +642,13 @@ public sealed class TradingLoop(
 
                 try
                 {
-                    await _trading.ClosePositionAsync(position.Symbol, cancellationToken);
-                    closed++;
+                    var submitted = await CloseWithAuditAsync(
+                        action, position, "position-review", action.Reasoning, cancellationToken);
+                    result = result.Add(position.Symbol, submitted.Order);
+                }
+                catch (AuditPersistenceException)
+                {
+                    throw;
                 }
                 catch (Exception error) when (error is not OperationCanceledException)
                 {
@@ -480,7 +657,7 @@ public sealed class TradingLoop(
             }
         }
 
-        return closed;
+        return result;
     }
 
     /// <summary>
@@ -538,7 +715,6 @@ public sealed class TradingLoop(
         StrategyAction action,
         IReadOnlyList<TradeableContractView> candidates,
         RiskSnapshot snapshot,
-        DateOnly today,
         CancellationToken cancellationToken)
     {
         // The contract must be one the harness offered this cycle. A symbol the agent
@@ -548,9 +724,12 @@ public sealed class TradingLoop(
 
         if (candidate is null)
         {
+            var reason = $"{action.ContractSymbol ?? "(none)"} was not offered this cycle";
             _logger.LogWarning(
                 "The agent asked for {Symbol}, which was not offered this cycle. Rejected.",
                 action.ContractSymbol ?? "(none)");
+            await RecordDecisionAsync(
+                action, null, "new-trade", "rejected", "catalog", reason, cancellationToken);
             return false;
         }
 
@@ -562,7 +741,9 @@ public sealed class TradingLoop(
                 RunEvents.RiskRejected,
                 "The agent asked to {Kind} but {Symbol} is a {Type}. Rejected.",
                 action.Kind, candidate.Contract.ContractSymbol, candidate.Contract.OptionType);
-            await AuditAsync(action, candidate, "rejected", "contract type", mismatch, cancellationToken);
+            await RecordDecisionAsync(
+                action, candidate, "new-trade", "rejected", "contract type", mismatch,
+                cancellationToken);
             return false;
         }
 
@@ -572,45 +753,18 @@ public sealed class TradingLoop(
             _logger.LogInformation(
                 RunEvents.RiskRejected,
                 "Risk rejected {Symbol}: {Reason}.", candidate.Contract.ContractSymbol, verdict.Reason);
-            await AuditAsync(action, candidate, "rejected", "risk guard", verdict.Reason, cancellationToken);
+            await RecordDecisionAsync(
+                action, candidate, "new-trade", "rejected", "risk guard", verdict.Reason,
+                cancellationToken);
             return false;
         }
 
-        // The decision is durable before the order is. If the reserve or the submit then
-        // fails, the audit still explains what the system meant to do and why.
-        var decisionId = await AuditAsync(
-            action, candidate, "accepted", "allowed", verdict.Reason, cancellationToken);
-
-        // Reserve the client order id BEFORE submitting. If the submit then fails with an
-        // uncertain result the id is already durable, so recovery asks the broker what
-        // happened instead of sending a second order.
         var clientOrderId = $"{Mode}-{Guid.NewGuid():N}"[..32];
-        var limitPrice = decimal.Round(candidate.Contract.ReferencePrice, 2);
+        var limitPrice = decimal.Round(candidate.Contract.Ask!.Value, 2);
 
-        try
-        {
-            await _store.ReserveAsync(new OrderRecord
-            {
-                ClientOrderId = clientOrderId,
-                OptionSymbol = candidate.Contract.ContractSymbol,
-                Side = "Buy",
-                Quantity = action.Contracts,
-                OrderType = "Limit",
-                LimitPrice = limitPrice,
-                SubmittedUtc = _time.GetUtcNow().ToUnixTimeSeconds(),
-                Status = "reserved",
-                Mode = Mode,
-                DecisionId = decisionId,
-            }, cancellationToken);
-        }
-        catch (Exception error) when (error is not OperationCanceledException)
-        {
-            // A failed write means no durable id, so no order. Fail closed.
-            _logger.LogError(error, "Could not reserve an order id. Not submitting.");
-            return false;
-        }
-
-        var order = await _trading.SubmitOrderAsync(
+        var submitted = await _orderCoordinator!.SubmitAsync(
+            BuildDecision(
+                action, candidate, "new-trade", "accepted", "allowed", verdict.Reason),
             new OrderRequest
             {
                 ClientOrderId = clientOrderId,
@@ -619,20 +773,19 @@ public sealed class TradingLoop(
                 IsBuy = true,
                 LimitPrice = limitPrice,
             },
+            riskReducing: false,
             cancellationToken);
 
-        await _store.RecordResultAsync(
-            clientOrderId, order.BrokerOrderId, order.RawStatus, null, cancellationToken);
+        var order = submitted.Order;
 
-        if (order.Lifecycle == OrderLifecycle.Rejected)
+        if (order.Lifecycle is OrderLifecycle.Rejected
+            or OrderLifecycle.Canceled or OrderLifecycle.Expired)
         {
             _logger.LogWarning(
                 "{Symbol} was rejected by the broker: {Status}.",
                 candidate.Contract.ContractSymbol, order.RawStatus);
             return false;
         }
-
-        _openedPerDay[today] = _openedPerDay.GetValueOrDefault(today) + 1;
 
         _logger.LogInformation(
             RunEvents.OrderDecided,
@@ -646,103 +799,214 @@ public sealed class TradingLoop(
 
     // ------------------------------------------------------------------ audit
 
-    /// <summary>
-    /// Records one evaluated contract, every seat's opinion of it, and the verdict.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Called for a rejected action as well as an accepted one. A stored history of trades
-    /// alone cannot show that a risk rule ever fired, and the rejections are the evidence
-    /// that the guardrails work.
-    /// </para>
-    /// <para>
-    /// <b>A failed write never stops a trade.</b> The audit describes the decision; it does
-    /// not take part in it. Losing a row is bad, and refusing to trade because a disk is full
-    /// is worse — so this returns null and the caller carries on.
-    /// </para>
-    /// </remarks>
-    private async Task<long?> AuditAsync(
+    private async Task<long> RecordDecisionAsync(
         StrategyAction action,
-        TradeableContractView candidate,
-        string status,
+        TradeableContractView? candidate,
+        string purpose,
+        string outcome,
         string riskRule,
-        string riskDetail,
+        string? riskDetail,
         CancellationToken cancellationToken)
     {
         try
         {
-            var now = _time.GetUtcNow().ToUnixTimeSeconds();
-            var contract = candidate.Contract;
-            var explains = _agent as IExplainsDecision;
-
-            var runId = await _store.RecordEvaluationAsync(
-                new EvaluationRunRow
-                {
-                    TimestampUtc = now,
-                    Mode = Mode,
-                    ProposalId = explains?.LastProposalId,
-                    Symbol = contract.Underlying,
-                    CurrentPrice = candidate.UnderlyingPrice,
-                    OptionSymbol = contract.ContractSymbol,
-                    OptionType = contract.OptionType,
-                    Strike = contract.Strike,
-                    ExpirationUtc = new DateTimeOffset(
-                        contract.Expiration.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
-                        .ToUnixTimeSeconds(),
-                    MarketProbability = null,
-                    Status = status,
-                    MarketSnapshotJson = System.Text.Json.JsonSerializer.Serialize(new
-                    {
-                        contract.Bid,
-                        contract.Ask,
-                        contract.ReferencePrice,
-                        contract.Delta,
-                        contract.ImpliedVolatility,
-                        quality = contract.Quality.ToString(),
-                        contract.QuoteTimestampUtc,
-                    }),
-                },
-                cancellationToken);
-
-            if (explains?.LastOpinions is { Count: > 0 } opinions)
-            {
-                await _store.RecordForecastsAsync(
-                    [.. opinions.Select(opinion => new ForecastRow
-                    {
-                        RunId = runId,
-                        Forecaster = opinion.Seat,
-                        Vote = opinion.Vote,
-                        Probability = opinion.Probability,
-                        Confidence = opinion.Confidence,
-                        Reasoning = opinion.Reasoning,
-                        EvidenceJson = opinion.Evidence,
-                        CreatedUtc = now,
-                    })],
-                    cancellationToken);
-            }
-
-            return await _store.RecordDecisionAsync(
-                new DecisionRow
-                {
-                    RunId = runId,
-                    CombinedProbability = action.Probability,
-                    MarketProbability = null,
-                    Edge = null,
-                    NetVote = explains?.LastNetVote,
-                    Action = action.Kind.ToString(),
-                    Reason = action.Reasoning,
-                    RiskResult = string.Equals(riskRule, riskDetail, StringComparison.Ordinal)
-                        ? riskRule
-                        : $"{riskRule}: {riskDetail}",
-                    CreatedUtc = now,
-                },
+            return await _store.RecordDecisionEventAsync(
+                BuildDecision(action, candidate, purpose, outcome, riskRule, riskDetail),
                 cancellationToken);
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException
+                                      and not AuditPersistenceException)
         {
-            _logger.LogError(error, "Could not write the audit trail for {Symbol}.",
-                candidate.Contract.ContractSymbol);
-            return null;
+            throw new AuditPersistenceException("Could not store the decision event.", error);
+        }
+    }
+
+    private DecisionEventRow BuildDecision(
+        StrategyAction action,
+        TradeableContractView? candidate,
+        string purpose,
+        string outcome,
+        string riskRule,
+        string? riskDetail)
+    {
+        var contract = candidate?.Contract;
+        OccOptionSymbol.TryParse(action.ContractSymbol ?? "", out var parsed);
+        var explains = _agent as IExplainsDecision;
+
+        return new DecisionEventRow
+        {
+            TimestampUtc = _time.GetUtcNow().ToUnixTimeSeconds(),
+            Mode = Mode,
+            ProposalId = explains?.LastProposalId,
+            Purpose = purpose,
+            Action = action.Kind.ToString(),
+            Outcome = outcome,
+            Reason = action.Reasoning,
+            RiskResult = riskDetail is null ? riskRule : $"{riskRule}: {riskDetail}",
+            Symbol = contract?.Underlying ?? parsed.Underlying,
+            OptionSymbol = contract?.ContractSymbol ?? action.ContractSymbol,
+            OptionType = contract?.OptionType ??
+                         (string.IsNullOrEmpty(parsed.Underlying) ? null : parsed.IsCall ? "call" : "put"),
+            Strike = contract?.Strike ??
+                     (string.IsNullOrEmpty(parsed.Underlying) ? null : parsed.Strike),
+            ExpirationUtc = contract is not null
+                ? new DateTimeOffset(contract.Expiration.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
+                    .ToUnixTimeSeconds()
+                : string.IsNullOrEmpty(parsed.Underlying)
+                    ? null
+                    : new DateTimeOffset(parsed.Expiration.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
+                        .ToUnixTimeSeconds(),
+            UnderlyingPrice = candidate?.UnderlyingPrice,
+            Probability = action.Probability,
+            NetVote = explains?.LastNetVote,
+            MarketSnapshotJson = contract is null ? null :
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    contract.Bid,
+                    contract.Ask,
+                    contract.Delta,
+                    contract.ImpliedVolatility,
+                    quality = contract.Quality.ToString(),
+                    contract.QuoteTimestampUtc,
+                }),
+        };
+    }
+
+    private async Task<long> RecordPositionDecisionAsync(
+        StrategyAction action,
+        PositionState position,
+        string purpose,
+        string outcome,
+        string riskRule,
+        string? riskDetail,
+        CancellationToken cancellationToken)
+    {
+        var decision = BuildPositionDecision(
+            action, position, purpose, outcome, riskRule, riskDetail);
+        try
+        {
+            return await _store.RecordDecisionEventAsync(decision, cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException
+                                      and not AuditPersistenceException)
+        {
+            throw new AuditPersistenceException(
+                $"Could not store the decision for {position.Symbol}.", error);
+        }
+    }
+
+    private DecisionEventRow BuildPositionDecision(
+        StrategyAction action,
+        PositionState position,
+        string purpose,
+        string outcome,
+        string riskRule,
+        string? riskDetail)
+    {
+        var baseDecision = BuildDecision(
+            action with { ContractSymbol = position.Symbol }, null,
+            purpose, outcome, riskRule, riskDetail);
+        return baseDecision with
+        {
+            MarketSnapshotJson = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                position.Quantity,
+                position.AverageEntryPrice,
+                position.CurrentPrice,
+                position.MarketValue,
+                position.UnrealizedPnl,
+            }),
+        };
+    }
+
+    /// <summary>
+    /// Audits a close and then sends it. If the first audit write fails, the risk-reducing
+    /// close is still attempted and the session stops immediately after that attempt.
+    /// </summary>
+    private async Task<OrderSubmissionResult> CloseWithAuditAsync(
+        StrategyAction action,
+        PositionState position,
+        string purpose,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var clientOrderId = $"{Mode}-c-{Guid.NewGuid():N}"[..32];
+        return await _orderCoordinator!.SubmitAsync(
+            BuildPositionDecision(action, position, purpose, "accepted", "close", reason),
+            new OrderRequest
+            {
+                ClientOrderId = clientOrderId,
+                ContractSymbol = position.Symbol,
+                Quantity = Math.Abs(position.Quantity),
+                IsBuy = false,
+                LimitPrice = null,
+            },
+            riskReducing: true,
+            cancellationToken);
+    }
+
+    private static bool HasPendingClose(
+        string symbol, IReadOnlyList<OrderState> pendingOrders) =>
+        pendingOrders.Any(order =>
+            !order.IsBuy
+            && !order.IsTerminal
+            && order.RemainingQuantity > 0
+            && string.Equals(order.ContractSymbol, symbol, StringComparison.Ordinal));
+
+    private async Task MarkReviewedAsync(
+        string symbol, int newsCount, CancellationToken cancellationToken)
+    {
+        _triggers!.MarkReviewed(symbol, newsCount);
+        try
+        {
+            await _store.SavePositionReviewStateAsync(
+                Mode, symbol, _time.GetUtcNow(), newsCount, cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException
+                                      and not AuditPersistenceException)
+        {
+            throw new AuditPersistenceException(
+                $"Could not store the review cursor for {symbol}.", error);
+        }
+    }
+
+    private async Task ApplyPolicyAsync(
+        StrategyPolicy proposed, CancellationToken cancellationToken)
+    {
+        var clamped = proposed.ClampTo(_riskOptions);
+        try
+        {
+            await _store.SavePolicyAsync(Mode, clamped, _time.GetUtcNow(), cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException
+                                      and not AuditPersistenceException)
+        {
+            throw new AuditPersistenceException("Could not store the active strategy policy.", error);
+        }
+
+        _policy = clamped;
+    }
+
+    private sealed record CloseBatchResult
+    {
+        public int Submitted { get; init; }
+        public int ConfirmedClosed { get; init; }
+        public int Rejected { get; init; }
+        public IReadOnlySet<string> AttemptedSymbols { get; init; } = new HashSet<string>(StringComparer.Ordinal);
+
+        public CloseBatchResult Add(string symbol, OrderState order)
+        {
+            var attempted = new HashSet<string>(AttemptedSymbols, StringComparer.Ordinal) { symbol };
+            return this with
+            {
+                Submitted = Submitted + (order.Lifecycle is OrderLifecycle.Open
+                    or OrderLifecycle.PartiallyFilled or OrderLifecycle.Filled
+                    or OrderLifecycle.Uncertain ? 1 : 0),
+                ConfirmedClosed = ConfirmedClosed + (order.Lifecycle == OrderLifecycle.Filled ? 1 : 0),
+                Rejected = Rejected + (order.Lifecycle is OrderLifecycle.Rejected
+                    or OrderLifecycle.Canceled or OrderLifecycle.Expired ? 1 : 0),
+                AttemptedSymbols = attempted,
+            };
         }
     }
 
@@ -941,47 +1205,6 @@ public sealed class TradingLoop(
         ];
     }
 
-    private async Task RecordReviewPassesAsync(
-        IExplainsDecision? explains,
-        CancellationToken cancellationToken)
-    {
-        if (explains?.LastReviewPasses is not { Count: > 0 } passes)
-        {
-            return;
-        }
-
-        try
-        {
-            var now = _time.GetUtcNow().ToUnixTimeSeconds();
-            await _store.RecordProposalReviewPassesAsync(
-                [.. passes.Select(pass => new ProposalReviewPassRow
-                {
-                    ProposalId = pass.ProposalId,
-                    ProposalVersion = pass.ProposalVersion,
-                    ReviewPass = pass.ReviewPass,
-                    Superseded = pass.Superseded,
-                    Verdict = pass.Verdict.ToString(),
-                    RejectionCode = pass.RejectionCode,
-                    OptionSymbol = pass.Operation.Actions
-                        .FirstOrDefault(action => action.Kind != StrategyActionKind.Hold)
-                        ?.ContractSymbol,
-                    Thesis = pass.Operation.Thesis,
-                    ThesisConditionsJson = System.Text.Json.JsonSerializer.Serialize(
-                        pass.Operation.ThesisConditions),
-                    OperationJson = System.Text.Json.JsonSerializer.Serialize(pass.Operation),
-                    AnalysesJson = System.Text.Json.JsonSerializer.Serialize(pass.Analyses),
-                    DiscussionJson = System.Text.Json.JsonSerializer.Serialize(pass.Discussion),
-                    VotesJson = System.Text.Json.JsonSerializer.Serialize(pass.Votes),
-                    CreatedUtc = now,
-                })],
-                cancellationToken);
-        }
-        catch (Exception error) when (error is not OperationCanceledException)
-        {
-            _logger.LogError(error, "Could not write proposal review passes.");
-        }
-    }
-
     private async Task<int> CountRecentNewsAsync(
         string symbol, DateTimeOffset now, CancellationToken cancellationToken)
     {
@@ -997,6 +1220,39 @@ public sealed class TradingLoop(
             _logger.LogDebug(error, "No news for {Symbol} this cycle.", symbol);
             return 0;
         }
+    }
+
+    private decimal ResolveDayOpeningEquity(
+        DateOnly todayEastern,
+        AccountState account,
+        IReadOnlyList<PositionState> positions,
+        IReadOnlyList<OrderState> dailyOrders)
+    {
+        if (account.PreviousCloseEquity is { } priorClose && priorClose > 0m)
+        {
+            return priorClose;
+        }
+
+        if (_fallbackBaselineDate == todayEastern
+            && _fallbackDayOpeningEquity is { } cachedBaseline
+            && cachedBaseline > 0m)
+        {
+            return cachedBaseline;
+        }
+
+        var hasFillToday = dailyOrders.Any(order => order.FilledQuantity > 0);
+        if (account.Equity <= 0m || positions.Count > 0 || hasFillToday)
+        {
+            return 0m;
+        }
+
+        _fallbackBaselineDate = todayEastern;
+        _fallbackDayOpeningEquity = account.Equity;
+        _logger.LogWarning(
+            "Alpaca did not supply prior-close equity. Using current equity {Equity:N2} "
+            + "as this session's baseline because the account has no positions and no fills today.",
+            account.Equity);
+        return account.Equity;
     }
 
     private async Task<IReadOnlyList<NewsItem>> SafeNewsAsync(CancellationToken cancellationToken)
@@ -1026,7 +1282,7 @@ public sealed class TradingLoop(
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            _logger.LogWarning(error, "Could not record the equity snapshot.");
+            throw new AuditPersistenceException("Could not record the equity snapshot.", error);
         }
     }
 }

@@ -1,53 +1,48 @@
-# Definition of Done for Competition Start
+# Definition of Done
 
-The system is ready for the official window only if **every** item is true.
+```mermaid
+flowchart TD
+    B[Build and tests] --> S[Safety checks]
+    S --> A[Audit checks]
+    A --> O[Operational readiness]
+```
+
+## Code
+
+- [x] The solution builds without warnings.
+- [x] The current test suite passes.
+- [x] The runtime has only live-data operation modes.
+- [x] Dry run intercepts all broker writes.
 
 ## Safety
 
-- [ ] Paper mode is enforced.
-- [ ] Official account starts at $100,000.
-- [ ] Risk guardrails work.
-- [ ] Duplicate order protection works.
-- [ ] Restart recovery works.
+- [x] Paper environment is fixed in code.
+- [x] Models have no broker-write tool.
+- [x] Current quote and hard risk checks fail closed.
+- [x] Mandatory exits run before model work.
+- [x] Order reservation precedes submission.
+- [x] Pending sells prevent duplicate close requests.
+- [x] A blocked account still runs mandatory exits before it skips model work.
+- [x] Startup restores policy, review cursors, and unsettled order state.
 
-## Alpaca integration
+## Audit
 
-- [ ] The Alpaca MCP server version is pinned.
-- [ ] The read-only MCP connection works.
-- [ ] The trading MCP connection works.
-- [ ] The read-only MCP tool allowlist works.
-- [ ] Trading tools are not visible to the LLM.
-- [ ] Option order submission works.
-- [ ] Position close works.
+- [x] Sittings, review passes, and tool results persist.
+- [x] Holds, rejections, opens, and closes persist.
+- [x] Orders link to decision events.
+- [x] Order audit rows reconcile terminal broker lifecycle changes.
+- [x] Audit persistence failure stops the session.
+- [x] `--audit` is read-only and checks integrity.
+- [x] A clean live-data stub dry run produces a valid audit.
+- [ ] A market-hours LLM dry run produces complete tool and decision evidence.
 
-## Experts
+```powershell
+dotnet test Xakpc.Alpaca.NøIdea.slnx --no-restore
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --audit
+```
 
-- [ ] Historical replay works.
-- [ ] ML.NET model loads and predicts.
-- [ ] Research Agent tools work.
-- [ ] Critic Agent tools work.
-- [ ] LLM outputs use strict schemas.
-- [ ] Expert scores are stored.
-- [ ] Option quote validation works.
-
-## Records and operation
-
-- [ ] SQLite audit records work.
-- [ ] TUI shows the current status.
-- [ ] No manual per-trade approval is required.
-
-## Strategy values
-
-- [ ] Exact strategy thresholds are set.
-- [ ] Exact strike rule is set.
-- [ ] Exact expiration rule is set.
-- [ ] Thursday exit / expiration policy is set, and it follows the Thursday-EOD rule.
-- [ ] The system does not depend on Friday option-market activity.
-
-The last group depends on replay evidence and on an official competition answer. See
-[open strategy questions](open-strategy-questions.md) and
-[strategy parameters](../trading/strategy-parameters.md).
-
-## Related
+## Related lodes
 
 - [MVP roadmap](mvp-roadmap.md)
+- [Testing strategy](../operations/testing-strategy.md)
+- [Audit schema](../storage/schema.md)

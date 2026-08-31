@@ -7,7 +7,6 @@ using Xakpc.Alpaca.NøIdea.Agents;
 using Xakpc.Alpaca.NøIdea.Agents.Room;
 using Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
 using Xakpc.Alpaca.NøIdea.Observability;
-using Xakpc.Alpaca.NøIdea.Replay;
 using Xakpc.Alpaca.NøIdea.Research;
 using Xakpc.Alpaca.NøIdea.Trading;
 using Xakpc.Alpaca.NøIdea.Storage;
@@ -30,15 +29,14 @@ using var loggerFactory = LoggerFactory.Create(builder =>
 
 var log = loggerFactory.CreateLogger("Trader");
 
-if (!args.Contains("--smoke") && !args.Contains("--check-mcp") && !args.Contains("--import-history")
+if (!args.Contains("--smoke") && !args.Contains("--check-mcp")
     && !args.Contains("--audit")
-    && !args.Contains("--live")
-    && !args.Contains("--replay"))
+    && !args.Contains("--live"))
 {
     log.LogInformation(
         "Nothing to do. Pass --smoke for the order path, --check-mcp for the read-only MCP "
-        + "connection, --import-history to load data/raw into SQLite, --replay to run the "
-        + "offline replay, or --live to trade. Add --dry-run to decide everything and send "
+        + "connection, --audit to inspect the durable record, or --live to trade. "
+        + "Add --dry-run to decide everything and send "
         + "nothing, and --once to run a single cycle out of hours.");
     return 0;
 }
@@ -48,213 +46,7 @@ if (!args.Contains("--smoke") && !args.Contains("--check-mcp") && !args.Contains
 // that a rejection was stored with the same care as a trade.
 if (args.Contains("--audit"))
 {
-    using var auditCancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-    var auditToken = auditCancellation.Token;
-
-    var auditStore = new TradingStore(TradingStore.ConnectionStringForFile(
-        DatabasePath(RepositoryRoot())));
-    await auditStore.CreateSchemaAsync(auditToken);
-
-    foreach (var (table, total) in await auditStore.AuditRowCountsAsync(auditToken))
-    {
-        log.LogInformation("  {Table}: {Total:N0} rows.", table, total);
-    }
-
-    foreach (var entry in await auditStore.RecentDecisionsAsync(
-        int.TryParse(ArgumentValue("--last"), out var last) ? last : 10, auditToken))
-    {
-        log.LogInformation(
-            "  {At} {Mode} {Status} {Action} {Symbol} p={Probability} market={Market} "
-            + "net={Net} risk=[{Risk}] seats={Seats} order={Order}",
-            DateTimeOffset.FromUnixTimeSeconds(entry.TimestampUtc).ToString("u"),
-            entry.Mode, entry.Status, entry.Action, entry.OptionSymbol,
-            entry.CombinedProbability?.ToString("P0") ?? "-",
-            entry.MarketProbability?.ToString("P0") ?? "-",
-            entry.NetVote?.ToString("F2") ?? "-",
-            entry.RiskResult, entry.SeatCount, entry.ClientOrderId ?? "-");
-    }
-
-    return 0;
-}
-
-// The import is offline and needs no Alpaca credentials, so it runs before anything
-// reads them. It loads data/raw into the SQLite cache that replay reads.
-if (args.Contains("--import-history"))
-{
-    using var importCancellation = new CancellationTokenSource(TimeSpan.FromMinutes(30));
-    var importToken = importCancellation.Token;
-
-    var repositoryRoot = RepositoryRoot();
-    var importStore = new TradingStore(TradingStore.ConnectionStringForFile(
-        DatabasePath(repositoryRoot)));
-    await importStore.CreateSchemaAsync(importToken);
-
-    var window = new ImportWindow();
-    if (ArgumentValue("--from") is { } fromText)
-    {
-        window = window with { From = DateOnly.Parse(fromText, CultureInfo.InvariantCulture) };
-    }
-
-    if (ArgumentValue("--to") is { } toText)
-    {
-        window = window with { To = DateOnly.Parse(toText, CultureInfo.InvariantCulture) };
-    }
-
-    log.LogInformation("Importing {From} to {To} from {Raw}.",
-        window.From, window.To, Path.Combine(repositoryRoot, "data", "raw"));
-
-    var importer = new HistoryImporter(importStore, log);
-    await importer.ImportAsync(Path.Combine(repositoryRoot, "data", "raw"), window, importToken);
-
-    foreach (var (table, total) in (await importStore.CacheRowCountsAsync(importToken))
-             .OrderBy(entry => entry.Key, StringComparer.Ordinal))
-    {
-        log.LogInformation("  {Table}: {Total:N0} rows.", table, total);
-    }
-
-    if (!args.Contains("--smoke") && !args.Contains("--check-mcp") && !args.Contains("--replay"))
-    {
-        return 0;
-    }
-}
-
-// Replay is fully offline. It constructs no Alpaca client and no MCP client, which is the
-// property .lode/replay/replay-mode.md requires and ReplayTests asserts.
-if (args.Contains("--replay"))
-{
-    using var replayCancellation = new CancellationTokenSource(TimeSpan.FromHours(4));
-    var replayToken = replayCancellation.Token;
-
-    var connectionString = TradingStore.ConnectionStringForFile(DatabasePath(RepositoryRoot()));
-    var replayStore = new TradingStore(connectionString);
-    await replayStore.CreateSchemaAsync(replayToken);
-
-    var runner = new ReplayRunner(connectionString, log);
-    var tradingOptions = new TradingOptions();
-    var riskOptions = new RiskOptions();
-
-    var from = DateOnly.Parse(ArgumentValue("--from") ?? "2026-06-01", CultureInfo.InvariantCulture);
-    var to = DateOnly.Parse(ArgumentValue("--to") ?? "2026-08-28", CultureInfo.InvariantCulture);
-
-    // The replay window is historical, so the competition flatten time would close every
-    // position on the first cycle. Move it past the window; the live path keeps the real one.
-    var replayRisk = riskOptions with
-    {
-        CompetitionFlattenUtc = new DateTimeOffset(
-            to.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero),
-    };
-
-    // Replay agents get NO research tools, and that is structural rather than a setting.
-    // An Alpaca MCP call in replay reads today's market, and a web search in replay returns
-    // everything that has happened since the replay instant. Both are future-data leaks of
-    // the worst kind: they would make a historical run look brilliant. Until the replay tool
-    // substitutes exist, a replay agent decides from the clamped context alone.
-    IStrategyAgent replayAgent = new StubStrategyAgent();
-
-    if (string.Equals(ArgumentValue("--agent"), "llm", StringComparison.OrdinalIgnoreCase))
-    {
-        var replayFactory = new ChatClientFactory();
-
-        // An empty tool list, passed explicitly, and that is the whole guarantee: a seat
-        // builds no tool of its own. A live Alpaca call in replay reads today's market and a
-        // web search returns everything since the replay instant; either would make a
-        // historical run look brilliant for the wrong reason.
-        IReadOnlyList<Microsoft.Extensions.AI.AITool> noTools = [];
-
-        var replayPersonas = new List<IPersona>
-        {
-            new SkepticPersona(replayFactory, log, noTools),
-            new QuantPersona(replayFactory, log, noTools),
-            new MarketPersona(replayFactory, log, noTools),
-            new ExposureRiskPersona(replayRisk),
-        };
-
-        var replayProposer = new ProposerPersona(replayFactory, log, noTools, tradingOptions);
-
-        var replayMissing = ChatClientFactory.MissingKeys([replayProposer, .. replayPersonas]);
-        if (replayMissing.Count > 0)
-        {
-            log.LogError(
-                "Missing model keys: {Keys}. Add them to .env, or omit --agent llm.",
-                string.Join(", ", replayMissing));
-            return 1;
-        }
-
-        var replayValidator = new ProposalPreValidator(
-            replayRisk, tradingOptions.TrackedSymbols, TimeProvider.System);
-
-        replayAgent = new WarRoomAgent(
-            new WarRoomSession(
-                replayProposer, replayPersonas,
-                new WarRoomOptions { DiscussionRounds = 1 },
-                (operation, request) => replayValidator.Validate(operation, request),
-                TimeProvider.System, log),
-            TimeProvider.System,
-            log);
-
-        log.LogWarning(
-            "Replaying with real models and NO research tools. Live tools would read the "
-            + "present, which is a future-data leak in a historical run.");
-    }
-
-    var replayPolicy = new StrategyPolicy();
-    var cycles = 0;
-    var opened = 0;
-    var closedPositions = 0;
-
-    var result = await runner.RunAsync(
-        from, to, stepsPerSession: 1, tradingOptions.StartingEquity,
-        async (cycle, token) =>
-        {
-            // The loop is rebuilt each cycle because the runner owns the gateways, but the
-            // policy carries forward: the agent revises it and the next cycle sees it.
-            var loop = new TradingLoop(
-                cycle.MarketData,
-                cycle.Trading,
-                replayAgent,
-                new RiskGuard(replayRisk, cycle.Clock),
-                replayRisk,
-                tradingOptions,
-                replayStore,
-                cycle.Clock,
-                log)
-            {
-                Mode = "replay",
-                Policy = replayPolicy,
-            };
-
-            var outcome = await loop.RunCycleAsync(token);
-            replayPolicy = loop.Policy;
-
-            cycles++;
-            opened += outcome.OrdersSubmitted;
-            closedPositions += outcome.PositionsClosed;
-
-            if (cycles <= 3 || outcome.OrdersSubmitted > 0)
-            {
-                log.LogInformation(
-                    "  {At:yyyy-MM-dd}: {Offered} candidates, {Opened} opened, {Closed} closed, "
-                    + "equity {Equity:N2} USD.",
-                    outcome.AtUtc, outcome.CandidatesOffered, outcome.OrdersSubmitted,
-                    outcome.PositionsClosed, outcome.Equity);
-            }
-        },
-        replayToken);
-
-    log.LogInformation(
-        "Replay finished. {Sessions} sessions, {Cycles} cycles, {Opened} opened, {Closed} closed. "
-        + "Equity {Start:N2} -> {End:N2} USD, realized {Pnl:N2}.",
-        result.Sessions, result.Cycles, opened, closedPositions,
-        result.StartingEquity, result.FinalEquity, result.RealizedPnl);
-
-    log.LogWarning(
-        "Replay P&L is evidence about the code, not about the strategy: fills are at daily "
-        + "closes and pay no spread, and the stub agent claims no edge.");
-
-    if (!args.Contains("--smoke") && !args.Contains("--check-mcp"))
-    {
-        return 0;
-    }
+    return await AuditAsync(log);
 }
 
 // The live trading session. It runs against the development paper account by default; the
@@ -319,20 +111,21 @@ if (args.Contains("--live"))
         liveTrading = dryRunGateway;
     }
 
-    // Fail closed before the first cycle: an account that cannot trade options would make
-    // every later rejection look like a strategy decision.
+    // Account restrictions block new risk inside the cycle. They do not stop startup,
+    // because deterministic risk-reducing exits must still get one attempt first.
     var liveAccount = await liveTrading.GetAccountAsync(liveToken);
 
     if (liveAccount.IsTradingBlocked || liveAccount.IsAccountBlocked)
     {
-        log.LogError("Trading is blocked on account {Number}. Stopping.", liveAccount.AccountNumber);
-        return 1;
+        log.LogWarning(
+            "Trading is blocked on account {Number}. The session will run mandatory exits only.",
+            liveAccount.AccountNumber);
     }
 
     if (liveAccount.OptionsTradingLevel is null or 0)
     {
-        log.LogError("Options trading is disabled on this account. Enable it first.");
-        return 1;
+        log.LogWarning(
+            "Options trading is disabled. The session will attempt mandatory liquidation but add no risk.");
     }
 
     ModelContextProtocol.Client.McpClient? liveMcpClient = null;
@@ -398,13 +191,14 @@ if (args.Contains("--live"))
 
         var personas = new List<IPersona>
         {
-            new SkepticPersona(factory, log, researchTools),   // Claude
-            new QuantPersona(factory, log, researchTools),     // GPT
-            new MarketPersona(factory, log, researchTools),    // Grok
+            new SkepticPersona(factory, log, researchTools, liveStore),   // Claude
+            new QuantPersona(factory, log, researchTools, liveStore),     // GPT
+            new MarketPersona(factory, log, researchTools, liveStore),    // Grok
             new ExposureRiskPersona(liveRiskOptions),          // plain C#, no tokens
         };
 
-        var roomProposer = new ProposerPersona(factory, log, researchTools, liveTradingOptions);
+        var roomProposer = new ProposerPersona(
+            factory, log, researchTools, liveTradingOptions, liveStore);
 
         // Fail before the open, not at 09:31. A seat without a key is a dead seat.
         var missing = ChatClientFactory.MissingKeys([roomProposer, .. personas]);
@@ -435,9 +229,10 @@ if (args.Contains("--live"))
         var warRoom = new WarRoomSession(
             roomProposer, personas, warRoomOptions,
             (operation, request) => preValidator.Validate(operation, request),
-            TimeProvider.System, log);
+            TimeProvider.System, log, liveStore);
 
-        liveWarRoom = new WarRoomAgent(warRoom, TimeProvider.System, log);
+        liveWarRoom = new WarRoomAgent(
+            warRoom, TimeProvider.System, log, dryRun ? "dry-run" : "live");
         liveAgent = liveWarRoom;
 
         log.LogInformation(
@@ -489,7 +284,16 @@ if (args.Contains("--live"))
         dryRun ? "dry-run" : "live", dryRun,
         seats.Length == 0 ? "none" : string.Join(", ", seats));
 
-    await session.RunAsync(liveToken);
+    var auditFailed = false;
+    try
+    {
+        await session.RunAsync(liveToken);
+    }
+    catch (AuditPersistenceException error)
+    {
+        auditFailed = true;
+        log.LogCritical(error, "Durable audit failed. The live session is stopped.");
+    }
 
     var totalCost = liveWarRoom?.TotalCost ?? new RoomCost();
 
@@ -524,201 +328,208 @@ if (args.Contains("--live"))
         await liveKeenableClient.DisposeAsync();
     }
 
-    return 0;
+    return auditFailed ? 1 : 0;
 }
 
-var symbol = ArgumentValue("--symbol") ?? "SPY";
-var maxPremium = decimal.Parse(ArgumentValue("--max-premium") ?? "5.00", CultureInfo.InvariantCulture);
-var clientOrderId = ArgumentValue("--client-order-id") ?? $"smoke-{Guid.NewGuid():N}";
-
-TimeProvider time = TimeProvider.System;
-using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-var ct = cancellation.Token;
-
-try
+if (args.Contains("--smoke") || args.Contains("--check-mcp"))
 {
-    var credentials = AlpacaOptions.FromEnvironment();
+    var symbol = ArgumentValue("--symbol") ?? "SPY";
+    var maxPremium = decimal.Parse(ArgumentValue("--max-premium") ?? "5.00", CultureInfo.InvariantCulture);
+    var clientOrderId = ArgumentValue("--client-order-id") ?? $"smoke-{Guid.NewGuid():N}";
 
-    // The read-only MCP connection exists for the LLM agents only. Checking it is
-    // separate from the order path on purpose: the two share no code, which is the
-    // point. No MCP server this host runs holds an order tool.
-    if (args.Contains("--check-mcp"))
+    TimeProvider time = TimeProvider.System;
+    using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+    var ct = cancellation.Token;
+
+    try
     {
-        var mcpOptions = AlpacaMcpOptions.FromEnvironment() with
-        {
-            ReadOnlyUrl = ArgumentValue("--mcp-url")
-                          ?? Environment.GetEnvironmentVariable("Alpaca__Mcp__ReadOnlyUrl")
-                          ?? "http://127.0.0.1:8100/mcp",
-        };
+        var credentials = AlpacaOptions.FromEnvironment();
 
-        var (mcpClient, approvedTools) = await AlpacaMcpClient.ConnectAsync(
-            mcpOptions, credentials, loggerFactory, ct);
-
-        await using (mcpClient)
+        // The read-only MCP connection exists for the LLM agents only. Checking it is
+        // separate from the order path on purpose: the two share no code, which is the
+        // point. No MCP server this host runs holds an order tool.
+        if (args.Contains("--check-mcp"))
         {
-            log.LogInformation(
-                "MCP check passed. {Count} tools approved for agent use, and none can change the account.",
-                approvedTools.Count);
+            var mcpOptions = AlpacaMcpOptions.FromEnvironment() with
+            {
+                ReadOnlyUrl = ArgumentValue("--mcp-url")
+                              ?? Environment.GetEnvironmentVariable("Alpaca__Mcp__ReadOnlyUrl")
+                              ?? "http://127.0.0.1:8100/mcp",
+            };
+
+            var (mcpClient, approvedTools) = await AlpacaMcpClient.ConnectAsync(
+                mcpOptions, credentials, loggerFactory, ct);
+
+            await using (mcpClient)
+            {
+                log.LogInformation(
+                    "MCP check passed. {Count} tools approved for agent use, and none can change the account.",
+                    approvedTools.Count);
+            }
+
+            if (!args.Contains("--smoke"))
+            {
+                return 0;
+            }
         }
 
-        if (!args.Contains("--smoke"))
+        using var alpaca = new AlpacaClients(credentials);
+
+        var store = new TradingStore(TradingStore.ConnectionStringForFile(
+            DatabasePath(RepositoryRoot())));
+        await store.CreateSchemaAsync(ct);
+
+        // 1. Account and clock. Alpaca is the source of truth for both.
+        var clock = await alpaca.Trading.GetClockAsync(ct);
+        var account = await alpaca.Trading.GetAccountAsync(ct);
+
+        log.LogInformation(
+            "Account {Number}: equity {Equity:N2} USD, options level {Level}. Market open: {Open}. Next open {NextOpen:u}.",
+            account.AccountNumber, account.Equity, account.OptionsTradingLevel, clock.IsOpen, clock.NextOpenUtc);
+
+        // Fail closed. A blocked account, or a level that cannot buy a long call, would
+        // make everything after this produce a misleading failure.
+        if (account.IsTradingBlocked || account.IsAccountBlocked)
         {
-            return 0;
-        }
-    }
-
-    using var alpaca = new AlpacaClients(credentials);
-
-    var store = new TradingStore(TradingStore.ConnectionStringForFile(
-        DatabasePath(RepositoryRoot())));
-    await store.CreateSchemaAsync(ct);
-
-    // 1. Account and clock. Alpaca is the source of truth for both.
-    var clock = await alpaca.Trading.GetClockAsync(ct);
-    var account = await alpaca.Trading.GetAccountAsync(ct);
-
-    log.LogInformation(
-        "Account {Number}: equity {Equity:N2} USD, options level {Level}. Market open: {Open}. Next open {NextOpen:u}.",
-        account.AccountNumber, account.Equity, account.OptionsTradingLevel, clock.IsOpen, clock.NextOpenUtc);
-
-    // Fail closed. A blocked account, or a level that cannot buy a long call, would
-    // make everything after this produce a misleading failure.
-    if (account.IsTradingBlocked || account.IsAccountBlocked)
-    {
-        log.LogError("Trading is blocked on this account. Stopping.");
-        return 1;
-    }
-
-    if (account.OptionsTradingLevel is null or OptionsTradingLevel.Disabled)
-    {
-        log.LogError("Options trading is disabled on this account. Enable it on the paper account.");
-        return 1;
-    }
-
-    // 2. Idempotency comes FIRST. If this client order id is already reserved, the
-    //    recovery path must resolve THAT order. Selecting a contract first and
-    //    checking afterwards would pick a fresh contract at a new price, which
-    //    defeats the guard entirely.
-    var existing = await store.FindAsync(clientOrderId, ct);
-    string contractSymbol;
-
-    if (existing is not null)
-    {
-        contractSymbol = existing.OptionSymbol;
-        log.LogWarning(
-            "Client order id {Id} is already reserved for {Contract} (status {Status}). Resolving it, not submitting.",
-            clientOrderId, contractSymbol, existing.Status);
-    }
-    else
-    {
-        // 3. Underlying price, so the strike filter can be centred on it.
-        var lastTrade = await alpaca.StockData.GetLatestTradeAsync(new LatestMarketDataRequest(symbol), ct);
-        var spot = lastTrade.Price;
-        log.LogInformation("{Symbol} last trade {Price:N2} at {Time:u}.", symbol, spot, lastTrade.TimestampUtc);
-
-        // 4. A near-money call ladder over the next two weeks. No feed is named (ADR-010).
-        var today = DateOnly.FromDateTime(time.GetUtcNow().UtcDateTime);
-        var chain = await alpaca.OptionsData.GetOptionChainAsync(new OptionChainRequest(symbol)
-        {
-            OptionType = OptionType.Call,
-            ExpirationDateGreaterThanOrEqualTo = today,
-            ExpirationDateLessThanOrEqualTo = today.AddDays(14),
-            StrikePriceGreaterThanOrEqualTo = spot * 0.98m,
-            StrikePriceLessThanOrEqualTo = spot * 1.05m,
-        }, ct);
-
-        log.LogInformation("Option chain returned {Count} contracts.", chain.Items.Count);
-
-        // 5. Fail closed on quote quality. A missing or one-sided quote is a skip, never
-        //    a zero. This is the whole data-validation layer: the SDK typed the rest.
-        var candidate = chain.Items
-            .Where(entry => entry.Value.Quote is { BidPrice: > 0, AskPrice: > 0 })
-            .Where(entry => entry.Value.Quote!.AskPrice >= entry.Value.Quote.BidPrice)
-            .Where(entry => entry.Value.Quote!.AskPrice <= maxPremium)
-            .OrderBy(entry => entry.Value.Quote!.AskPrice - entry.Value.Quote.BidPrice)
-            .Select(entry => (Symbol: entry.Key, entry.Value.Quote))
-            .FirstOrDefault();
-
-        if (candidate.Symbol is null)
-        {
-            log.LogError(
-                "No contract had a valid two-sided quote at or below {Max:N2}. Skipping, as fail-closed requires.",
-                maxPremium);
+            log.LogError("Trading is blocked on this account. Stopping.");
             return 1;
         }
 
-        contractSymbol = candidate.Symbol;
-        var quote = candidate.Quote!;
-        var limitPrice = decimal.Round(quote.AskPrice, 2);
+        if (account.OptionsTradingLevel is null or OptionsTradingLevel.Disabled)
+        {
+            log.LogError("Options trading is disabled on this account. Enable it on the paper account.");
+            return 1;
+        }
 
+        // 2. Idempotency comes FIRST. If this client order id is already reserved, the
+        //    recovery path must resolve THAT order. Selecting a contract first and
+        //    checking afterwards would pick a fresh contract at a new price, which
+        //    defeats the guard entirely.
+        var existing = await store.FindAsync(clientOrderId, ct);
+        string contractSymbol;
+
+        if (existing is not null)
+        {
+            contractSymbol = existing.OptionSymbol;
+            log.LogWarning(
+                "Client order id {Id} is already reserved for {Contract} (status {Status}). Resolving it, not submitting.",
+                clientOrderId, contractSymbol, existing.Status);
+        }
+        else
+        {
+            // 3. Underlying price, so the strike filter can be centred on it.
+            var lastTrade = await alpaca.StockData.GetLatestTradeAsync(new LatestMarketDataRequest(symbol), ct);
+            var spot = lastTrade.Price;
+            log.LogInformation("{Symbol} last trade {Price:N2} at {Time:u}.", symbol, spot, lastTrade.TimestampUtc);
+
+            // 4. A near-money call ladder over the next two weeks. No feed is named (ADR-010).
+            var today = DateOnly.FromDateTime(time.GetUtcNow().UtcDateTime);
+            var chain = await alpaca.OptionsData.GetOptionChainAsync(new OptionChainRequest(symbol)
+            {
+                OptionType = OptionType.Call,
+                ExpirationDateGreaterThanOrEqualTo = today,
+                ExpirationDateLessThanOrEqualTo = today.AddDays(14),
+                StrikePriceGreaterThanOrEqualTo = spot * 0.98m,
+                StrikePriceLessThanOrEqualTo = spot * 1.05m,
+            }, ct);
+
+            log.LogInformation("Option chain returned {Count} contracts.", chain.Items.Count);
+
+            // 5. Fail closed on quote quality. A missing or one-sided quote is a skip, never
+            //    a zero. This is the whole data-validation layer: the SDK typed the rest.
+            var candidate = chain.Items
+                .Where(entry => entry.Value.Quote is { BidPrice: > 0, AskPrice: > 0 })
+                .Where(entry => entry.Value.Quote!.AskPrice >= entry.Value.Quote.BidPrice)
+                .Where(entry => entry.Value.Quote!.AskPrice <= maxPremium)
+                .OrderBy(entry => entry.Value.Quote!.AskPrice - entry.Value.Quote.BidPrice)
+                .Select(entry => (Symbol: entry.Key, entry.Value.Quote))
+                .FirstOrDefault();
+
+            if (candidate.Symbol is null)
+            {
+                log.LogError(
+                    "No contract had a valid two-sided quote at or below {Max:N2}. Skipping, as fail-closed requires.",
+                    maxPremium);
+                return 1;
+            }
+
+            contractSymbol = candidate.Symbol;
+            var quote = candidate.Quote!;
+            var limitPrice = decimal.Round(quote.AskPrice, 2);
+
+            log.LogInformation(
+                "Candidate {Contract}: bid {Bid:N2} ask {Ask:N2} (spread {Spread:N2}). Limit {Limit:N2}, about {Cost:N2}.",
+                contractSymbol, quote.BidPrice, quote.AskPrice,
+                quote.AskPrice - quote.BidPrice, limitPrice, limitPrice * 100m);
+
+            // 6. Reserve BEFORE submitting. If the submit then fails with an uncertain
+            //    result, the client order id is already durable and recovery can ask
+            //    Alpaca what happened instead of sending a second order.
+            await store.ReserveAsync(new OrderRecord
+            {
+                CorrelationId = clientOrderId,
+                ClientOrderId = clientOrderId,
+                OptionSymbol = contractSymbol,
+                Side = nameof(OrderSide.Buy),
+                Quantity = 1,
+                OrderType = nameof(OrderType.Limit),
+                LimitPrice = limitPrice,
+                SubmittedUtc = time.GetUtcNow().ToUnixTimeSeconds(),
+                Status = OrderLifecycle.Reserved.ToString(),
+                Mode = "smoke",
+            }, ct);
+
+            var submitted = await alpaca.Trading.PostOrderAsync(new NewOrderRequest(
+                contractSymbol, OrderQuantity.FromInt64(1), OrderSide.Buy, OrderType.Limit, TimeInForce.Day)
+            {
+                ClientOrderId = clientOrderId,
+                LimitPrice = limitPrice,
+            }, ct);
+
+            log.LogInformation("Submitted {OrderId} status {Status}.", submitted.OrderId, submitted.OrderStatus);
+
+            await store.RecordResultAsync(
+                clientOrderId, submitted.OrderId.ToString(), submitted.OrderStatus.ToString(), null, ct);
+        }
+
+        // 7. Read back BY CLIENT ORDER ID, never by broker id. This is the lookup the
+        //    recovery path depends on, so the check must exercise it.
+        var readBack = await alpaca.Trading.GetOrderAsync(clientOrderId, ct);
         log.LogInformation(
-            "Candidate {Contract}: bid {Bid:N2} ask {Ask:N2} (spread {Spread:N2}). Limit {Limit:N2}, about {Cost:N2}.",
-            contractSymbol, quote.BidPrice, quote.AskPrice,
-            quote.AskPrice - quote.BidPrice, limitPrice, limitPrice * 100m);
+            "Read back by client id: {Contract} status {Status}, filled {Filled} at {Price}.",
+            readBack.Symbol, readBack.OrderStatus, readBack.IntegerFilledQuantity, readBack.AverageFillPrice);
 
-        // 6. Reserve BEFORE submitting. If the submit then fails with an uncertain
-        //    result, the client order id is already durable and recovery can ask
-        //    Alpaca what happened instead of sending a second order.
-        await store.ReserveAsync(new OrderRecord
+        // 8. Close what filled; cancel what did not.
+        if (readBack.IntegerFilledQuantity > 0)
         {
-            ClientOrderId = clientOrderId,
-            OptionSymbol = contractSymbol,
-            Side = nameof(OrderSide.Buy),
-            Quantity = 1,
-            OrderType = nameof(OrderType.Limit),
-            LimitPrice = limitPrice,
-            SubmittedUtc = time.GetUtcNow().ToUnixTimeSeconds(),
-            Status = "reserved",
-        }, ct);
-
-        var submitted = await alpaca.Trading.PostOrderAsync(new NewOrderRequest(
-            contractSymbol, OrderQuantity.FromInt64(1), OrderSide.Buy, OrderType.Limit, TimeInForce.Day)
+            var closed = await alpaca.Trading.DeletePositionAsync(new DeletePositionRequest(contractSymbol), ct);
+            log.LogInformation("Close order {OrderId} submitted, status {Status}.", closed.OrderId, closed.OrderStatus);
+        }
+        else if (readBack.OrderStatus is OrderStatus.Canceled or OrderStatus.Expired or OrderStatus.Rejected)
         {
-            ClientOrderId = clientOrderId,
-            LimitPrice = limitPrice,
-        }, ct);
-
-        log.LogInformation("Submitted {OrderId} status {Status}.", submitted.OrderId, submitted.OrderStatus);
+            log.LogInformation("Order is already {Status}. Nothing to cancel.", readBack.OrderStatus);
+        }
+        else
+        {
+            log.LogInformation("Nothing filled. Cancelling the open order.");
+            await alpaca.Trading.CancelOrderAsync(readBack.OrderId, ct);
+        }
 
         await store.RecordResultAsync(
-            clientOrderId, submitted.OrderId.ToString(), submitted.OrderStatus.ToString(), null, ct);
+            clientOrderId, readBack.OrderId.ToString(), readBack.OrderStatus.ToString(),
+            time.GetUtcNow().ToUnixTimeSeconds(), ct);
+
+        log.LogInformation("Smoke check finished. Client order id {Id}.", clientOrderId);
+        return 0;
     }
-
-    // 7. Read back BY CLIENT ORDER ID, never by broker id. This is the lookup the
-    //    recovery path depends on, so the check must exercise it.
-    var readBack = await alpaca.Trading.GetOrderAsync(clientOrderId, ct);
-    log.LogInformation(
-        "Read back by client id: {Contract} status {Status}, filled {Filled} at {Price}.",
-        readBack.Symbol, readBack.OrderStatus, readBack.IntegerFilledQuantity, readBack.AverageFillPrice);
-
-    // 8. Close what filled; cancel what did not.
-    if (readBack.IntegerFilledQuantity > 0)
+    catch (Exception error)
     {
-        var closed = await alpaca.Trading.DeletePositionAsync(new DeletePositionRequest(contractSymbol), ct);
-        log.LogInformation("Close order {OrderId} submitted, status {Status}.", closed.OrderId, closed.OrderStatus);
+        log.LogError(error, "Smoke check failed.");
+        return 1;
     }
-    else if (readBack.OrderStatus is OrderStatus.Canceled or OrderStatus.Expired or OrderStatus.Rejected)
-    {
-        log.LogInformation("Order is already {Status}. Nothing to cancel.", readBack.OrderStatus);
-    }
-    else
-    {
-        log.LogInformation("Nothing filled. Cancelling the open order.");
-        await alpaca.Trading.CancelOrderAsync(readBack.OrderId, ct);
-    }
-
-    await store.RecordResultAsync(
-        clientOrderId, readBack.OrderId.ToString(), readBack.OrderStatus.ToString(),
-        time.GetUtcNow().ToUnixTimeSeconds(), ct);
-
-    log.LogInformation("Smoke check finished. Client order id {Id}.", clientOrderId);
-    return 0;
 }
-catch (Exception error)
-{
-    log.LogError(error, "Smoke check failed.");
-    return 1;
-}
+
+return 0;
 
 string? ArgumentValue(string name)
 {
@@ -751,4 +562,46 @@ static string DatabasePath(string repositoryRoot)
     var dataDirectory = Path.Combine(repositoryRoot, "data");
     Directory.CreateDirectory(dataDirectory);
     return Path.Combine(dataDirectory, "trader.db");
+}
+
+async Task<int> AuditAsync(ILogger log)
+{
+    using var auditCancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+    var auditToken = auditCancellation.Token;
+
+    var auditStore = new TradingStore(TradingStore.ConnectionStringForFile(
+        DatabasePath(RepositoryRoot()), readOnly: true));
+    var schemaVersion = await auditStore.SchemaVersionAsync(auditToken);
+    if (schemaVersion != TradingStore.CurrentSchemaVersion)
+    {
+        log.LogError(
+            "Audit schema is {Actual}; expected {Expected}. Start with a clean database file.",
+            schemaVersion, TradingStore.CurrentSchemaVersion);
+        return 1;
+    }
+
+    foreach (var (table, total) in await auditStore.AuditRowCountsAsync(auditToken))
+    {
+        log.LogInformation("  {Table}: {Total:N0} rows.", table, total);
+    }
+
+    foreach (var entry in await auditStore.RecentDecisionsAsync(
+        int.TryParse(ArgumentValue("--last"), out var last) ? last : 10, auditToken))
+    {
+        log.LogInformation(
+            "  {At} {Mode} {Purpose} {Outcome} {Action} {Symbol} risk=[{Risk}] "
+            + "tools={Tools} proposal={Proposal} order={Order}:{OrderStatus}",
+            DateTimeOffset.FromUnixTimeSeconds(entry.TimestampUtc).ToString("u"),
+            entry.Mode, entry.Purpose, entry.Outcome, entry.Action,
+            entry.OptionSymbol ?? "-", entry.RiskResult ?? "-", entry.ToolCallCount,
+            entry.ProposalId ?? "-", entry.CorrelationId ?? "-", entry.OrderStatus ?? "-");
+    }
+
+    var issues = await auditStore.AuditIntegrityAsync(auditToken);
+    foreach (var issue in issues)
+    {
+        log.LogError("Audit integrity fault {Code}: {Reference}.", issue.Code, issue.Reference);
+    }
+
+    return issues.Count == 0 ? 0 : 1;
 }

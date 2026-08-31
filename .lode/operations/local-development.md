@@ -75,6 +75,17 @@ curl -s -D - -o /dev/null -X POST http://127.0.0.1:8100/mcp \
 
 ## Manual tests
 
+`Program.cs` routes each command explicitly. The direct MCP and order smoke harness runs only
+inside the `--check-mcp` or `--smoke` branch. It is not an implicit fall-through after the
+live branch.
+
+```csharp
+if (args.Contains("--smoke") || args.Contains("--check-mcp"))
+{
+    // Direct diagnostic harness.
+}
+```
+
 `alpaca-mcp.http` in the repository root holds the full sequence for the read-only server:
 `initialize`, `notifications/initialized`, `tools/list`, and example `tools/call` requests.
 Visual Studio Code reads the session id from the response by itself. Visual Studio cannot
