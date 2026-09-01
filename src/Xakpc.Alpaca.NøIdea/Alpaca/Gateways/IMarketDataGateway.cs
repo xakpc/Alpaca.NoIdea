@@ -9,9 +9,7 @@ namespace Xakpc.Alpaca.NøIdea.Alpaca.Gateways;
 /// Project-owned records keep Alpaca SDK types at the gateway boundary and make the live
 /// trading loop easy to test.
 /// </para>
-/// <para>
-/// No method names a market-data feed. The account default applies (ADR-010).
-/// </para>
+/// <para>The implementation uses IEX for stocks and Indicative for options.</para>
 /// </remarks>
 public interface IMarketDataGateway
 {

@@ -82,7 +82,7 @@ public sealed class WarRoomAgent(
                     return new SeatOpinion(
                         Seat: seat,
                         Vote: vote?.Cast == true ? vote.Vote.ToString() : null,
-                        Probability: vote?.Probability ?? analysis?.Probability,
+                        ProfitProbability: vote?.ProfitProbability ?? analysis?.ProfitProbability,
                         Confidence: vote?.Cast == true ? vote.Confidence : analysis?.Confidence,
                         Reasoning: vote?.Rationale ?? analysis?.Analysis,
                         Evidence: Toon.Encode(new
@@ -192,14 +192,60 @@ public sealed class WarRoomAgent(
         return ToDecision(outcome);
     }
 
-    private static StrategyDecision ToDecision(WarRoomOutcome outcome) =>
-        outcome.ShouldExecute
-            ? new StrategyDecision
+    private static StrategyDecision ToDecision(WarRoomOutcome outcome)
+    {
+        if (outcome.ShouldExecute)
+        {
+            return new StrategyDecision
             {
                 Actions = outcome.Operation.Actions,
                 RevisedPolicy = outcome.Operation.RevisedPolicy,
-            }
-            : StrategyDecision.Nothing(Explain(outcome));
+            };
+        }
+
+        // A proposer that found nothing is not a rejection, so it stays a plain hold and the
+        // cycle summary keeps counting zero.
+        if (RejectionOf(outcome) is not { } rejection)
+        {
+            return StrategyDecision.Nothing(Explain(outcome));
+        }
+
+        var judged = JudgedAction(outcome);
+
+        return StrategyDecision.Declined(
+            Explain(outcome), rejection, judged?.ContractSymbol, judged?.ProfitProbability);
+    }
+
+    /// <summary>Which stage declined, or null when nothing was put forward to decline.</summary>
+    private static DecisionRejection? RejectionOf(WarRoomOutcome outcome) => outcome.Verdict switch
+    {
+        WarRoomVerdict.PreValidationRejected => new DecisionRejection
+        {
+            Code = outcome.RejectionCode ?? "PRE_VALIDATION",
+            Stage = "pre-validation",
+        },
+        WarRoomVerdict.Rejected => new DecisionRejection
+        {
+            Code = outcome.RejectionCode ?? "ROOM_VOTE",
+            Stage = "room",
+        },
+        _ => null,
+    };
+
+    /// <summary>
+    /// The contract the room judged, which a withdrawal no longer carries itself.
+    /// </summary>
+    /// <remarks>
+    /// The newest review pass is searched first because a modified proposal supersedes the one
+    /// before it, and the pass records what was reviewed rather than what the sitting returned.
+    /// </remarks>
+    private static StrategyAction? JudgedAction(WarRoomOutcome outcome) =>
+        outcome.ReviewPasses
+            .Reverse()
+            .Select(pass => pass.Operation)
+            .Append(outcome.Operation)
+            .SelectMany(operation => operation.Actions)
+            .FirstOrDefault(action => action.Kind != StrategyActionKind.Hold);
 
     private static string Explain(WarRoomOutcome outcome) => outcome.Verdict switch
     {

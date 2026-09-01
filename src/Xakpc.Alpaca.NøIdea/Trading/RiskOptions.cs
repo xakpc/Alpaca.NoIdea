@@ -18,7 +18,7 @@ namespace Xakpc.Alpaca.NøIdea.Trading;
 /// <para>
 /// The fractional limits are <b>chosen, not measured</b>. No real-trade evidence sets them,
 /// because risk appetite is a decision rather than a prediction. They are recorded as chosen
-/// in <c>.lode/trading/strategy-parameters.md</c>.
+/// in <c>.lode/trading/risk-guardrails.md</c>.
 /// </para>
 /// </remarks>
 public sealed record RiskOptions

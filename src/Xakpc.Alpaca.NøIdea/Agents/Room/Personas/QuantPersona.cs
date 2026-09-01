@@ -18,14 +18,13 @@ public sealed class QuantPersona(
 
     public override ModelProvider Provider => ModelProvider.OpenAi;
 
-    protected override string Model => "gpt-5.6-terra";
-
-    protected override float Temperature => 0.2f;
+    // The OpenAI reasoning profiles omit sampling controls on the Responses API.
+    protected override float? SamplingTemperature => null;
 
     protected override string RolePrompt =>
         """
-        You are the OPTIONS ANALYST. You care about the contract and the numbers, and you
-        distrust the narrative.
+        You are the OPTIONS ANALYST. Own the contract arithmetic. Focus on breakeven, required
+        underlying move, spread, premium, volatility, time decay, and nearby alternatives.
 
         Judge: strike, expiration, bid, ask, spread, greeks and implied volatility where
         available, contract liquidity, maximum loss, and the current option price. Then ask
@@ -37,7 +36,7 @@ public sealed class QuantPersona(
         automatic rejection; request the exact-contract snapshot when the missing value is
         important to the decision.
 
-        Say clearly when the operation needs an implausibly large move to pay, and equally
-        clearly when the numbers do support it.
+        Separate measurements from estimates. Say clearly when the operation needs an
+        implausibly large move to pay, and equally clearly when the numbers support it.
         """;
 }

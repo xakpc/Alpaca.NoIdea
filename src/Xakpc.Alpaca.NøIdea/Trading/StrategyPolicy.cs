@@ -5,9 +5,8 @@ namespace Xakpc.Alpaca.NøIdea.Trading;
 /// </summary>
 /// <remarks>
 /// <para>
-/// These are the numbers that <c>.lode/trading/strategy-parameters.md</c> lists as TBD. No
-/// real-trade evidence sets them, because ADR-013 left the system with no forecaster that beats
-/// the option price, so there was nothing to calibrate a threshold against.
+/// These defaults have no real-trade calibration. ADR-013 left the system with no historical
+/// forecaster that beats the option price. See <c>.lode/trading/risk-guardrails.md</c>.
 /// </para>
 /// <para>
 /// Rather than freeze guessed constants, the agent owns them and revises them from its own

@@ -22,8 +22,8 @@ ALPACA_API_KEY=...
 ALPACA_SECRET_KEY=...
 ALPACA_PAPER_TRADE=true
 
-ANTHROPIC_API_KEY=...   # proposer and skeptic (Sonnet 5)
-OPENAI_API_KEY=...      # quant (GPT-5.6-terra)
+ANTHROPIC_API_KEY=...   # proposer and skeptic
+OPENAI_API_KEY=...      # quant
 XAI_API_KEY=...         # market (Grok 4.6)
 ```
 
@@ -34,6 +34,10 @@ is missing and name the ones they could not find, because a seat without a key i
 seat and that failure belongs before the open rather than at 09:31.
 
 To run with no model keys at all, pass `--agent stub`.
+
+The standard profile uses Claude Sonnet 5, GPT-5.6-terra, and Grok 4.6. Add `--cheap` to use
+Claude Haiku 4.5 and GPT-5.4-nano. Grok stays on Grok 4.6. The log names every selected model
+at startup.
 
 `KEENABLE_API_KEY` is separate and optional. It is the web-research MCP server that gives the
 seats `search_web_pages` and `fetch_page_content`. Without it the run warns once and decides
@@ -77,11 +81,12 @@ one-time command.
 
 ## Test the server by hand
 
-Open `alpaca-mcp.http` and run the requests from the top. It covers the read-only server:
-`initialize`, `notifications/initialized`, `tools/list`, and example `tools/call` requests.
+Use the host diagnostic. It connects to the read-only server, lists its tools, and rejects an
+order, position, or account tool:
 
-The most important request is `tools/list` on port 8100. The read-only server must expose
-**no** order, position, or account tool.
+```bash
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --check-mcp
+```
 
 Notes on the protocol:
 
@@ -89,8 +94,6 @@ Notes on the protocol:
 - `Accept` must contain `application/json, text/event-stream`.
 - `initialize` returns the header `mcp-session-id`. Send it back as `Mcp-Session-Id`.
 - The answer is a `text/event-stream`. The JSON is on the `data:` line.
-- Visual Studio Code (REST Client) fills the session id in by itself. Visual Studio cannot
-  chain responses, so paste the value into the manual variables at the top of the file.
 
 ## Run the application
 
@@ -112,6 +115,13 @@ dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live
 dotnet run --project src/Xakpc.Alpaca.NøIdea -- --audit --last 20
 ```
 
+`--smoke` is not read-only. It submits an option buy to the paper account. It then cancels an
+unfilled order or closes a fill. Use `--check-mcp` for a read-only MCP diagnostic.
+
+A normal live process stops when the Alpaca market clock reports a closed market. Start a new
+process for the next session. `--once` is the explicit diagnostic override for an out-of-hours
+cycle.
+
 `data/trader.db` is a live and dry-run audit database. The host creates the current schema in
 an empty file. It does not migrate an obsolete schema. Archive or remove an obsolete file
 before startup. The host does not import `data/raw/`.
@@ -124,8 +134,8 @@ A run writes to stdout, which is what `docker logs` collects. Every line that te
 story of the run carries an event id from `Observability/RunEvents.cs`, so a later view can
 select on the id. See `.lode/operations/observability.md`.
 
-The host reads the server URL from configuration. See `.lode/alpaca/mcp-run-modes.md` for the
-configuration keys.
+The host reads the server URL from configuration. See `.lode/alpaca/mcp-integration.md` for
+the configuration keys.
 
 ## Build the deployed image
 

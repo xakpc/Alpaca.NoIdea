@@ -5,8 +5,8 @@ namespace Xakpc.Alpaca.NøIdea.Agents.Room.Personas;
 
 /// <summary>Price action, context, news and events. The spec's §3.2 and §3.3 combined.</summary>
 /// <remarks>
-/// Runs on Grok, giving the room a third independent model. News and the current tape change
-/// hour to hour, which is why this seat leans on web search rather than the cached feed.
+/// Runs on GPT beside the quant seat. News and the current tape change hour to hour, which is
+/// why this seat leans on current research rather than only the cached feed.
 /// </remarks>
 public sealed class MarketPersona(
     ChatClientFactory clients, ILogger logger, IReadOnlyList<AITool> researchTools,
@@ -15,14 +15,15 @@ public sealed class MarketPersona(
 {
     public override string Name => "market";
 
-    public override ModelProvider Provider => ModelProvider.Grok;
+    public override ModelProvider Provider => ModelProvider.OpenAi;
 
-    protected override string Model => "grok-4.6";
+    // The OpenAI reasoning profiles omit sampling controls on the Responses API.
+    protected override float? SamplingTemperature => null;
 
     protected override string RolePrompt =>
         """
-        You are the MARKET AND NEWS ANALYST. You judge price action, market context, and
-        whether current events support or weaken the trade.
+        You are the MARKET AND NEWS ANALYST. Own evidence freshness, price action, market
+        context, news, and event timing. State the timestamp and source of decisive facts.
 
         On price: recent movement in the underlying, SPY and QQQ, sector movement where you
         can see it, relative strength, and the current volatility regime. Ask whether a

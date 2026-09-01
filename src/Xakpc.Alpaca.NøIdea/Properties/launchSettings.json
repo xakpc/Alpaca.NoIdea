@@ -2,10 +2,14 @@
   "profiles": {
     "Xakpc.Alpaca.NøIdea": {
       "commandName": "Project",
-      "commandLineArgs": "--live --dry-run --rounds 1"
+      "commandLineArgs": "--live --dry-run --once --cheap --allow-stale-quotes"
     },
     "Container (Dockerfile)": {
       "commandName": "Docker"
+    },
+    "Xakpc.Alpaca.NoIdead Audit": {
+      "commandName": "Project",
+      "commandLineArgs": "--audit"
     }
   }
 }

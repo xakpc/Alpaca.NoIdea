@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Xakpc.Alpaca.NøIdea.Alpaca.Gateways;
 using Xakpc.Alpaca.NøIdea.Trading;
 
@@ -40,17 +41,60 @@ public sealed record StrategyAction
     public int Contracts { get; init; } = 1;
 
     /// <summary>
-    /// The agent's own probability that this trade works out. Recorded so the agent can be
-    /// scored with a Brier score later, which is the only honest way to learn whether it has
-    /// an edge.
+    /// For an opening trade, the agent's probability of positive realized P&amp;L at exit.
+    /// A close leaves this null because the unchosen hold result is not observed.
     /// </summary>
-    public decimal? Probability { get; init; }
+    [JsonPropertyName("probability")]
+    public decimal? ProfitProbability { get; init; }
 
     /// <summary>Why. Written to the audit trail whether the action runs or is rejected.</summary>
     public required string Reasoning { get; init; }
 
+    /// <summary>The market figures the proposer says it reasoned from. Checked, not trusted.</summary>
+    public MarketClaims? Claims { get; init; }
+
     public static StrategyAction Hold(string reasoning) =>
         new() { Kind = StrategyActionKind.Hold, Reasoning = reasoning };
+}
+
+/// <summary>
+/// The numbers a proposer states it used, so they can be compared with the catalog.
+/// </summary>
+/// <remarks>
+/// <para>
+/// A model that writes its arithmetic into prose cannot be checked, because prose has no field
+/// to compare. Asking for the same figures as data makes a fabricated premise a validation
+/// error instead of something a reviewer has to notice.
+/// </para>
+/// <para>
+/// Every field is optional. Making them required would change the submission contract, and a
+/// proposal that fails to submit tells us nothing at all. An absent claim is not checked; a
+/// present one must match.
+/// </para>
+/// </remarks>
+public sealed record MarketClaims
+{
+    public decimal? QuotedBid { get; init; }
+    public decimal? QuotedAsk { get; init; }
+    public decimal? UnderlyingLast { get; init; }
+    public decimal? Delta { get; init; }
+    public decimal? ImpliedVolatility { get; init; }
+}
+
+/// <summary>Why the agent turned down an operation it had already put together.</summary>
+/// <remarks>
+/// <b>Proposing nothing and rejecting something are different results.</b> Both leave the
+/// account unchanged, so both used to arrive as a bare hold and the cycle summary counted
+/// neither. That reads as a cycle where nothing happened, when in fact a concrete contract was
+/// judged and declined for a stated reason. This record is set only in the second case.
+/// </remarks>
+public sealed record DecisionRejection
+{
+    /// <summary>A stable code, for example <c>WITHDRAWN_BY_PROPOSER</c> or <c>ROOM_VOTE</c>.</summary>
+    public required string Code { get; init; }
+
+    /// <summary>Which stage declined: <c>room</c> or <c>pre-validation</c>.</summary>
+    public required string Stage { get; init; }
 }
 
 /// <summary>Everything the agent decided this cycle.</summary>
@@ -64,8 +108,43 @@ public sealed record StrategyDecision
     /// </summary>
     public StrategyPolicy? RevisedPolicy { get; init; }
 
+    /// <summary>
+    /// Set when the agent considered a concrete operation and declined it. Null for a plain
+    /// hold, which is not a rejection.
+    /// </summary>
+    public DecisionRejection? Rejection { get; init; }
+
     public static StrategyDecision Nothing(string reasoning) =>
         new() { Actions = [StrategyAction.Hold(reasoning)] };
+
+    /// <summary>
+    /// A rejection that keeps the judged contract, so the audit can score it later.
+    /// </summary>
+    /// <remarks>
+    /// The action stays a hold — nothing is submitted — but it carries the symbol and the
+    /// probability the operation was judged on. Without those the decision row records that
+    /// something was declined and nothing about what, which cannot support a Brier score or a
+    /// counterfactual.
+    /// </remarks>
+    public static StrategyDecision Declined(
+        string reasoning,
+        DecisionRejection rejection,
+        string? contractSymbol,
+        decimal? profitProbability) =>
+        new()
+        {
+            Actions =
+            [
+                new StrategyAction
+                {
+                    Kind = StrategyActionKind.Hold,
+                    ContractSymbol = contractSymbol,
+                    ProfitProbability = profitProbability,
+                    Reasoning = reasoning,
+                },
+            ],
+            Rejection = rejection,
+        };
 }
 
 /// <summary>One mechanically tradeable contract in the authoritative catalog.</summary>
@@ -159,7 +238,7 @@ public sealed record StrategyContext
 
 /// <summary>What one seat thought about the last decision.</summary>
 /// <remarks>
-/// The audit shape of an opinion, not the room's own. <c>Probability</c> and
+/// The audit shape of an opinion, not the room's own. <c>ProfitProbability</c> and
 /// <c>Confidence</c> are nullable because a seat argues in words and need not produce a
 /// number: the plain-C# exposure seat never does, and requiring one would drop exactly the
 /// seats that reason rather than compute.
@@ -167,7 +246,7 @@ public sealed record StrategyContext
 public sealed record SeatOpinion(
     string Seat,
     string? Vote,
-    decimal? Probability,
+    [property: JsonPropertyName("probability")] decimal? ProfitProbability,
     decimal? Confidence,
     string? Reasoning,
     string? Evidence);

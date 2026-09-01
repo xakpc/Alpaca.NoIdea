@@ -36,11 +36,10 @@ client order ID.
 - Active policy and review cursors are durable per run mode.
 - Reconciliation stores canonical and raw broker order state.
 - Audit write failure stops the session.
-- `--audit` opens SQLite in read-only mode.
+- `--audit` opens SQLite in read-only mode. Process startup still creates a plain log file.
 
 ## Related lodes
 
 - [Schema](schema.md)
-- [Proposal review audit](proposal-review-audit.md)
 - [Observability](../operations/observability.md)
 - [Project summary](../summary.md)

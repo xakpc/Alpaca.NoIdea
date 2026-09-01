@@ -42,35 +42,32 @@ public sealed class ExposureRiskPersona(RiskOptions risk) : IPersona
             Confidence = findings.Confidence,
             Analysis = findings.Summary,
             Risks = findings.Concerns,
-            SupportingEvidence = findings.Facts,
+            SupportingEvidence = findings.Facts.Select(fact => new EvidenceItem
+            {
+                Claim = fact,
+                Source = "portfolio snapshot",
+                ObservedAtUtc = context.Market.NowUtc,
+                Direction = findings.Vote == VoteKind.Reject
+                    ? EvidenceDirection.Opposes
+                    : EvidenceDirection.Supports,
+            }).ToArray(),
         });
     }
 
     /// <summary>
-    /// Repeats the numbers only when somebody has contradicted them.
+    /// Stays silent because the exact figures are already in the independent analysis.
     /// </summary>
     /// <remarks>
-    /// The arithmetic does not change between rounds, so speaking again would add nothing.
-    /// This seat stays quiet unless a model has asserted something about exposure that the
-    /// figures do not support.
+    /// The arithmetic does not change between rounds, so speaking again would add weight but
+    /// no new information. Every model sees the independent exposure analysis.
     /// </remarks>
     public Task<RoomContribution> ParticipateAsync(RoomContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        var findings = Assess(context);
-
-        if (findings.Concerns.Count == 0)
-        {
-            return Task.FromResult(RoomContribution.Silent(Name, context.Round));
-        }
-
-        return Task.FromResult(new RoomContribution
-        {
-            Speaker = Name,
-            Round = context.Round,
-            Summary = findings.Summary,
-        });
+        // The exact figures are already in the independent analysis. Repeating them during
+        // discussion would add weight without adding information.
+        return Task.FromResult(RoomContribution.Silent(Name, context.Round));
     }
 
     public Task<PersonaVote> VoteAsync(RoomContext context, CancellationToken cancellationToken)
@@ -172,7 +169,7 @@ public sealed class ExposureRiskPersona(RiskOptions risk) : IPersona
         if (concerns.Count == 0)
         {
             return new Findings(
-                VoteKind.Approve, 0.5m,
+                VoteKind.Abstain, 0m,
                 $"Exposure is comfortable: {afterTotal:P1} of equity committed after this trade.",
                 concerns, facts);
         }

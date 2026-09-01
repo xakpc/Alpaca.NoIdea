@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using Alpaca.Markets;
 using Microsoft.Extensions.Logging;
 using Xakpc.Alpaca.NøIdea.Alpaca;
@@ -16,18 +17,45 @@ using Xakpc.Alpaca.NøIdea.Storage;
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.GetCultureInfo("en-US");
 CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.GetCultureInfo("en-US");
 
-// The console is the whole record. The level is NEVER reduced: turning the record down to
-// warnings trades away the thing that explains a bad trade afterwards. Every line a person
-// watches a run by carries a RunEvents id, so a later view can select on the id rather than
-// on the level. See Observability/RunEvents.cs.
+// A Windows console starts on an OEM code page. That encoding has no symbol the operator view
+// draws, so .NET falls back to the best-fit table: '•' becomes 0x07, the terminal bell, and
+// '▲ ▼ →' become other C0 control bytes. The run then beeps on almost every line and prints a
+// damaged layout. UTF-8 removes the substitution. ConsoleGlyphs still covers the console that
+// refuses it.
+if (!Console.IsOutputRedirected)
+{
+    try
+    {
+        Console.OutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+    }
+    catch (IOException)
+    {
+        // No console is attached. The ASCII symbol set covers this.
+    }
+}
+
+// The file is the complete record. The Spectre console selects the information a person needs
+// during a run. Stable RunEvents ids keep that selection separate from the trading code.
+// The file and logger factory stay at Information so presentation never removes evidence.
+var repositoryRoot = RepositoryRoot();
+var fileLogPath = Path.Combine(
+    repositoryRoot,
+    "data",
+    "logs",
+    $"trader-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.log");
+using var fileLoggerProvider = new PlainFileLoggerProvider(fileLogPath);
+using var consoleLoggerProvider = new SpectreConsoleLoggerProvider(args.Contains("--live"));
+
 using var loggerFactory = LoggerFactory.Create(builder =>
 {
     builder.SetMinimumLevel(LogLevel.Information);
     builder.AddDebug();
-    builder.AddSimpleConsole(options => options.SingleLine = true);
+    builder.AddProvider(fileLoggerProvider);
+    builder.AddProvider(consoleLoggerProvider);
 });
 
 var log = loggerFactory.CreateLogger("Trader");
+log.LogInformation("Plain file log: {Path}", fileLogPath);
 
 if (!args.Contains("--smoke") && !args.Contains("--check-mcp")
     && !args.Contains("--audit")
@@ -37,7 +65,8 @@ if (!args.Contains("--smoke") && !args.Contains("--check-mcp")
         "Nothing to do. Pass --smoke for the order path, --check-mcp for the read-only MCP "
         + "connection, --audit to inspect the durable record, or --live to trade. "
         + "Add --dry-run to decide everything and send "
-        + "nothing, and --once to run a single cycle out of hours.");
+        + "nothing, --once to run a single cycle out of hours, and --cheap to use the "
+        + "low-cost model profile.");
     return 0;
 }
 
@@ -187,13 +216,23 @@ if (args.Contains("--live"))
         }
 
         // Every seat gets the same read-only tools. The diversity that matters is the model.
-        var factory = new ChatClientFactory();
+        var modelProfile = args.Contains("--cheap")
+            ? ChatModelProfile.Cheap
+            : ChatModelProfile.Standard;
+        var factory = new ChatClientFactory(modelProfile);
+
+        log.LogInformation(
+            "Model profile: {Profile}. Anthropic={Anthropic}; OpenAI={OpenAi}; Grok={Grok}.",
+            args.Contains("--cheap") ? "cheap" : "standard",
+            modelProfile.Anthropic,
+            modelProfile.OpenAi,
+            modelProfile.Grok);
 
         var personas = new List<IPersona>
         {
             new SkepticPersona(factory, log, researchTools, liveStore),   // Claude
             new QuantPersona(factory, log, researchTools, liveStore),     // GPT
-            new MarketPersona(factory, log, researchTools, liveStore),    // Grok
+            new MarketPersona(factory, log, researchTools, liveStore),    // GPT
             new ExposureRiskPersona(liveRiskOptions),          // plain C#, no tokens
         };
 
@@ -236,8 +275,9 @@ if (args.Contains("--live"))
         liveAgent = liveWarRoom;
 
         log.LogInformation(
-            "War room seated: proposer + {Seats}. {Rounds} discussion round(s), "
+            "War room seated: proposer[{ProposerProvider}] + {Seats}. {Rounds} discussion round(s), "
             + "approve threshold {Threshold}.",
+            roomProposer.Provider,
             string.Join(", ", personas.Select(persona => $"{persona.Name}[{persona.Provider}]")),
             Math.Clamp(warRoomOptions.DiscussionRounds, 1, WarRoomOptions.MaximumDiscussionRounds),
             warRoomOptions.ApproveThreshold);
@@ -418,14 +458,16 @@ if (args.Contains("--smoke") || args.Contains("--check-mcp"))
         else
         {
             // 3. Underlying price, so the strike filter can be centred on it.
-            var lastTrade = await alpaca.StockData.GetLatestTradeAsync(new LatestMarketDataRequest(symbol), ct);
+            var lastTrade = await alpaca.StockData.GetLatestTradeAsync(
+                new LatestMarketDataRequest(symbol) { Feed = MarketDataFeed.Iex }, ct);
             var spot = lastTrade.Price;
             log.LogInformation("{Symbol} last trade {Price:N2} at {Time:u}.", symbol, spot, lastTrade.TimestampUtc);
 
-            // 4. A near-money call ladder over the next two weeks. No feed is named (ADR-010).
+            // 4. A near-money call ladder over the next two weeks. Use the free Indicative feed.
             var today = DateOnly.FromDateTime(time.GetUtcNow().UtcDateTime);
             var chain = await alpaca.OptionsData.GetOptionChainAsync(new OptionChainRequest(symbol)
             {
+                OptionsFeed = OptionsFeed.Indicative,
                 OptionType = OptionType.Call,
                 ExpirationDateGreaterThanOrEqualTo = today,
                 ExpirationDateLessThanOrEqualTo = today.AddDays(14),

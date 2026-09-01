@@ -324,7 +324,7 @@ public class SeatOpinionTests
                         Kind = StrategyActionKind.OpenCall,
                         ContractSymbol = "TEST260904C00100000",
                         Contracts = 1,
-                        Probability = 0.6m,
+                        ProfitProbability = 0.6m,
                         Reasoning = "test",
                     },
                 ],

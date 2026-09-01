@@ -1,7 +1,8 @@
 # Live Trading Cycle
 
-One cycle every 30 minutes during regular US market hours. The interval is configuration and
-the loop reads the Alpaca market clock. `TradingLoop.RunCycleAsync` is the code.
+The loop reads the Alpaca market clock during regular US market hours. After each completed
+cycle, it waits the configured 30 minutes. A normal session stops when the clock reports a
+closed market. `--once` is the explicit out-of-hours diagnostic override.
 
 > **Existing positions are handled first. New trades are considered only after the current
 > positions are safe.**
@@ -38,9 +39,19 @@ flowchart TD
    competition flatten are deterministic and consult nobody, so a hung or broken model can
    never delay one.
 2. **The war room sits in the middle.** It only ever produces data.
-3. **`RiskGuard` runs last, immediately before submission.** The market moves during a debate,
-   so a proposal that passed pre-validation can still fail here. That is the design, not a
-   redundancy.
+3. **`RiskGuard` runs last, immediately before submission.** `TryOpenAsync` first reads the
+   current quote for the selected contract and judges that, not the catalog row. The catalog is
+   built at the start of the cycle and the room can debate for longer than `MaxQuoteAge`, so
+   the catalog row is usually stale by this point. The limit price also comes from the
+   refreshed quote.
+
+   The refresh is a safety read through the typed market-data gateway. It reuses the ordinary
+   chain read with both strike bounds and both expiration bounds pinned to the selected
+   contract, so it returns one row.
+
+   **It fails closed.** A read that throws, returns nothing, or returns no matching symbol
+   rejects the trade with the `quote refresh` reason. A transient fault costs one trade. A
+   stale quote must not reach the broker.
 
 ## 1. Sync
 
@@ -128,22 +139,52 @@ and gets a new independent analysis, discussion, and private vote.
 
 ## 7. Risk and submission
 
+The loop reads the current quote for the selected contract first, then judges that row.
+
+```csharp
+if (await RefreshAsync(candidate, cancellationToken) is not { } refreshed)
+{
+    // Reject. A stale quote must not reach the broker.
+}
+
+candidate = refreshed;
+var verdict = _riskGuard.CanOpen(action, candidate, snapshot, Policy);
+```
+
 `RiskGuard.CanOpen` checks per-trade risk, total exposure, position counts, the daily limit,
-contract quality, and the expiration window. Then the loop **reserves the client order id in
-SQLite before submitting**, so an uncertain result can be resolved by client ID. This rule
-applies to buys and risk-reducing market sells.
+contract quality, quote age, and the expiration window. A refreshed quote that is itself too
+old is still rejected, so the refresh is not a way around the quote-age rule. Then the loop
+**reserves the client order ID in SQLite before submitting**, so an uncertain result can be
+resolved by client ID. This rule applies to buys and risk-reducing market sells.
+
+Alpaca is the source of truth for open positions. A pending or uncertain sell blocks another
+close and blocks review of that position. An open or partially filled sell is a submitted
+close. Only a fill or a later broker position read confirms that the position is closed.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open: buy fills
+    Open --> Review: trigger fires
+    Review --> Open: room holds
+    Review --> Closing: room closes
+    Open --> Closing: hard exit
+    Closing --> Open: close fails
+    Closing --> Closing: sell is pending
+    Closing --> [*]: sell fills and position is absent
+```
 
 ## 8. Persist
 
-Every cycle writes an equity snapshot. Each proposal version keeps its operation, thesis,
-analyses, discussion, votes, verdict, review pass, and superseded state. Only the final
-decision can link to an order. Rejections remain with their reason.
+A normal completed path writes an equity snapshot. A provider or process fault can end a path
+before that write. Each completed proposal version keeps its operation, thesis, analyses,
+discussion, votes, verdict, review pass, and superseded state. Only the final decision can
+link to an order. The current new-trade rejection path loses some proposal detail when it
+converts the result to a hold. The active improvement plan records that defect.
 
 ## Related
 
 - [War room](../war-room/summary.md)
 - [Risk guardrails](risk-guardrails.md)
-- [Position lifecycle](position-lifecycle.md)
-- [Strategy parameters](strategy-parameters.md)
-- [Tradeable contract catalog](tradeable-contract-catalog.md)
-- [Staged war-room context](../war-room/staged-context.md)
+- [Trading summary](summary.md)
+- [Storage schema](../storage/schema.md)
+- [After-session improvements](../plans/after-session-improvements.md)

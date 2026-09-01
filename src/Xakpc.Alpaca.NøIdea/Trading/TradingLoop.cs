@@ -258,6 +258,24 @@ public sealed class TradingLoop(
             "{Offered} candidate(s) from {Scanned} symbol(s).",
             catalog.Count, TrackedSymbols.Count);
 
+        // An empty catalog ends the cycle before the room sits, so the tally of which gate
+        // removed what is the only evidence of why. It is run narrative, not diagnostics.
+        if (CatalogBuildResult.Tally(catalogResult.Dropped) is { } drops)
+        {
+            _logger.LogInformation(
+                RunEvents.CatalogFiltered,
+                "Dropped {Dropped} of {Examined} contract(s): {Reasons}.",
+                catalogResult.DroppedCount, catalogResult.Examined, drops);
+        }
+
+        if (CatalogBuildResult.Tally(catalogResult.SkippedSymbols) is { } skips)
+        {
+            _logger.LogInformation(
+                RunEvents.CatalogFiltered,
+                "Skipped {Skipped} symbol(s) before any contract: {Reasons}.",
+                catalogResult.SkippedSymbols.Values.Sum(), skips);
+        }
+
         var news = HeadlineIndexSelector.Select(
             await SafeNewsAsync(cancellationToken),
             TrackedSymbols,
@@ -356,6 +374,21 @@ public sealed class TradingLoop(
 
             switch (action.Kind)
             {
+                case StrategyActionKind.Hold when decision.Rejection is { } rejection:
+                    // A contract was judged and declined. That is a rejection, not a quiet
+                    // cycle, and it must reach the count and the audit with the symbol it was
+                    // judged on.
+                    rejected++;
+                    _logger.LogInformation(
+                        RunEvents.ProposalRejectedEarly,
+                        "{Stage} rejected {Symbol}: {Code}. {Why}",
+                        rejection.Stage, action.ContractSymbol ?? "the proposal",
+                        rejection.Code, action.Reasoning);
+                    await RecordDecisionAsync(
+                        action, null, "new-trade", "rejected", rejection.Stage, rejection.Code,
+                        cancellationToken);
+                    break;
+
                 case StrategyActionKind.Hold:
                     // Say why nothing happened. The war room short-circuits before it ever
                     // sits — halted, no free slot, no candidate — and without this the run
@@ -747,6 +780,25 @@ public sealed class TradingLoop(
             return false;
         }
 
+        // The catalog was built at the start of the cycle and the room may debate for longer
+        // than MaxQuoteAge. Judging the original row would reject every otherwise valid trade
+        // on a stale quote, and the limit price below would be set from a price nobody is
+        // offering any more. This is a safety read: the typed gateway, never an agent tool.
+        if (await RefreshAsync(candidate, cancellationToken) is not { } refreshed)
+        {
+            var reason = $"no current quote for {candidate.Contract.ContractSymbol}";
+            _logger.LogWarning(
+                RunEvents.RiskRejected,
+                "Could not refresh {Symbol} before the risk check. Rejected.",
+                candidate.Contract.ContractSymbol);
+            await RecordDecisionAsync(
+                action, candidate, "new-trade", "rejected", "quote refresh", reason,
+                cancellationToken);
+            return false;
+        }
+
+        candidate = refreshed;
+
         var verdict = _riskGuard.CanOpen(action, candidate, snapshot, Policy);
         if (!verdict.Allowed)
         {
@@ -795,6 +847,56 @@ public sealed class TradingLoop(
             limitPrice * action.Contracts * 100m, action.Reasoning);
 
         return true;
+    }
+
+    /// <summary>
+    /// Reads the current quote for one selected contract, or null when it cannot be read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Pinned to a single contract: the underlying, one option type, and the same date and
+    /// strike on both bounds. That reuses the ordinary chain read rather than adding a gateway
+    /// method, and it returns one row instead of a chain.
+    /// </para>
+    /// <para>
+    /// <b>Fail closed.</b> A read that throws, returns nothing, or returns no matching symbol
+    /// gives null, and the caller rejects the trade. A transient fault therefore costs one
+    /// trade, which is the correct price for never sending a stale quote to the broker.
+    /// </para>
+    /// </remarks>
+    private async Task<TradeableContractView?> RefreshAsync(
+        TradeableContractView candidate, CancellationToken cancellationToken)
+    {
+        var contract = candidate.Contract;
+
+        try
+        {
+            var rows = await _marketData.GetOptionCandidatesAsync(
+                new OptionChainQuery
+                {
+                    Underlying = contract.Underlying,
+                    OptionType = contract.OptionType,
+                    ExpirationFrom = contract.Expiration,
+                    ExpirationTo = contract.Expiration,
+                    StrikeFrom = contract.Strike,
+                    StrikeTo = contract.Strike,
+                },
+                cancellationToken);
+
+            var fresh = rows.FirstOrDefault(row => string.Equals(
+                row.ContractSymbol, contract.ContractSymbol, StringComparison.Ordinal));
+
+            // UnderlyingPrice is carried over: the stale-quote rule guards the option quote,
+            // and CostPerContract follows Contract.Ask on its own.
+            return fresh is null ? null : candidate with { Contract = fresh };
+        }
+        catch (Exception error) when (error is not OperationCanceledException
+                                      and not AuditPersistenceException)
+        {
+            _logger.LogWarning(
+                error, "Could not read a current quote for {Symbol}.", contract.ContractSymbol);
+            return null;
+        }
     }
 
     // ------------------------------------------------------------------ audit
@@ -857,7 +959,7 @@ public sealed class TradingLoop(
                     : new DateTimeOffset(parsed.Expiration.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
                         .ToUnixTimeSeconds(),
             UnderlyingPrice = candidate?.UnderlyingPrice,
-            Probability = action.Probability,
+            Probability = action.ProfitProbability,
             NetVote = explains?.LastNetVote,
             MarketSnapshotJson = contract is null ? null :
                 System.Text.Json.JsonSerializer.Serialize(new
@@ -1017,6 +1119,36 @@ public sealed class TradingLoop(
         IReadOnlyList<UnderlyingSnapshot> Underlyings)
     {
         public static CatalogBuildResult Empty { get; } = new([], []);
+
+        /// <summary>
+        /// How many contracts each gate removed, by <see cref="RiskVerdict.Code"/>.
+        /// </summary>
+        /// <remarks>
+        /// An empty catalog is normal out of hours and abnormal during a session, and this
+        /// count is the only thing that separates the two. Without it, a cycle reports
+        /// "0 candidate(s)" and says nothing about which rule emptied it.
+        /// </remarks>
+        public IReadOnlyDictionary<string, int> Dropped { get; init; } =
+            new Dictionary<string, int>(StringComparer.Ordinal);
+
+        /// <summary>The contracts that reached the gates, admitted and rejected together.</summary>
+        public int Examined { get; init; }
+
+        /// <summary>
+        /// Symbols that produced no chain to examine, by reason. Counted apart from
+        /// <see cref="Dropped"/> because one entry here is a symbol, not a contract, and
+        /// adding the two totals together would report a number that means nothing.
+        /// </summary>
+        public IReadOnlyDictionary<string, int> SkippedSymbols { get; init; } =
+            new Dictionary<string, int>(StringComparer.Ordinal);
+
+        /// <summary>The contracts the gates removed.</summary>
+        public int DroppedCount => Examined - Contracts.Count;
+
+        /// <summary>A tally, worst offender first, or null when the tally is empty.</summary>
+        public static EventCountBreakdown? Tally(IReadOnlyDictionary<string, int> counts) => counts.Count == 0
+            ? null
+            : new EventCountBreakdown(counts);
     }
 
     private async Task<CatalogBuildResult> BuildTradeableCatalogAsync(
@@ -1034,6 +1166,15 @@ public sealed class TradingLoop(
             .ToHashSet(StringComparer.Ordinal);
         var views = new List<TradeableContractView>();
         var underlyings = new List<UnderlyingSnapshot>();
+        var dropped = new Dictionary<string, int>(StringComparer.Ordinal);
+        var skippedSymbols = new Dictionary<string, int>(StringComparer.Ordinal);
+        var examined = 0;
+
+        void Drop(string code) =>
+            dropped[code] = dropped.GetValueOrDefault(code) + 1;
+
+        void SkipSymbol(string code) =>
+            skippedSymbols[code] = skippedSymbols.GetValueOrDefault(code) + 1;
 
         var scan = _tradingOptions.OptionScanMaxMoneynessFraction;
         if (scan is <= 0m or >= 1m)
@@ -1054,12 +1195,14 @@ public sealed class TradingLoop(
             catch (Exception error) when (error is not OperationCanceledException)
             {
                 _logger.LogDebug(error, "No price for {Symbol} this cycle.", symbol);
+                SkipSymbol("no-underlying-price");
                 continue;
             }
 
             var spot = latest.Price;
             if (spot <= 0m)
             {
+                SkipSymbol("no-underlying-price");
                 continue;
             }
 
@@ -1083,13 +1226,17 @@ public sealed class TradingLoop(
             {
                 // A partial chain is not authoritative. Drop the whole symbol for this cycle.
                 _logger.LogDebug(error, "No complete option chain for {Symbol} this cycle.", symbol);
+                SkipSymbol("no-option-chain");
                 continue;
             }
 
             foreach (var contract in chain)
             {
+                examined++;
+
                 if (held.Contains(contract.ContractSymbol) || pendingBuys.Contains(contract.ContractSymbol))
                 {
+                    Drop("already-held-or-pending");
                     continue;
                 }
 
@@ -1102,6 +1249,7 @@ public sealed class TradingLoop(
 
                 if (kind == StrategyActionKind.Hold)
                 {
+                    Drop("not-a-call-or-put");
                     continue;
                 }
 
@@ -1119,9 +1267,14 @@ public sealed class TradingLoop(
                     Reasoning = "mechanical catalog admission",
                 };
 
-                if (_riskGuard.CanOpen(oneContract, view, riskSnapshot, Policy).Allowed)
+                var verdict = _riskGuard.CanOpen(oneContract, view, riskSnapshot, Policy);
+                if (verdict.Allowed)
                 {
                     views.Add(view);
+                }
+                else
+                {
+                    Drop(verdict.Code);
                 }
             }
         }
@@ -1137,7 +1290,12 @@ public sealed class TradingLoop(
                 .ThenBy(view => view.Contract.OptionType, StringComparer.Ordinal)
                 .ThenBy(view => view.Contract.Strike)
                 .ThenBy(view => view.Contract.ContractSymbol, StringComparer.Ordinal)],
-            underlyings);
+            underlyings)
+        {
+            Dropped = dropped,
+            Examined = examined,
+            SkippedSymbols = skippedSymbols,
+        };
     }
 
     private async Task<UnderlyingSnapshot> BuildUnderlyingSnapshotAsync(

@@ -30,6 +30,13 @@ public static class RunEvents
     public static readonly EventId CycleStarted = new(1004, nameof(CycleStarted));
     public static readonly EventId CycleFinished = new(1005, nameof(CycleFinished));
 
+    /// <summary>The session is idle until the next cycle. Says when it resumes and why it waits.</summary>
+    /// <remarks>
+    /// The wait is half an hour by default. Without this event the console shows nothing at all
+    /// for that long, and a live run cannot be told apart from a hung one.
+    /// </remarks>
+    public static readonly EventId CycleWaiting = new(1006, nameof(CycleWaiting));
+
     // 2000 - the trading loop
     public static readonly EventId AccountRead = new(2001, nameof(AccountRead));
     public static readonly EventId CandidatesBuilt = new(2002, nameof(CandidatesBuilt));
@@ -37,6 +44,7 @@ public static class RunEvents
     public static readonly EventId OrderDecided = new(2004, nameof(OrderDecided));
     public static readonly EventId PositionClosed = new(2005, nameof(PositionClosed));
     public static readonly EventId RiskRejected = new(2006, nameof(RiskRejected));
+    public static readonly EventId CatalogFiltered = new(2007, nameof(CatalogFiltered));
 
     // 3000 - the war room
     public static readonly EventId ProposalMade = new(3001, nameof(ProposalMade));
@@ -116,4 +124,9 @@ public enum ChatEvent
 
     /// <summary>The tally: finish reason, turns, tools called, tokens, and time.</summary>
     Finished = 5,
+
+    /// <summary>
+    /// One line, written immediately before the call goes out: which seat and phase, which model gets it, and how the call is configured.
+    /// </summary>
+    Sending = 6,
 }

@@ -5,13 +5,11 @@ The system reaches Alpaca two ways, split by **caller**, not by protocol (ADR-00
 ```mermaid
 flowchart LR
     subgraph Host[".NET Trader Host"]
-        RA[Research Agent]
-        CA[Critic Agent]
+        P[War-room personas]
         ENG[Deterministic Trading Engine]
         MCP[Read-only McpClient]
         SDK[AlpacaClients<br/>Alpaca.Markets]
-        RA --> MCP
-        CA --> MCP
+        P --> MCP
         ENG --> SDK
     end
 
@@ -54,7 +52,7 @@ while (!string.IsNullOrWhiteSpace(request.Pagination.Token));
 
 Only deterministic C# reads option chains. An agent can inspect an exact contract through
 MCP, but it cannot use MCP to rediscover the chain. See
-[tradeable contract catalog](../trading/tradeable-contract-catalog.md).
+[trading summary](../trading/summary.md).
 
 ## The clients
 
@@ -70,8 +68,36 @@ MCP, but it cannot use MCP to rediscover the chain. See
 variable, or argument can move the process to a live account; it takes a source edit. A unit
 test pins it.
 
-Pass no market-data feed anywhere (ADR-010). `OptionChainRequest.OptionsFeed` exists and must
-stay unset, so the account default applies.
+The typed SDK gateway sets `MarketDataFeed.Iex` on stock requests. It sets
+`OptionsFeed.Indicative` on option-chain requests. The runtime does not depend on an account
+default because that default can select data that the account cannot read.
+
+## MCP run modes
+
+There is one Alpaca MCP server and it is read-only.
+
+| Mode | Transport | Owner | Lifetime |
+|---|---|---|---|
+| Development | Streamable HTTP at `127.0.0.1:8100/mcp` | `compose.dev.yaml` | Stays up across host runs. |
+| Deployed | `stdio` | The .NET host | One child process for the host lifetime. |
+
+```mermaid
+flowchart TB
+    D[Development host] -->|HTTP 8100| C[Read-only MCP container]
+    P[Deployed host] -->|stdio| S[Read-only MCP child]
+    D -. typed SDK .-> A[Alpaca paper API]
+    P -. typed SDK .-> A
+```
+
+`Alpaca__Mcp__ReadOnlyUrl` selects HTTP. `Alpaca__Mcp__ServerCommand` selects `stdio`.
+Both values together, or neither value, stop startup. `ALPACA_TOOLSETS` is:
+
+```text
+assets,stock-data,options-data,news,corporate-actions
+```
+
+The development port binds to loopback only. The deployed image contains the pinned server,
+so it does not need a Docker socket.
 
 ## Order identity and idempotency
 
@@ -101,6 +127,28 @@ var approved = discovered.Where(McpToolCatalog.IsApprovedResearchTool).ToArray()
 The approved set becomes `ChatOptions.Tools`. `McpClientTool` derives from `AIFunction`, so no
 adapter is needed. **Never pass the discovered list unfiltered** — that would delete control 2.
 
+## Safety controls
+
+The server-side toolset and the client-side exact allowlist are independent controls.
+`McpToolCatalog.AssertNoForbiddenTool` stops startup if the server exposes account, position,
+order, exercise, file, shell, or secret access.
+
+```mermaid
+flowchart TD
+    S[Read-only server toolsets] --> L[ListToolsAsync]
+    L --> F[Reject forbidden tools]
+    F --> A[Exact approved names]
+    A --> P[Persona research tools]
+```
+
+The server receives paper credentials through environment variables. Models never receive
+the credentials. The typed SDK is fixed to `Environments.Paper`. An MCP connection failure
+stops normal MCP-enabled startup; `--no-mcp` is the explicit mode that removes Alpaca research
+tools.
+
+Each model tool request and result is written to `agent_tool_calls`. A model-generated value
+never becomes a shell command or a broker-tool argument.
+
 ## Current repository state
 
 | Item | State |
@@ -109,13 +157,13 @@ adapter is needed. **Never pass the discovered list unfiltered** — that would 
 | `compose.dev.yaml` | One service, `noidea-mcp-readonly`, on `127.0.0.1:8100`. |
 | `src/Xakpc.Alpaca.NøIdea/Dockerfile` | Holds the server and the .NET host. One stdio child. |
 | `Alpaca/AlpacaClients.cs` | Written. Three typed clients on `Environments.Paper`. |
-| `Alpaca/AlpacaMcpClient.cs`, `McpToolCatalog.cs` | Written. 34 tools discovered, 25 approved. |
-| `Storage/TradingStore.cs` | Written. `orders` table only. |
-| `alpaca-mcp.http` | **Does not exist.** Earlier lode revisions claimed it did. Use `--check-mcp`. |
+| `Alpaca/AlpacaMcpClient.cs`, `McpToolCatalog.cs` | Written. The measured server exposes 34 tools; the host approves 23. |
+| `Storage/Schema.sql` | Eight tables for audit evidence and restart state. |
+| MCP diagnostic | `alpaca-mcp.http` does not exist. Use `--check-mcp`. |
 
 ## Related
 
-- [MCP safety](mcp-safety.md)
 - [Market data policy](market-data-policy.md)
-- [LLM tool policy](../llm/tool-policy.md)
+- [LLM summary](../llm/summary.md)
+- [Local development](../operations/local-development.md)
 - [Risk guardrails](../trading/risk-guardrails.md)

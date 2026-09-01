@@ -4,10 +4,21 @@ using Xakpc.Alpaca.NøIdea.Alpaca.Gateways;
 namespace Xakpc.Alpaca.NøIdea.Trading;
 
 /// <summary>The answer to one risk question. A rejection always carries a reason.</summary>
+/// <remarks>
+/// A verdict carries two texts because they answer two different questions.
+/// <see cref="Reason"/> explains <b>this</b> candidate and may hold a measured number.
+/// <see cref="Code"/> names the rule that fired and never holds a number, so a caller that
+/// checks thousands of contracts can count codes and report which gate emptied the catalog.
+/// </remarks>
 public sealed record RiskVerdict(bool Allowed, string Reason)
 {
+    /// <summary>The rule that decided, as a stable kebab-case label without any value.</summary>
+    public string Code { get; init; } = "allowed";
+
     public static RiskVerdict Allow() => new(true, "allowed");
-    public static RiskVerdict Reject(string reason) => new(false, reason);
+
+    public static RiskVerdict Reject(string code, string reason) =>
+        new(false, reason) { Code = code };
 }
 
 /// <summary>What the account looks like right now, for the limit checks.</summary>
@@ -51,18 +62,21 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
 
         if (snapshot.DayOpeningEquity <= 0m)
         {
-            return RiskVerdict.Reject("prior-close equity is unavailable");
+            return RiskVerdict.Reject(
+                "prior-close-equity-unavailable", "prior-close equity is unavailable");
         }
 
         if (!snapshot.PendingRiskKnown)
         {
-            return RiskVerdict.Reject("a pending buy order has unknown remaining risk");
+            return RiskVerdict.Reject(
+                "pending-risk-unknown", "a pending buy order has unknown remaining risk");
         }
 
         var loss = (snapshot.DayOpeningEquity - snapshot.Equity) / snapshot.DayOpeningEquity;
         if (loss >= _options.MaxDailyLossFraction)
         {
             return RiskVerdict.Reject(
+                "daily-loss-limit",
                 $"daily loss {(loss * 100m).ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}% "
                 + $"reached the {(_options.MaxDailyLossFraction * 100m).ToString("F0", System.Globalization.CultureInfo.InvariantCulture)}% limit");
         }
@@ -94,7 +108,7 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
 
         if (snapshot.Equity <= 0m)
         {
-            return RiskVerdict.Reject("account equity is not positive");
+            return RiskVerdict.Reject("equity-not-positive", "account equity is not positive");
         }
 
         var accountVerdict = CanConsiderNewPositions(snapshot);
@@ -106,24 +120,27 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
         if (snapshot.OpenPositions + snapshot.PendingOpenPositions >= _options.MaxConcurrentPositions)
         {
             return RiskVerdict.Reject(
+                "position-slots-full",
                 $"open and pending positions use all {_options.MaxConcurrentPositions} slots");
         }
 
         if (snapshot.PositionsOpenedToday >= _options.MaxNewPositionsPerDay)
         {
             return RiskVerdict.Reject(
+                "daily-new-position-limit",
                 $"already opened {snapshot.PositionsOpenedToday} positions today");
         }
 
         var contracts = action.Contracts;
         if (contracts < 1)
         {
-            return RiskVerdict.Reject("contract count is not positive");
+            return RiskVerdict.Reject("contract-count-not-positive", "contract count is not positive");
         }
 
         if (contracts > policy.MaxContractsPerTrade || contracts > _options.HardMaxContractsPerTrade)
         {
-            return RiskVerdict.Reject($"{contracts} contracts exceeds the per-trade limit");
+            return RiskVerdict.Reject(
+                "contracts-over-trade-limit", $"{contracts} contracts exceeds the per-trade limit");
         }
 
         // A long option cannot lose more than the premium, so the cost IS the risk.
@@ -131,12 +148,13 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
 
         if (cost <= 0m)
         {
-            return RiskVerdict.Reject("contract price is not positive");
+            return RiskVerdict.Reject("price-not-positive", "contract price is not positive");
         }
 
         if (cost > snapshot.Equity * _options.MaxRiskPerTradeFraction)
         {
             return RiskVerdict.Reject(
+                "over-per-trade-risk",
                 $"cost {cost:N2} exceeds {_options.MaxRiskPerTradeFraction:P0} of equity");
         }
 
@@ -144,6 +162,7 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
             > snapshot.Equity * _options.MaxTotalRiskFraction)
         {
             return RiskVerdict.Reject(
+                "over-total-risk",
                 $"total exposure would exceed {_options.MaxTotalRiskFraction:P0} of equity");
         }
 
@@ -152,7 +171,7 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
         var availableCash = Math.Max(0m, snapshot.Cash - snapshot.PendingOrderCost);
         if (cost > availableCash)
         {
-            return RiskVerdict.Reject("not enough cash after pending orders");
+            return RiskVerdict.Reject("not-enough-cash", "not enough cash after pending orders");
         }
 
         return CheckContract(candidate, policy);
@@ -178,50 +197,56 @@ public sealed class RiskGuard(RiskOptions options, TimeProvider time)
         if (daysToExpiration < policy.MinDaysToExpiration
             || daysToExpiration > policy.MaxDaysToExpiration)
         {
-            return RiskVerdict.Reject($"{daysToExpiration} days to expiration is outside the policy window");
+            return RiskVerdict.Reject(
+                "expiration-outside-policy",
+                $"{daysToExpiration} days to expiration is outside the policy window");
         }
 
         if (daysToExpiration < _options.HardMinDaysToExpiration
             || daysToExpiration > _options.HardMaxDaysToExpiration)
         {
-            return RiskVerdict.Reject($"{daysToExpiration} days to expiration is outside the hard window");
+            return RiskVerdict.Reject(
+                "expiration-outside-hard-window",
+                $"{daysToExpiration} days to expiration is outside the hard window");
         }
 
         // The position must be closable before Alpaca takes its final equity reading.
         var expiresUtc = contract.Expiration.ToDateTime(TimeOnly.MinValue);
         if (expiresUtc > _options.CompetitionFlattenUtc.UtcDateTime.Date.AddDays(1))
         {
-            return RiskVerdict.Reject("expires after the competition measurement point");
+            return RiskVerdict.Reject(
+                "expires-after-flatten", "expires after the competition measurement point");
         }
 
         if (contract.Quality != QuoteQuality.TwoSided)
         {
-            return RiskVerdict.Reject($"quote is {contract.Quality}");
+            return RiskVerdict.Reject("quote-not-two-sided", $"quote is {contract.Quality}");
         }
 
         if (!contract.IsTradeableQuote)
         {
-            return RiskVerdict.Reject("quote is not tradeable");
+            return RiskVerdict.Reject("quote-not-tradeable", "quote is not tradeable");
         }
 
         if (contract.Ask is not { } ask || ask <= 0m || contract.Spread is not { } spread)
         {
-            return RiskVerdict.Reject("quote is incomplete");
+            return RiskVerdict.Reject("quote-incomplete", "quote is incomplete");
         }
 
         if (spread / ask > _options.MaxSpreadFraction)
         {
-            return RiskVerdict.Reject($"spread {spread / ask:P1} is too wide");
+            return RiskVerdict.Reject("spread-too-wide", $"spread {spread / ask:P1} is too wide");
         }
 
         if (contract.QuoteTimestampUtc is not { } quotedAt)
         {
-            return RiskVerdict.Reject("quote has no timestamp");
+            return RiskVerdict.Reject("quote-no-timestamp", "quote has no timestamp");
         }
 
         if (!_options.AllowStaleQuotes && now - quotedAt > _options.MaxQuoteAge)
         {
-            return RiskVerdict.Reject($"quote is {(now - quotedAt).TotalMinutes:N0} minutes old");
+            return RiskVerdict.Reject(
+                "quote-too-old", $"quote is {(now - quotedAt).TotalMinutes:N0} minutes old");
         }
 
         return RiskVerdict.Allow();

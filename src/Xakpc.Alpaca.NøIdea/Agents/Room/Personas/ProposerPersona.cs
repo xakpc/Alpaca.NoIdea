@@ -31,14 +31,12 @@ public sealed class ProposerPersona(
 
     public override string Name => "proposer";
 
-    public override ModelProvider Provider => ModelProvider.Anthropic;
-
-    protected override string Model => "claude-sonnet-5";
-
-    /// <summary>Claude Sonnet 5 takes no temperature. Sending one is a 400.</summary>
-    protected override float? SamplingTemperature => null;
+    public override ModelProvider Provider => ModelProvider.Grok;
 
     protected override int MaxOutputTokens => 16000;
+
+    /// <summary>The search phase is the long pole: 3:59 measured on 2026-09-01.</summary>
+    protected override TimeSpan CallTimeout => TimeSpan.FromMinutes(9);
 
     protected override string RolePrompt =>
         """
@@ -67,7 +65,15 @@ public sealed class ProposerPersona(
         account rules at one contract. Do not repeat those checks unless new market data makes them
         relevant.
 
-        Write every text field you return in ASD-STE100 Simplified Technical English.
+        STATE THE NUMBERS YOU USED
+
+        With your action, copy the bid, ask, underlying last price, delta, and implied volatility
+        that you reasoned from, into the fields provided. Copy them from the candidate row. Do not
+        estimate them and do not carry them over from a different contract.
+
+        C# compares each value you supply with the catalog. A difference of more than one percent
+        rejects the proposal before the room reads it. Omit a value you did not use.
+
         """;
 
     // ------------------------------------------------------------------ §15 propose
@@ -102,6 +108,10 @@ public sealed class ProposerPersona(
             ? DescribeReview(market, position, allowedActions)
             : DescribeSearch(market, allowedActions);
 
+        IReadOnlyList<AITool> tools = purpose == WarRoomPurpose.PositionReview
+            ? [.. ResearchTools, proposalTool]
+            : [.. ResearchTools, catalogueTool, proposalTool];
+
         var (fault, response) = await InvokeAsync(
             proposalId,
             purpose == WarRoomPurpose.PositionReview ? "review" : "search",
@@ -109,7 +119,7 @@ public sealed class ProposerPersona(
                 ? ReviewPrompt(allowedActions)
                 : SearchPrompt(allowedActions),
             payload,
-            [.. ResearchTools, catalogueTool, proposalTool],
+            tools,
             ChatToolMode.Auto,
             MaxOutputTokens,
             cancellationToken);
@@ -184,6 +194,9 @@ public sealed class ProposerPersona(
             - WITHDRAW:
               Submit no action when the evidence no longer supports the trade.
 
+            Set `decision` to `defend`, `modify`, or `withdraw`. For defend or modify, submit
+            the active operation. For withdraw, leave actions empty.
+
             Evaluate arguments by evidence, not by vote count.
 
             Give more weight to:
@@ -208,7 +221,7 @@ public sealed class ProposerPersona(
             """,
             DescribeRebuttal(context),
             [tool],
-            ChatToolMode.Auto,
+            ChatToolMode.RequireSpecific(ProposerTools.RebuttalToolName),
             2500,
             cancellationToken);
 
@@ -276,7 +289,7 @@ public sealed class ProposerPersona(
 
            Do not call tools only to increase the amount of research.
 
-        6. Compare the best available ideas.
+        6. Compare up to three plausible finalists.
            Select the trade with the strongest case after considering:
            - why the underlying can move;
            - why the move can happen before expiration;
@@ -322,8 +335,8 @@ public sealed class ProposerPersona(
         NO_TRADE is a valid and useful result, but it must follow an actual comparison of available
         opportunities.
 
-        If at least three plausible underlyings exist, inspect actual contracts for at least three
-        before returning NO_TRADE.
+        Inspect actual contracts for two or three ideas when that many plausible ideas exist. Do
+        not invent a candidate or continue research only to meet a quota.
 
         A valid NO_TRADE explanation must state:
         - which strongest opportunities you investigated;
@@ -351,6 +364,8 @@ public sealed class ProposerPersona(
         You state the size you want. The room and deterministic C# risk rules have final authority
         over execution and quantity.
 
+        Record the selected and rejected finalists in `alternatives_considered`.
+
         Call `{ProposerTools.ProposeToolName}` exactly once, last.
         """;
 
@@ -364,7 +379,8 @@ public sealed class ProposerPersona(
 
         Only these actions are permitted: {string.Join(", ", allowed)}.
 
-        Determine whether the original thesis still holds after the change that triggered this review.
+        Compare closing now with continuing to hold under the existing exit policy. Determine
+        whether the original thesis still holds after the change that triggered this review.
 
         Start with:
         - the original thesis;
@@ -383,6 +399,9 @@ public sealed class ProposerPersona(
         - time decay exists.
 
         Do not hold only because the original thesis once looked good.
+
+        The entry premium is a sunk cost. Judge expected value from this moment forward. Leave
+        `profit_probability` null for a close action.
 
         Ask:
         - What changed since entry or the previous review?
@@ -511,7 +530,7 @@ public sealed class ProposerPersona(
                         action = action.Kind.ToString(),
                         contract_symbol = action.ContractSymbol,
                         contracts = action.Contracts,
-                        your_probability = action.Probability,
+                        your_profit_probability = action.ProfitProbability,
                         your_reasoning = action.Reasoning,
                     }),
             },

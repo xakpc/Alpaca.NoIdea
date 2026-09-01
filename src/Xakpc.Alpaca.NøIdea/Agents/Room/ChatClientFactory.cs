@@ -5,6 +5,24 @@ using Xakpc.Alpaca.NøIdea.Alpaca;
 
 namespace Xakpc.Alpaca.NøIdea.Agents.Room;
 
+/// <summary>The provider model IDs for one war-room cost profile.</summary>
+public sealed record ChatModelProfile(string Anthropic, string OpenAi, string Grok)
+{
+    public static ChatModelProfile Standard { get; } =
+        new("claude-sonnet-5", "gpt-5.6-terra", "grok-4.6");
+
+    public static ChatModelProfile Cheap { get; } =
+        new("claude-haiku-4-5-20251001", "gpt-5.4-nano", "grok-4.6");
+
+    public string For(ModelProvider provider) => provider switch
+    {
+        ModelProvider.Anthropic => Anthropic,
+        ModelProvider.OpenAi => OpenAi,
+        ModelProvider.Grok => Grok,
+        _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, "No model for this provider."),
+    };
+}
+
 /// <summary>
 /// Builds an <see cref="IChatClient"/> for a persona's chosen provider.
 /// </summary>
@@ -26,6 +44,14 @@ public sealed class ChatClientFactory : IDisposable
 
     private readonly Dictionary<ModelProvider, IChatClient> _clients = [];
     private readonly Lock _gate = new();
+    private readonly ChatModelProfile _models;
+
+    public ChatClientFactory(ChatModelProfile? models = null)
+    {
+        _models = models ?? ChatModelProfile.Standard;
+    }
+
+    public string ModelFor(ModelProvider provider) => _models.For(provider);
 
     /// <summary>The environment variable a provider reads its key from.</summary>
     public static string KeyVariable(ModelProvider provider) => provider switch
@@ -84,9 +110,11 @@ public sealed class ChatClientFactory : IDisposable
                     new Anthropic.AnthropicClient { ApiKey = key }.AsIChatClient(),
 
                 ModelProvider.OpenAi =>
+#pragma warning disable OPENAI001 // Responses API is required for reasoning models that invoke tools.
                     new OpenAIClient(new ApiKeyCredential(key))
-                        .GetChatClient("gpt-5.6-terra")
-                        .AsIChatClient(),
+                        .GetResponsesClient()
+                        .AsIChatClient(_models.OpenAi),
+#pragma warning restore OPENAI001
 
                 // Same protocol, different host. The model id still comes from the persona
                 // through ChatOptions, so this default is only a constructor argument.
@@ -94,7 +122,7 @@ public sealed class ChatClientFactory : IDisposable
                     new OpenAIClient(
                             new ApiKeyCredential(key),
                             new OpenAIClientOptions { Endpoint = GrokEndpoint })
-                        .GetChatClient("grok-4.6")
+                        .GetChatClient(_models.Grok)
                         .AsIChatClient(),
 
                 _ => throw new ArgumentOutOfRangeException(nameof(provider)),
@@ -102,7 +130,15 @@ public sealed class ChatClientFactory : IDisposable
 
             // The tool loop is provider-independent, so it is wrapped once here rather than
             // in every persona.
-            var wrapped = new FunctionInvokingChatClient(created);
+            //
+            // The iteration cap bounds spend, which the per-call timeout does not: a fast model
+            // stuck in a tool loop burns tokens without burning wall-clock. The default is 40;
+            // the busiest measured search used 20, so 25 guards the pathological case without
+            // truncating observed work.
+            var wrapped = new FunctionInvokingChatClient(created)
+            {
+                MaximumIterationsPerRequest = 25,
+            };
             _clients[provider] = wrapped;
             return wrapped;
         }

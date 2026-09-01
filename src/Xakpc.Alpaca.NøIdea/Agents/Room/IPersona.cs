@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Xakpc.Alpaca.NøIdea.Alpaca.Gateways;
 
 namespace Xakpc.Alpaca.NøIdea.Agents.Room;
@@ -50,12 +51,29 @@ public enum Stance
     Oppose = 3,
 }
 
+/// <summary>Whether one observed fact supports or opposes the seat's judgement.</summary>
+public enum EvidenceDirection
+{
+    Supports = 0,
+    Opposes = 1,
+}
+
+/// <summary>One sourced fact used by a seat.</summary>
+public sealed record EvidenceItem
+{
+    public required string Claim { get; init; }
+    public required string Source { get; init; }
+    public DateTimeOffset? ObservedAtUtc { get; init; }
+    public required EvidenceDirection Direction { get; init; }
+}
+
 /// <summary>One persona's view of one contract, said during discussion.</summary>
 public sealed record ContractAssessment
 {
     public required string ContractSymbol { get; init; }
     public required Stance Stance { get; init; }
-    public decimal? Probability { get; init; }
+    [JsonPropertyName("probability")]
+    public decimal? ProfitProbability { get; init; }
     public required string Assessment { get; init; }
     public IReadOnlyList<string> Risks { get; init; } = [];
 }
@@ -73,10 +91,12 @@ public sealed record PersonaAnalysis
     public required string Persona { get; init; }
     public required VoteKind InitialVote { get; init; }
     public decimal Confidence { get; init; } = 0.5m;
-    public decimal? Probability { get; init; }
+    [JsonPropertyName("probability")]
+    public decimal? ProfitProbability { get; init; }
     public required string Analysis { get; init; }
-    public IReadOnlyList<string> SupportingEvidence { get; init; } = [];
+    public IReadOnlyList<EvidenceItem> SupportingEvidence { get; init; } = [];
     public IReadOnlyList<string> Risks { get; init; } = [];
+    public IReadOnlyList<string> DataGaps { get; init; } = [];
 
     /// <summary>Set when the persona failed. It is not counted as an approval.</summary>
     public string? Fault { get; init; }
@@ -114,7 +134,7 @@ public sealed record RoomContribution
 /// <summary>One persona's final position, cast privately after the debate.</summary>
 /// <remarks>
 /// <see cref="Confidence"/> weights the vote in the tally and therefore the position size.
-/// <see cref="Probability"/> is what makes the persona accountable afterwards: a voice that
+/// <see cref="ProfitProbability"/> makes a new-trade forecast accountable afterwards: a voice that
 /// only narrates risk cannot be wrong, because risks always exist. A number can be scored
 /// against the outcome.
 /// </remarks>
@@ -123,7 +143,8 @@ public sealed record PersonaVote
     public required string Persona { get; init; }
     public required VoteKind Vote { get; init; }
     public decimal Confidence { get; init; } = 0.5m;
-    public decimal? Probability { get; init; }
+    [JsonPropertyName("probability")]
+    public decimal? ProfitProbability { get; init; }
     public required string Rationale { get; init; }
 
     /// <summary>The largest risk this persona could not resolve. Spec §21.</summary>
@@ -162,6 +183,9 @@ public sealed record ProposedOperation
 
     public IReadOnlyList<string> MainRisks { get; init; } = [];
 
+    /// <summary>The strongest alternatives compared before this operation was selected.</summary>
+    public IReadOnlyList<CandidateComparison> AlternativesConsidered { get; init; } = [];
+
     /// <summary>A policy rewrite the proposer wants. Clamped before use.</summary>
     public Trading.StrategyPolicy? RevisedPolicy { get; init; }
 
@@ -180,8 +204,23 @@ public sealed record ProposedOperation
             .Select(action => $"{action.Kind}:{action.ContractSymbol}:{action.Contracts}")
             .OrderBy(key => key, StringComparer.Ordinal));
 
-    public static ProposedOperation Nothing(string thesis) =>
-        new() { Actions = [StrategyAction.Hold(thesis)], Thesis = thesis };
+    public static ProposedOperation Nothing(
+        string thesis, IReadOnlyList<CandidateComparison>? alternativesConsidered = null) =>
+        new()
+        {
+            Actions = [StrategyAction.Hold(thesis)],
+            Thesis = thesis,
+            AlternativesConsidered = alternativesConsidered ?? [],
+        };
+}
+
+/// <summary>One candidate the proposer selected or rejected during its comparison.</summary>
+public sealed record CandidateComparison
+{
+    public required string Underlying { get; init; }
+    public string? ContractSymbol { get; init; }
+    public required string Disposition { get; init; }
+    public required string Reason { get; init; }
 }
 
 /// <summary>An open position the room is asked to judge. Spec §12.</summary>

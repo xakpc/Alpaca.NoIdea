@@ -48,6 +48,53 @@ ORDER BY e.id DESC;
 
 `--audit` returns a nonzero exit code when any issue exists.
 
+An interruption after `BeginSittingAsync` can leave a sitting with status `running`. Live
+startup does not call `AuditIntegrityAsync` and does not repair that row. The audit command
+reports it. The active improvement plan requires a clean startup audit before later live
+operation.
+
+## Proposal and order evidence
+
+One proposal ID connects a sitting, tool calls, immutable review passes, a decision, and an
+optional order.
+
+```mermaid
+sequenceDiagram
+    participant Room
+    participant DB
+    participant Broker
+    Room->>DB: Begin sitting
+    Room->>DB: Store tool calls and review passes
+    Room->>DB: Complete sitting
+    Room->>DB: Store decision and reserve order
+    Room->>Broker: Submit order
+    Broker->>DB: Store lifecycle result
+```
+
+- A modified proposal keeps version 1 as superseded and stores version 2 separately.
+- Tool arguments and results store the proposal, persona, phase, model, and call ID.
+- A normal room return completes the sitting. A cancellation or process fault can leave it
+  incomplete.
+- Holds and rejections become decision events. A room rejection stores outcome `rejected`, the
+  stage in `risk_result`, the option symbol, and the proposer probability, so it can be scored
+  later. A hold with no proposal stores outcome `held` and no symbol.
+- A review pass stores the operation the room judged, not the operation after the vote scaled
+  it. A rejecting tally sizes every action to zero, so the sized form would erase the contract.
+- An accepted open and its order reservation use one transaction.
+- A mandatory close can make one risk-reducing broker attempt after its first audit write
+  fails. The session then stops.
+
+Position reviews recover the final non-superseded thesis through the order, decision, and
+review-pass links.
+
+```sql
+SELECT p.thesis, p.thesis_conditions_json
+FROM orders o
+JOIN decision_events e ON e.id = o.audit_event_id
+JOIN proposal_review_passes p ON p.proposal_id = e.proposal_id
+WHERE o.option_symbol = @symbol AND p.superseded = 0;
+```
+
 ## Initialization
 
 ```csharp
@@ -61,6 +108,6 @@ SQLite sidecars, then start with a clean file.
 ## Related lodes
 
 - [Storage summary](summary.md)
-- [Proposal review audit](proposal-review-audit.md)
-- [Fault handling](../operations/fault-handling.md)
-- [Historical model evidence](../research/historical-model-evidence.md)
+- [Operations](../operations/summary.md)
+- [Research summary](../research/summary.md)
+- [After-session improvements](../plans/after-session-improvements.md)

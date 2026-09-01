@@ -5,7 +5,7 @@ namespace Xakpc.Alpaca.NøIdea.Tests;
 
 /// <summary>
 /// The guardrails that must not regress. Each test here corresponds to a rule in
-/// .lode/trading/risk-guardrails.md or .lode/llm/tool-policy.md.
+/// .lode/trading/risk-guardrails.md or .lode/llm/summary.md.
 /// </summary>
 public class SafetyTests
 {

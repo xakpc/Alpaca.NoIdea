@@ -63,7 +63,7 @@ public sealed class LiveSession(
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            var interval = _options.ClosedMarketInterval;
+            var interval = _options.FaultRetryInterval;
 
             try
             {
@@ -108,10 +108,10 @@ public sealed class LiveSession(
                 }
                 else
                 {
-                    // The market is shut. Do not spend an agent call, but stay up so the open
-                    // needs no restart.
                     _logger.LogInformation(
-                        "Market closed. Next open {NextOpen:u}. Waiting.", clock.NextOpenUtc);
+                        "Market closed. Next open {NextOpen:u}. Stopping to avoid idle model spend.",
+                        clock.NextOpenUtc);
+                    break;
                 }
             }
             catch (OperationCanceledException)
@@ -127,6 +127,19 @@ public sealed class LiveSession(
                 // One bad cycle must not end a four-day run.
                 _logger.LogError(error, "Cycle failed. Continuing to the next one.");
             }
+
+            // The wait is half an hour by default. Announce it: without this line the operator
+            // view shows nothing for that long, and a live session looks the same as a hung one.
+            // `interval` is still the fault retry unless a cycle actually ran, so name which
+            // wait this is. Five minutes after a fault and thirty minutes after a cycle must
+            // not read alike.
+            var afterCycle = interval == _options.CycleInterval;
+            _logger.LogInformation(
+                RunEvents.CycleWaiting,
+                "Waiting {Minutes:N0} minute(s) {Reason}. Next cycle at {ResumeUtc:u}.",
+                interval.TotalMinutes,
+                afterCycle ? "until the next cycle" : "before retrying after a fault",
+                _time.GetUtcNow() + interval);
 
             try
             {

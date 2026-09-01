@@ -77,7 +77,13 @@ public sealed record WarRoomOptions
     public bool RequireEveryVoter { get; init; } = true;
 
     /// <summary>Wall-clock budget for one sitting. The room stops discussing when it passes.</summary>
-    public TimeSpan Deadline { get; init; } = TimeSpan.FromMinutes(6);
+    /// <remarks>
+    /// Measured against the 2026-09-01 sitting, which took 8:30: propose 3:59, independent
+    /// analysis 1:20, one discussion round 2:21, rebuttal 0:48. Six minutes was shorter than the
+    /// proposer alone, so discussion stopped after round 1. Thirteen minutes covers the
+    /// measurement with headroom and still fits inside a 30-minute cycle.
+    /// </remarks>
+    public TimeSpan Deadline { get; init; } = TimeSpan.FromMinutes(13);
 
     /// <summary>Spec §20. Let the proposer answer the room before the vote.</summary>
     public bool AllowRebuttal { get; init; } = true;
@@ -222,7 +228,8 @@ public sealed class WarRoomSession(
                     RunEvents.RebuttalMade,
                     "{Id}: the proposer withdrew after the debate.", request.ProposalId);
                 return await CompleteAsync(
-                    Withdrawn(request, answered, ledger, analyses, discussion), cancellationToken);
+                    Withdrawn(request, answered, operation, ledger, analyses, discussion),
+                    cancellationToken);
             }
 
             modified = !string.Equals(
@@ -324,7 +331,12 @@ public sealed class WarRoomSession(
             ProposalId = request.ProposalId,
             ProposalVersion = modified ? 2 : 1,
             ReviewPass = modified ? 2 : 1,
-            Operation = finalOperation,
+
+            // What was reviewed, not what survived sizing. A rejected tally sizes every action
+            // to zero and ApplySize then drops it, so recording the sized operation here would
+            // erase the very contract the room turned down. The size is not lost: Tally below
+            // reproduces it exactly.
+            Operation = operation,
             Verdict = verdict,
             Tally = tally,
             Analyses = analyses,
@@ -582,16 +594,27 @@ public sealed class WarRoomSession(
         ],
     };
 
+    /// <summary>The proposer answered the room by taking its own proposal off the table.</summary>
+    /// <param name="withdrawn">
+    /// The withdrawal itself. It trades nothing, and its thesis says why the proposer changed
+    /// its mind.
+    /// </param>
+    /// <param name="judged">
+    /// The proposal the room actually reviewed. A withdrawal carries no actions, so this is the
+    /// only record of which contract was considered and declined. The review pass keeps it,
+    /// because a pass documents what was reviewed rather than how it ended.
+    /// </param>
     private static WarRoomOutcome Withdrawn(
         WarRoomRequest request,
-        ProposedOperation operation,
+        ProposedOperation withdrawn,
+        ProposedOperation judged,
         TokenLedger ledger,
         IReadOnlyList<PersonaAnalysis> analyses,
         IReadOnlyList<RoomContribution> discussion) => new()
     {
         ProposalId = request.ProposalId,
         Verdict = WarRoomVerdict.Rejected,
-        Operation = operation,
+        Operation = withdrawn,
         Tally = VoteTally.Count([]),
         Cost = ledger.Snapshot(),
         Analyses = analyses,
@@ -605,7 +628,7 @@ public sealed class WarRoomSession(
                 ProposalId = request.ProposalId,
                 ProposalVersion = 1,
                 ReviewPass = 1,
-                Operation = operation,
+                Operation = judged,
                 Verdict = WarRoomVerdict.Rejected,
                 Tally = VoteTally.Count([]),
                 RejectionCode = "WITHDRAWN_BY_PROPOSER",

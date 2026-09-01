@@ -374,3 +374,8 @@ data/
 
 # The Alpaca CLI binary. For humans and offline scripts; no code calls it (ADR-001).
 cli_*_windows_amd64/
+
+# Raw session transcripts. Evidence for one run, not source. Keep scraps in .lode/tmp/.
+*.log
+log-*.txt
+logs-*.txt

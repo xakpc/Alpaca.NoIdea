@@ -18,7 +18,7 @@ typed `Alpaca.Markets` SDK, so nothing consumed the trading server and it was de
 ```mermaid
 flowchart LR
     VS[".NET host on the workstation"] -->|streamable-http 8100| RO["noidea-mcp-readonly"]
-    HTTP["alpaca-mcp.http"] -.manual test.-> RO
+    CHECK["--check-mcp"] -.diagnostic.-> RO
     RO -->|HTTPS| A["Alpaca paper account"]
     VS -->|"Alpaca.Markets SDK, HTTPS"| A
 ```
@@ -51,12 +51,29 @@ on three providers on purpose (ADR-020), so one key is not enough:
 
 | Variable | Seats |
 |---|---|
-| `ANTHROPIC_API_KEY` | `proposer`, `skeptic` (Sonnet 5) |
-| `OPENAI_API_KEY` | `quant` (GPT-5.6-terra) |
+| `ANTHROPIC_API_KEY` | `proposer`, `skeptic` |
+| `OPENAI_API_KEY` | `quant` |
 | `XAI_API_KEY` | `market` (Grok 4.6) |
+
+`KEENABLE_API_KEY` is optional. Without it, the host logs a warning and gives the seats no
+web-search tools. A missing required model key stops LLM-mode startup.
 
 `ChatClientFactory.MissingKeys` fails startup and names what is missing. A seat without a key
 is a dead seat, so the failure belongs before the open. `--agent stub` needs none of them.
+
+The standard profile uses Claude Sonnet 5, GPT-5.6-terra, and Grok 4.6. `--cheap` selects
+Claude Haiku 4.5 and GPT-5.4-nano. It keeps Grok 4.6.
+
+```powershell
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live --dry-run --cheap
+```
+
+## Operator view
+
+`--live` starts the live display. It repaints one region in place, so the terminal keeps no
+scrollback for the run, and it animates while a seat waits for a model or the session waits for
+the next cycle. Every other operation prints a static stream, and so does redirected output.
+See [console rendering](console-rendering.md).
 
 ## The endpoint
 
@@ -86,13 +103,15 @@ if (args.Contains("--smoke") || args.Contains("--check-mcp"))
 }
 ```
 
-`alpaca-mcp.http` in the repository root holds the full sequence for the read-only server:
-`initialize`, `notifications/initialized`, `tools/list`, and example `tools/call` requests.
-Visual Studio Code reads the session id from the response by itself. Visual Studio cannot
-chain responses, so paste the `mcp-session-id` value into the manual variables at the top.
+The repository has no `alpaca-mcp.http` file. Use the host diagnostic to connect, list every
+tool, reject forbidden tools, and print the approved count:
 
-The most important request in that file is `tools/list` against port 8100. It proves the
-read-only guarantee. See [MCP safety](../alpaca/mcp-safety.md).
+```powershell
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --check-mcp
+```
+
+`--smoke` is different. It can submit a real paper option buy. It then cancels an unfilled
+order or closes a fill. Use it only when a paper-account mutation is intended.
 
 ## The image
 
@@ -112,6 +131,6 @@ account here, not the official competition account. See [operations summary](sum
 ## Related
 
 - [MCP integration](../alpaca/mcp-integration.md)
-- [MCP safety](../alpaca/mcp-safety.md)
-- [Application structure](../architecture/application-structure.md)
-- [Fault handling](fault-handling.md)
+- [Architecture summary](../architecture/summary.md)
+- [Operations summary](summary.md)
+- [Observability](observability.md)

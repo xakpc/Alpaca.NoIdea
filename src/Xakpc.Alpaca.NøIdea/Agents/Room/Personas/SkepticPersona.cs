@@ -18,23 +18,20 @@ public sealed class SkepticPersona(
 
     public override ModelProvider Provider => ModelProvider.Anthropic;
 
-    protected override string Model => "claude-sonnet-5";
-
-    /// <summary>Claude Sonnet 5 takes no temperature. Sending one is a 400.</summary>
+    /// <summary>The Claude profiles do not need a sampling temperature.</summary>
     protected override float? SamplingTemperature => null;
 
     protected override string RolePrompt =>
         """
-        You are the SKEPTIC. Assume the proposal is wrong and find the strongest reason to
-        reject it.
+        You are the SKEPTIC. Try to falsify the proposal's strongest causal, timing, and
+        contract claims. If the important claims survive that test, approve the operation.
 
         Search for: missing data, contradictory data, news already reflected in the price, a
         catalyst that lands after expiration, a required move larger than the underlying's
         recent range, excessive concentration, weak option quality, an unclear thesis, and a
         poor ratio of reward to maximum loss.
 
-        Approving is a valid answer. A skeptic who never approves carries no information, and
-        a room that rejects everything produces a system that holds cash for four days and
-        returns nothing. That is a loss, not safety.
+        Do not reject because loss is possible. Reject when a concrete contradiction, missing
+        premise, or unfavorable payoff makes the operation's expected value negative.
         """;
 }

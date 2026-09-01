@@ -129,8 +129,13 @@ public sealed class ProposalPreValidator(
                 return "REJECT_LIQUIDITY";
             }
 
-            if (contract.QuoteTimestampUtc is not { } quotedAt
-                || _time.GetUtcNow() - quotedAt > _risk.MaxQuoteAge)
+            if (contract.QuoteTimestampUtc is not { } quotedAt)
+            {
+                return "REJECT_BAD_QUOTE";
+            }
+
+            if (!_risk.AllowStaleQuotes
+                && _time.GetUtcNow() - quotedAt > _risk.MaxQuoteAge)
             {
                 return "REJECT_BAD_QUOTE";
             }
@@ -158,6 +163,11 @@ public sealed class ProposalPreValidator(
                 // Even a single contract breaks the per-trade cap, so no quantity is legal.
                 return "REJECT_RISK_TOO_LARGE";
             }
+
+            if (!ClaimsMatchCatalog(action.Claims, view))
+            {
+                return "REJECT_FABRICATED_QUOTE";
+            }
         }
 
         if (market.RemainingPositionSlots <= 0)
@@ -167,4 +177,57 @@ public sealed class ProposalPreValidator(
 
         return null;
     }
+
+    /// <summary>
+    /// Whether every figure the proposer stated agrees with the catalog row it named.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The catalog is the one authority for what the market showed this cycle. A proposal whose
+    /// premises disagree with it is arguing about a market that does not exist, and the room
+    /// cannot find that by debating: every seat would be reasoning from the same false number.
+    /// This is arithmetic, so it costs nothing and runs before any seat is paid.
+    /// </para>
+    /// <para>
+    /// A claim the catalog cannot answer is not evidence of fabrication. A missing delta or
+    /// implied volatility is common on the Indicative feed, so an absent catalog value passes.
+    /// </para>
+    /// </remarks>
+    private static bool ClaimsMatchCatalog(MarketClaims? claims, TradeableContractView view)
+    {
+        if (claims is null)
+        {
+            return true;
+        }
+
+        var contract = view.Contract;
+
+        return Agrees(claims.QuotedBid, contract.Bid)
+               && Agrees(claims.QuotedAsk, contract.Ask)
+               && Agrees(claims.UnderlyingLast, view.UnderlyingPrice)
+               && Agrees(claims.Delta, contract.Delta)
+               && Agrees(claims.ImpliedVolatility, contract.ImpliedVolatility);
+    }
+
+    /// <summary>One percent of the observed value, or exact equality when it is zero.</summary>
+    private static bool Agrees(decimal? claimed, decimal? observed)
+    {
+        if (claimed is not { } claim || observed is not { } actual)
+        {
+            return true;
+        }
+
+        return actual == 0m
+            ? claim == 0m
+            : Math.Abs(claim - actual) / Math.Abs(actual) <= ClaimTolerance;
+    }
+
+    /// <summary>
+    /// How far a stated figure may sit from the catalog before the proposal is refused.
+    /// </summary>
+    /// <remarks>
+    /// One percent allows rounding and a mid-price written back as a bid, and refuses a number
+    /// that was invented or carried over from a different contract.
+    /// </remarks>
+    private const decimal ClaimTolerance = 0.01m;
 }

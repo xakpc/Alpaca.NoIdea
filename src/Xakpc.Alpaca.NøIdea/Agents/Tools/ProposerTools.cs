@@ -41,14 +41,14 @@ internal sealed class ProposerTools(ILogger logger, TradingOptions tradingOption
         IReadOnlySet<string> held,
         IReadOnlyList<StrategyActionKind> allowedActions,
         Action<ProposedOperation> capture) =>
-        CreateOperationTool(
-            offered,
-            held,
-            allowedActions,
-            capture,
+        AIFunctionFactory.Create(
+            (RebuttalArguments arguments) =>
+            {
+                capture(ToRebuttal(arguments, offered, held, allowedActions));
+                return "Rebuttal recorded.";
+            },
             RebuttalToolName,
-            "Defend, modify, or withdraw your proposal. Call this exactly once, last.",
-            "Rebuttal recorded.");
+            "Defend, modify, or withdraw your proposal. Call this exactly once, last.");
 
     internal AIFunction CreateCatalogTool(StrategyContext market)
     {
@@ -189,10 +189,13 @@ internal sealed class ProposerTools(ILogger logger, TradingOptions tradingOption
         IReadOnlySet<string> held,
         IReadOnlyList<StrategyActionKind> allowedActions)
     {
+        var alternatives = ToAlternatives(arguments.AlternativesConsidered);
+
         if (arguments.NoTrade == true || arguments.Actions is null || arguments.Actions.Count == 0)
         {
             return ProposedOperation.Nothing(
-                string.IsNullOrWhiteSpace(arguments.Thesis) ? "NO_TRADE" : arguments.Thesis!);
+                string.IsNullOrWhiteSpace(arguments.Thesis) ? "NO_TRADE" : arguments.Thesis!,
+                alternatives);
         }
 
         var actions = new List<StrategyAction>();
@@ -231,12 +234,14 @@ internal sealed class ProposerTools(ILogger logger, TradingOptions tradingOption
                 Kind = kind,
                 ContractSymbol = item.ContractSymbol,
                 Contracts = Math.Max(1, item.Contracts ?? 1),
-                Probability = item.Probability is { } probability
-                    ? Math.Clamp(probability, 0m, 1m)
-                    : null,
+                ProfitProbability = kind is StrategyActionKind.OpenCall or StrategyActionKind.OpenPut
+                    && item.ProfitProbability is { } probability
+                        ? Math.Clamp(probability, 0m, 1m)
+                        : null,
                 Reasoning = string.IsNullOrWhiteSpace(item.Reasoning)
                     ? arguments.Thesis ?? "(no reasoning given)"
                     : item.Reasoning,
+                Claims = ToClaims(item),
             });
         }
 
@@ -244,6 +249,20 @@ internal sealed class ProposerTools(ILogger logger, TradingOptions tradingOption
         {
             return ProposedOperation.Nothing("nothing survived validation");
         }
+
+        static MarketClaims? ToClaims(ProposalAction item) =>
+            item.QuotedBid is null && item.QuotedAsk is null && item.UnderlyingLast is null
+            && item.Delta is null && item.ImpliedVolatility is null
+                ? null
+                : new MarketClaims
+                {
+                    QuotedBid = item.QuotedBid,
+                    QuotedAsk = item.QuotedAsk,
+                    UnderlyingLast = item.UnderlyingLast,
+                    Delta = item.Delta,
+                    ImpliedVolatility = item.ImpliedVolatility,
+                };
+
 
         if (actions.Count > 1)
         {
@@ -259,7 +278,45 @@ internal sealed class ProposerTools(ILogger logger, TradingOptions tradingOption
             Thesis = string.IsNullOrWhiteSpace(arguments.Thesis) ? "(no thesis given)" : arguments.Thesis!,
             ThesisConditions = arguments.ThesisConditions ?? [],
             MainRisks = arguments.MainRisks ?? [],
+            AlternativesConsidered = alternatives,
         };
+    }
+
+    private static IReadOnlyList<CandidateComparison> ToAlternatives(
+        IReadOnlyList<CandidateComparisonArguments>? items) => (items ?? [])
+        .Where(item => !string.IsNullOrWhiteSpace(item.Underlying)
+                       && !string.IsNullOrWhiteSpace(item.Reason))
+        .Take(3)
+        .Select(item => new CandidateComparison
+        {
+            Underlying = item.Underlying!.Trim().ToUpperInvariant(),
+            ContractSymbol = item.ContractSymbol,
+            Disposition = string.IsNullOrWhiteSpace(item.Disposition)
+                ? "rejected"
+                : item.Disposition!,
+            Reason = item.Reason!,
+        })
+        .ToArray();
+
+    private ProposedOperation ToRebuttal(
+        RebuttalArguments arguments,
+        IReadOnlySet<string> offered,
+        IReadOnlySet<string> held,
+        IReadOnlyList<StrategyActionKind> allowedActions)
+    {
+        var decision = arguments.Decision?.Trim().ToLowerInvariant();
+        if (decision == "withdraw")
+        {
+            return ProposedOperation.Nothing(
+                string.IsNullOrWhiteSpace(arguments.Thesis) ? "withdrawn" : arguments.Thesis!);
+        }
+
+        if (decision is not "defend" and not "modify")
+        {
+            throw new ArgumentException("decision must be defend, modify, or withdraw");
+        }
+
+        return ToOperation(arguments, offered, held, allowedActions);
     }
 
     internal sealed record CatalogContractRow(
@@ -284,7 +341,7 @@ internal sealed class ProposerTools(ILogger logger, TradingOptions tradingOption
         decimal StrikeTo);
 
     [Description("Your trade proposal, or NO_TRADE.")]
-    public sealed class ProposalArguments
+    public class ProposalArguments
     {
         [Description("True when no trade is worth making. Leave actions empty.")]
         public bool? NoTrade { get; set; }
@@ -298,8 +355,32 @@ internal sealed class ProposerTools(ILogger logger, TradingOptions tradingOption
         [Description("The main ways this trade loses.")]
         public List<string>? MainRisks { get; set; }
 
+        [Description("Up to three plausible finalists that you selected or rejected.")]
+        public List<CandidateComparisonArguments>? AlternativesConsidered { get; set; }
+
         [Description("The operations to carry out. One trade at a time.")]
         public List<ProposalAction>? Actions { get; set; }
+    }
+
+    public sealed class RebuttalArguments : ProposalArguments
+    {
+        [Description("Required. One of: defend, modify, withdraw.")]
+        public string? Decision { get; set; }
+    }
+
+    public sealed class CandidateComparisonArguments
+    {
+        [Description("The underlying symbol.")]
+        public string? Underlying { get; set; }
+
+        [Description("The exact contract symbol, when one was inspected.")]
+        public string? ContractSymbol { get; set; }
+
+        [Description("One of: selected, rejected.")]
+        public string? Disposition { get; set; }
+
+        [Description("The concrete reason for the disposition.")]
+        public string? Reason { get; set; }
     }
 
     public sealed class ProposalAction
@@ -313,11 +394,31 @@ internal sealed class ProposerTools(ILogger logger, TradingOptions tradingOption
         [Description("How many contracts you want. The room and the risk rules may reduce it.")]
         public int? Contracts { get; set; }
 
-        [Description("Your honest probability from 0 to 1 that this finishes profitable.")]
-        public decimal? Probability { get; set; }
+        [Description("For an opening trade only: your probability from 0 to 1 of positive realized P&L at exit. Leave null for a close.")]
+        [JsonPropertyName("profit_probability")]
+        public decimal? ProfitProbability { get; set; }
 
         [Description("Why this contract specifically.")]
         public string? Reasoning { get; set; }
+
+        [Description("The bid you used, copied from the candidate row.")]
+        [JsonPropertyName("quoted_bid")]
+        public decimal? QuotedBid { get; set; }
+
+        [Description("The ask you used, copied from the candidate row.")]
+        [JsonPropertyName("quoted_ask")]
+        public decimal? QuotedAsk { get; set; }
+
+        [Description("The last underlying price you used.")]
+        [JsonPropertyName("underlying_last")]
+        public decimal? UnderlyingLast { get; set; }
+
+        [Description("The delta you used, copied from the candidate row.")]
+        public decimal? Delta { get; set; }
+
+        [Description("The implied volatility you used, copied from the candidate row.")]
+        [JsonPropertyName("implied_volatility")]
+        public decimal? ImpliedVolatility { get; set; }
     }
 
     public sealed class CatalogQueryArguments

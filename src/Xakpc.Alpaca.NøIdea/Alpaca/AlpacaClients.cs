@@ -13,9 +13,7 @@ namespace Xakpc.Alpaca.NøIdea.Alpaca;
 /// than a runtime account check: there is no configuration value, environment
 /// variable, or argument that can move this process to a live account.
 /// </para>
-/// <para>
-/// No market-data feed is named anywhere (ADR-010). The account default applies.
-/// </para>
+/// <para>Market-data requests name the free IEX and Indicative feeds explicitly.</para>
 /// </remarks>
 public sealed class AlpacaClients : IDisposable
 {

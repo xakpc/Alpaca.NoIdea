@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -10,11 +11,11 @@ namespace Xakpc.Alpaca.NøIdea.Observability;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The console is the record of a run (ADR-024), and the record used to stop at what a seat
-/// finally submitted. That is the smallest part of what happened: the proposer can spend three
-/// hundred thousand input tokens over a dozen tool calls and then submit NO_TRADE, and the old
-/// log showed only the two words. <b>This writes the turns, the tool calls with their
-/// arguments, what each tool answered, and the tally at the end.</b>
+/// The plain file is the complete log record (ADR-024). A record that stops at what a seat
+/// finally submitted is too small: the proposer can spend three hundred thousand input tokens
+/// over a dozen tool calls and then submit NO_TRADE. <b>This writes the turns, the tool calls
+/// with their arguments, what each tool answered, and the tally at the end.</b> The Spectre
+/// provider selects only the operator-facing parts for the console.
 /// </para>
 /// <para>
 /// Every line carries the seat's own event id, so one seat's conversation is selectable on its
@@ -22,9 +23,8 @@ namespace Xakpc.Alpaca.NøIdea.Observability;
 /// </para>
 /// <para>
 /// Long text is clipped to <see cref="MaxCharacters"/> and the full length is printed with it.
-/// A payload of candidates and headlines is tens of kilobytes, and a console that a person must
-/// read during a four-day contest is worth more than a verbatim copy of a document this code
-/// built itself.
+/// A payload of candidates and headlines is tens of kilobytes. Clipping keeps the file useful
+/// while it still says how much text existed before the clip.
 /// </para>
 /// </remarks>
 public static class ChatTranscript
@@ -35,28 +35,75 @@ public static class ChatTranscript
     /// <summary>How much of one tool answer reaches the log. Tool output is untrusted.</summary>
     public const int MaxToolResultCharacters = 2000;
 
-    /// <summary>Writes what the host is about to send.</summary>
-    public static void Request(
+    /// <summary>
+    /// Writes the single line that explains the call that is about to go out: what the seat
+    /// must do, where it goes, and how the call is set up.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is the line a person reads while waiting.</b> One seat holds the console for
+    /// minutes at a time, and a run that shows nothing until the answer arrives cannot be told
+    /// apart from a run that hung. This says what the wait is for before the wait starts.
+    /// </para>
+    /// <para>
+    /// It carries its own event id (<see cref="ChatEvent.Sending"/>) and not
+    /// <see cref="ChatEvent.Request"/>, because the prompt dump is tens of kilobytes and would
+    /// bury it. "Show me only what is in flight" is then one filter on <c>4xx6</c>.
+    /// </para>
+    /// <para>
+    /// The time is written into the message although the file log already stamps every line:
+    /// the console does not, and the console is where the wait is watched.
+    /// </para>
+    /// </remarks>
+    public static void Sending(
         ILogger logger,
         string persona,
         string phase,
         string model,
+        string proposalId,
         IReadOnlyList<ChatMessage> messages,
         IReadOnlyList<AITool> tools,
-        int maxOutputTokens)
+        ChatToolMode? toolMode,
+        int maxOutputTokens,
+        float? temperature)
+    {
+        ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(messages);
+
+        logger.LogInformation(
+            RunEvents.Chat(persona, ChatEvent.Sending),
+            "{Persona} [{Phase}] asks {Model} for {ProposalId}. "
+            + "Sending {Messages} messages, {Characters:N0} characters, "
+            + "{Tools} tools [{ToolNames}]; {ToolMode}, max {MaxOutputTokens} output tokens, "
+            + "temperature {Temperature}. Sent at {SentUtc:HH:mm:ss}Z. Waiting for the answer.",
+            persona, phase, model, proposalId,
+            messages.Count,
+            messages.Sum(message => message.Text?.Length ?? 0),
+            tools?.Count ?? 0,
+            Name(tools),
+            Describe(toolMode),
+            maxOutputTokens,
+            // Invariant on purpose: the logging formatter writes every other value in this
+            // template invariantly, and a log a person greps must not change with the machine.
+            temperature?.ToString("0.00", CultureInfo.InvariantCulture) ?? "unset",
+            DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>Writes the prompt and the payload the host is about to send.</summary>
+    /// <remarks>
+    /// The summary of the call is <see cref="Sending"/>. This id carries the text only, so a
+    /// reader who wants the narrative and not the documents can leave it out.
+    /// </remarks>
+    public static void Request(
+        ILogger logger,
+        string persona,
+        string phase,
+        IReadOnlyList<ChatMessage> messages)
     {
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(messages);
 
         var id = RunEvents.Chat(persona, ChatEvent.Request);
-
-        logger.LogInformation(
-            id,
-            "{Persona} [{Phase}] asks {Model}: {Messages} messages, {Tools} tools [{ToolNames}], "
-            + "max {MaxOutputTokens} output tokens.",
-            persona, phase, model, messages.Count, tools?.Count ?? 0,
-            string.Join(", ", (tools ?? []).Select(tool => tool.Name)),
-            maxOutputTokens);
 
         foreach (var message in messages)
         {
@@ -226,6 +273,28 @@ public static class ChatTranscript
             return value.ToString() ?? "none";
         }
     }
+
+    /// <summary>Names the toolbox a seat was given, in the order it was given.</summary>
+    private static string Name(IReadOnlyList<AITool>? tools) =>
+        tools is null || tools.Count == 0
+            ? "none"
+            : string.Join(", ", tools.Select(tool => tool.Name));
+
+    /// <summary>
+    /// Says what the seat is allowed to do with that toolbox.
+    /// </summary>
+    /// <remarks>
+    /// A required tool is the difference between a phase that can end in silence and one that
+    /// cannot, so it belongs on the line rather than in the prompt dump. A null mode is the
+    /// provider default, which is <c>auto</c>.
+    /// </remarks>
+    private static string Describe(ChatToolMode? mode) => mode switch
+    {
+        NoneChatToolMode => "no tool call allowed",
+        RequiredChatToolMode { RequiredFunctionName: { } required } => $"must call {required}",
+        RequiredChatToolMode => "must call one tool",
+        _ => "tools optional",
+    };
 
     private static string Clip(string? text, int limit) =>
         string.IsNullOrWhiteSpace(text) ? "(nothing)"

@@ -1,7 +1,6 @@
 # The War Room
 
-The decision process. One class, `WarRoomSession`, serves both new trades and position
-reviews. See ADR-019 to ADR-022.
+One `WarRoomSession` serves new trades and position reviews. See ADR-019 and ADR-021.
 
 > **Agents decide what they want to do. C# decides what they are permitted to do.**
 
@@ -17,11 +16,32 @@ flowchart TD
     D -- Pass --> E[Independent analysis<br/>parallel, nobody sees another]
     E --> F[Discussion rounds<br/>everyone has read everyone]
     F --> G[Proposer rebuttal<br/>defend, modify, withdraw]
-    G --> H{Modified?}
-    H -- Yes --> D
-    H -- No --> I[Private vote<br/>parallel, nobody sees a vote]
+    G --> H{Rebuttal result}
+    H -- Withdraw --> Z
+    H -- Modify --> V[Validate version 2<br/>and run a fresh review pass]
+    H -- Defend --> I[Private reviewer vote<br/>parallel, nobody sees a vote]
+    V --> I
     I --> J[Tally to verdict and size]
     J --> K[RiskGuard, immediately before submission]
+```
+
+## Stated numbers are checked, not trusted
+
+The proposer copies the bid, ask, underlying last price, delta, and implied volatility it
+reasoned from into fields on its action. `ProposalPreValidator` compares each supplied value
+with the catalog row and returns `REJECT_FABRICATED_QUOTE` when one differs by more than one
+percent. This runs before any reviewer is paid.
+
+A model that writes its arithmetic only into prose cannot be checked, because prose has no
+field to compare. The room also cannot find a false premise by debating it: every seat reads
+the same number. The check is arithmetic and costs nothing.
+
+Every field is optional, and an absent claim is not checked. A claim the catalog cannot answer
+also passes, because a missing delta or implied volatility is ordinary on the Indicative feed
+and is not evidence of invention.
+
+```csharp
+private const decimal ClaimTolerance = 0.01m;
 ```
 
 ## The two properties that matter
@@ -35,23 +55,64 @@ change of mind is visible.
 in, and leaving the field out of the type means no future edit can leak one vote into another
 persona's prompt. `WarRoomTests` asserts the property does not exist.
 
+## Time limits
+
+Two limits apply, and they are independent.
+
+The room deadline is 13 minutes. It stops the room from starting a new discussion round. It
+does not stop a phase that is already in progress, and it does not apply to the proposal, the
+analysis, the rebuttal, or the vote.
+
+Each model call has its own limit. `LlmPersona.CallTimeout` is 6 minutes, and the proposer
+uses 9 minutes because its search is the longest phase. A call that passes its limit is
+cancelled and becomes a persona fault, which is an abstention. It does not stop the sitting.
+Provider retries occur below this application, so a linked cancellation token is the only
+available control.
+
+```csharp
+using var call = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+call.CancelAfter(CallTimeout);
+```
+
+The tool loop permits a maximum of 25 iterations for each request. This limits the token cost
+of a model that repeats tool calls.
+
+Measured sitting on 2026-09-01: 8 minutes 30 seconds in total. The proposal used 3 minutes 59
+seconds, the parallel analysis 1 minute 20 seconds, one discussion round 2 minutes 21 seconds,
+and the rebuttal 48 seconds.
+
 ## The seats
 
-A persona is a class, not a configuration row (ADR-020). Every LLM seat gets the **same**
-read-only tools and differs by model, because a room of one model arguing with itself shares
-that model's blind spots.
+A persona is a class, not a configuration row (ADR-020). Every LLM seat gets the same
+external read-only research list. The proposer also gets the local catalog and typed proposal
+tools. Each phase has a typed output tool. These local tools do not change external state.
 
 | Seat | Provider | Role |
 |---|---|---|
-| `proposer` | Claude Sonnet 5 | Searches the allowed universe. Carries the full research toolset. Can answer NO_TRADE. |
-| `skeptic` | Claude Sonnet 5 | Assumes the proposal is wrong and looks for the strongest reason to reject it. |
-| `quant` | GPT-5.6-terra | Judges the contract: strike, expiration, spread, liquidity, maximum loss. |
-| `market` | Grok 4.6 | Price action, market context, news and scheduled events. |
+| `proposer` | Grok 4.6 | Searches the allowed universe. Carries the full research toolset. Can answer NO_TRADE. |
+| `skeptic` | Anthropic | Tries to falsify the strongest claims and approves them when they survive. |
+| `quant` | OpenAI | Judges the contract: strike, expiration, spread, liquidity, maximum loss. |
+| `market` | OpenAI | Judges price action, market context, news, and scheduled events. |
 | `exposure` | **none** | Portfolio arithmetic in plain C#. Costs nothing and cannot hallucinate. |
+
+The proposer uses Grok for the initial search, position review, and rebuttal. The market and
+quant reviewers use the OpenAI profile model in parallel. The skeptic uses the Anthropic
+profile model as an independent critic. The standard profile uses Claude Sonnet 5 and
+GPT-5.6-terra. The `--cheap` profile uses Claude Haiku 4.5 and GPT-5.4-nano. Both profiles
+use Grok 4.6 for the proposer.
+
+The proposer proposes and rebuts. It does not vote. The four reviewers are `skeptic`,
+`quant`, `market`, and `exposure`. Three reviewer calls use an LLM. The exposure review is
+deterministic C#.
 
 `ExposureRiskPersona` is the proof that `IPersona` is not an LLM interface. It does not
 replace `RiskGuard`: RiskGuard enforces the hard limits and cannot be outvoted, while this
-seat votes on whether a *legal* trade is a sensible use of the remaining capacity.
+seat votes on whether a *legal* trade is a sensible use of the remaining capacity. It abstains
+when capacity is comfortable and rejects only a concrete portfolio concern.
+
+New-trade reviewers forecast positive realized P&L at exit. A position review does not ask for
+that forecast. It compares closing now with holding from this moment and treats the entry premium
+as a sunk cost. See [persona contracts](../llm/persona-contracts.md).
 
 ## Votes to size
 
@@ -68,17 +129,17 @@ net >  ApproveThreshold → approved, contracts = max(1, round(desired × net))
 so a half-broken room cannot look unanimous, and under `RequireEveryVoter` a fault rejects
 outright.
 
-## Nothing that fails may decide anything
+## Failure behavior
 
 | Failure | Result |
 |---|---|
-| A reviewer throws | Fault, counted as an abstention, **never an approval** |
+| A reviewer throws | Record a fault. With `RequireEveryVoter`, quorum fails and the proposal is rejected. |
 | The proposer throws | NO_TRADE |
 | The rebuttal throws | The original proposal stands and is still voted on |
 | A position review throws | The position is left alone, still covered by the hard exits |
 
-Without these a broken seat would silently cancel every trade, which is the veto power the
-design denies it.
+The failure never becomes an approval. In the default full-quorum mode, a failed reviewer
+does prevent approval for that sitting.
 
 ## Cost
 
@@ -89,56 +150,30 @@ US dollars.
 > and goes stale, an unpriced model is excluded from the total and named, and hosted web
 > search normally bills per call outside token counts.
 
-Rate state, checked 2026-08-31:
+The rate table is implementation data in `RoomCost.cs`. It does not include Keenable service
+charges. Cache-write tiers and high-context xAI tiers can make the estimate low. Current
+measured costs and planned reductions stay in the active improvement plan, not in this
+current-state contract.
 
-| Model | Seat | Rate |
-|---|---|---|
-| `claude-sonnet-5` | proposer, skeptic | 2.00 / 10.00, cache read 0.20. **Was wrong**: the table held 3.00 / 15.00 and over-reported by 50%. |
-| `gpt-5.6-terra` | quant | 2.00 / 12.00, cache read 0.20. Output is 6x input, a steeper ratio than the others. |
-| `grok-4.6` | market | 2.00 / 6.00, cache read 0.50, standard tier. |
+## Staged context
 
-Three known undercounts, all silent:
+The proposer receives account capacity, tracked symbols, current underlying snapshots,
+positions, pending orders, constraints, a 25-row headline index, and the current contract
+catalog. A catalog of at most 60,000 TOON characters is inline. A larger catalog becomes a
+per-symbol index, and the local `get_tradeable_contracts` tool returns pages of at most 200
+rows.
 
-- **A cache write** bills above fresh input (2.50 or 4.00 against 2.00 on Sonnet 5, by TTL).
-  `CachedInputPerMillion` is the cache **read** rate and the usage figures do not separate
-  the two.
-- **xAI doubles every rate above 200K input tokens** in one call. The table holds the cheaper
-  tier. Tiering properly has to happen when a call is recorded: by the time the ledger totals
-  a persona the per-call context length is gone, and a cumulative total crossing 200K does
-  not mean any single call did.
-- **Web research** is an ordinary MCP tool call, so its tokens are counted here, but the
-  Keenable service bills on its own terms, outside this table.
+```csharp
+var tools = [.. ResearchTools, _tools.CreateCatalogTool(market), proposalTool];
+```
 
-> **A stale table over-reported Opus by 3x.** `claude-opus-5` held 15.00 / 75.00 / 1.50,
-> which is the **retired Opus 4.1 and Opus 4** rate: an old price list carried forward under
-> a new model name. It is 5.00 / 25.00 / 0.50. No seat uses it.
+Reviewers do not receive the full catalog. They receive the proposal, nearby strikes and
+expirations, selected underlying and index snapshots, portfolio capacity, positions, pending
+orders, and relevant headlines.
 
-### The proposer is the seat that spends
-
-The tool loop resends the whole conversation on each turn: the prompt, the catalog payload or
-index, the tool schemas, and each earlier tool result. Only the proposer loops like this, so it
-bills more input than the other four seats together. Two measured searches, in cycles where
-the room never sat:
-
-| Run | Input | Output | On Opus 5 | On Sonnet 5 |
-|---|---|---|---|---|
-| web research on | ~158,000 | ~7,300 | 0.98 USD | 0.39 USD |
-| `--no-web-search` | ~341,000 | ~7,200 | 1.88 USD | 0.75 USD |
-
-Input is 96 to 98 percent of that, and output is nearly constant. The seat runs on Sonnet 5
-for this reason: 2.00 against 5.00 per million input.
-
-**The payload is TOON, not JSON.** The full catalog is inline at 60,000 characters or less.
-A larger catalog is a per-symbol index and the proposer pages the immutable local catalog.
-Reviewers get only nearby contracts. `Toon.Encode` writes a uniform array header once, and the
-saving is not measured (ADR-028).
-
-**Nothing sets `cache_control`.** The part of a request that does not change between turns —
-the prompt, the payload, the tool schemas — is billed again at the full rate on every turn,
-when a cache read costs 0.20. That is the larger correction and it is not made.
-
-One unchanged proposal costs roughly: 1 proposal + 3 analyses + (3 × rounds) discussion + 1
-rebuttal + 3 votes. A modified proposal adds a fresh analysis, discussion, and vote pass.
+A modified rebuttal creates proposal version 2. C# validates it, and reviewers perform a new
+independent analysis, discussion, and private vote. The audit keeps version 1 as superseded.
+There is no second rebuttal.
 
 ## Position review
 
@@ -155,4 +190,5 @@ a model answering.
 - [Architecture decisions](../architecture/decisions.md)
 - [Live cycle](../trading/live-cycle.md)
 - [Risk guardrails](../trading/risk-guardrails.md)
-- [Strategy parameters](../trading/strategy-parameters.md)
+- [LLM summary](../llm/summary.md)
+- [Storage schema](../storage/schema.md)

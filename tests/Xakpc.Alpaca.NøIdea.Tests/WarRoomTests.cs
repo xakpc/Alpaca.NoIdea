@@ -314,6 +314,104 @@ public class WarRoomTests
         Assert.Equal(WarRoomPurpose.PositionReview, reviewer.AnalysisContext!.Purpose);
     }
 
+
+    // ---------------------------------------------------------------- rejection semantics
+
+    [Fact]
+    public async Task AWithdrawalKeepsTheJudgedContractInItsReviewPass()
+    {
+        // A withdrawal carries no actions of its own, so without this the only record of which
+        // contract was considered and declined is lost, and nothing can be scored later.
+        var proposer = new ScriptedProposer(OneTrade())
+        {
+            Rebuttal = ProposedOperation.Nothing("the catalyst is already in the price"),
+        };
+
+        var outcome = await Session(proposer, [new RecordingPersona("r", VoteKind.Approve, 0.9m)])
+            .RunAsync(Request(), CancellationToken.None);
+
+        var judged = Assert.Single(outcome.ReviewPasses).Operation.Actions
+            .Single(action => action.Kind != StrategyActionKind.Hold);
+
+        Assert.Equal("TEST260904C00100000", judged.ContractSymbol);
+        Assert.Equal(0.6m, judged.ProfitProbability);
+
+        // The sitting still returns the withdrawal, which is what explains the outcome.
+        Assert.False(outcome.Operation.TradesAnything);
+    }
+
+    [Fact]
+    public async Task AWithdrawalReachesTheLoopAsARejectionCarryingTheContract()
+    {
+        var proposer = new ScriptedProposer(OneTrade())
+        {
+            Rebuttal = ProposedOperation.Nothing("the catalyst is already in the price"),
+        };
+
+        var decision = await Agent(proposer, [new RecordingPersona("r", VoteKind.Approve, 0.9m)])
+            .DecideAsync(MarketWithCatalog(), CancellationToken.None);
+
+        Assert.NotNull(decision.Rejection);
+        Assert.Equal("WITHDRAWN_BY_PROPOSER", decision.Rejection!.Code);
+        Assert.Equal("room", decision.Rejection.Stage);
+
+        // It still trades nothing, and it still says what it declined.
+        var action = Assert.Single(decision.Actions);
+        Assert.Equal(StrategyActionKind.Hold, action.Kind);
+        Assert.Equal("TEST260904C00100000", action.ContractSymbol);
+        Assert.Equal(0.6m, action.ProfitProbability);
+    }
+
+    [Fact]
+    public async Task AProposerThatFoundNothingIsNotARejection()
+    {
+        // The distinction the cycle summary depends on: nothing proposed is not something
+        // declined, and counting the two together makes both unreadable.
+        var decision = await Agent(Proposer(ProposedOperation.Nothing("no trade")), [])
+            .DecideAsync(MarketWithCatalog(), CancellationToken.None);
+
+        Assert.Null(decision.Rejection);
+        Assert.Equal(StrategyActionKind.Hold, Assert.Single(decision.Actions).Kind);
+    }
+
+    [Fact]
+    public async Task AVoteRejectionReachesTheLoopAsARoomRejection()
+    {
+        var decision = await Agent(
+                Proposer(OneTrade()), [new RecordingPersona("r", VoteKind.Reject, 0.9m)])
+            .DecideAsync(MarketWithCatalog(), CancellationToken.None);
+
+        Assert.NotNull(decision.Rejection);
+        Assert.Equal("ROOM_VOTE", decision.Rejection!.Code);
+        Assert.Equal("room", decision.Rejection.Stage);
+        Assert.Equal("TEST260904C00100000", Assert.Single(decision.Actions).ContractSymbol);
+    }
+
+    [Fact]
+    public async Task APreValidationRejectionNamesItsStageAndCode()
+    {
+        var decision = await Agent(
+                Proposer(OneTrade()),
+                [new RecordingPersona("r", VoteKind.Approve, 0.9m)],
+                preValidate: (_, _) => "REJECT_BAD_QUOTE")
+            .DecideAsync(MarketWithCatalog(), CancellationToken.None);
+
+        Assert.NotNull(decision.Rejection);
+        Assert.Equal("REJECT_BAD_QUOTE", decision.Rejection!.Code);
+        Assert.Equal("pre-validation", decision.Rejection.Stage);
+        Assert.Equal("TEST260904C00100000", Assert.Single(decision.Actions).ContractSymbol);
+    }
+
+    [Fact]
+    public async Task AnApprovedProposalCarriesNoRejection()
+    {
+        var decision = await Agent(
+                Proposer(OneTrade()), [new RecordingPersona("r", VoteKind.Approve, 0.9m)])
+            .DecideAsync(MarketWithCatalog(), CancellationToken.None);
+
+        Assert.Null(decision.Rejection);
+        Assert.Equal(StrategyActionKind.OpenCall, Assert.Single(decision.Actions).Kind);
+    }
     // ---------------------------------------------------------------- helpers
 
     private static WarRoomSession Session(
@@ -323,6 +421,40 @@ public class WarRoomTests
         Func<ProposedOperation, WarRoomRequest, string?>? preValidate = null) =>
         new(proposer, reviewers, options ?? new WarRoomOptions { DiscussionRounds = 1 },
             preValidate ?? ((_, _) => null), new FakeClock(Now), NullLogger.Instance);
+
+    /// <summary>The room as the trading loop sees it: an ordinary strategy agent.</summary>
+    private static WarRoomAgent Agent(
+        IProposingPersona proposer,
+        IReadOnlyList<IPersona> reviewers,
+        Func<ProposedOperation, WarRoomRequest, string?>? preValidate = null) =>
+        new(Session(proposer, reviewers, preValidate: preValidate),
+            new FakeClock(Now), NullLogger.Instance);
+
+    /// <summary>
+    /// A market the room will actually sit on. <c>DecideAsync</c> declines to convene when the
+    /// catalog is empty, so an agent-level test needs one contract in it.
+    /// </summary>
+    private static StrategyContext MarketWithCatalog() => Request().Market with
+    {
+        ContractCatalog =
+        [
+            new TradeableContractView
+            {
+                Contract = new OptionCandidate
+                {
+                    ContractSymbol = "TEST260904C00100000",
+                    Underlying = "TEST",
+                    OptionType = "call",
+                    Strike = 100m,
+                    Expiration = new DateOnly(2026, 9, 4),
+                    Quality = QuoteQuality.TwoSided,
+                    Bid = 0.95m,
+                    Ask = 1m,
+                },
+                UnderlyingPrice = 100m,
+            },
+        ],
+    };
 
     private static ScriptedProposer Proposer(ProposedOperation operation) => new(operation);
 
@@ -337,7 +469,7 @@ public class WarRoomTests
                 Kind = StrategyActionKind.OpenCall,
                 ContractSymbol = symbol,
                 Contracts = contracts,
-                Probability = 0.6m,
+                ProfitProbability = 0.6m,
                 Reasoning = "test",
             },
         ],

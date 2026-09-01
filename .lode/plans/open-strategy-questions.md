@@ -35,6 +35,6 @@ ORDER BY timestamp_utc;
 
 ## Related lodes
 
-- [Strategy parameters](../trading/strategy-parameters.md)
-- [Historical model evidence](../research/historical-model-evidence.md)
+- [Risk guardrails](../trading/risk-guardrails.md)
+- [Research summary](../research/summary.md)
 - [Audit schema](../storage/schema.md)

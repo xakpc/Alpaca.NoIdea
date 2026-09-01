@@ -1,7 +1,7 @@
 # Architecture Vision Document
 ## Autonomous Options Trading Agent for the Alpaca AI Trading Agents Hackathon
 
-**Status:** Draft for implementation  
+**Status:** Archived historical input. Do not implement from this file.
 **Date:** 2026-08-29  
 **Language:** ASD-STE100-style Simplified Technical English  
 **Primary implementation language:** C# / .NET  
@@ -26,7 +26,7 @@
 > This document seeded the project and is **history, not a source of truth**. Where it and
 > `.lode/` disagree, the lode wins; where the lode and the code disagree, the code wins.
 >
-> Two parts of this document have been retired by measurement and by design:
+> Three parts of this document have been retired by measurement and by design:
 >
 > **The Historical ML Expert is not a forecaster (ADR-013).** It was trained, measured against
 > the option price on 149,838 questions, and lost in every period including the one it was
@@ -41,10 +41,14 @@
 > **privately**. Confidence-weighted votes set the position size rather than producing a
 > combined probability.
 >
+> **The historical market simulation and data-import design is removed.** The current host
+> reads Alpaca market data only. SQLite stores durable live and dry-run audit evidence only.
+> The retained raw files are outside the runtime path.
+>
 > Unchanged, and still the spine of the design: **agents decide what they want to do;
 > deterministic C# decides what they are permitted to do.**
 >
-> See `.lode/experts/war-room.md`.
+> See `.lode/summary.md` and `.lode/war-room/summary.md`.
 
 # 1. Purpose
 

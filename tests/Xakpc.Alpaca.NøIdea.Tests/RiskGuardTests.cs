@@ -229,6 +229,47 @@ public class RiskGuardTests
 
         Assert.False(verdict.Allowed);
         Assert.Contains("old", verdict.Reason, StringComparison.Ordinal);
+        Assert.Equal("quote-too-old", verdict.Code);
+    }
+
+    [Fact]
+    public void ARejectionCodeNamesTheRuleAndCarriesNoMeasuredValue()
+    {
+        // The catalog builder counts thousands of rejections by code, so a code that held a
+        // price, a percentage, or an age would make every row its own bucket and the tally
+        // useless. The reason keeps the number; the code never does.
+        var policy = new StrategyPolicy();
+        var guard = Guard();
+
+        RiskVerdict[] rejections =
+        [
+            guard.CanOpen(Open(contracts: 1), Candidate(price: 25m), Healthy, policy),
+            guard.CanOpen(Open(contracts: 4), Candidate(price: 1m), Healthy,
+                new StrategyPolicy { MaxContractsPerTrade = 1 }),
+            guard.CheckContract(
+                Candidate() with { Contract = Contract() with { Bid = 1.00m, Ask = 2.00m } }, policy),
+            guard.CheckContract(
+                Candidate() with { Contract = Contract() with { QuoteTimestampUtc = Now.AddHours(-2) } },
+                policy),
+            guard.CanConsiderNewPositions(Healthy with { DayOpeningEquity = 0m }),
+            guard.CanConsiderNewPositions(Healthy with { Equity = 90_000m }),
+        ];
+
+        foreach (var verdict in rejections)
+        {
+            Assert.False(verdict.Allowed);
+            Assert.DoesNotContain(verdict.Code, character => char.IsDigit(character));
+            Assert.Matches("^[a-z]+(-[a-z]+)*$", verdict.Code);
+        }
+    }
+
+    [Fact]
+    public void AnAllowedVerdictCarriesTheAllowedCode()
+    {
+        var verdict = Guard().CheckContract(Candidate(), new StrategyPolicy());
+
+        Assert.True(verdict.Allowed);
+        Assert.Equal("allowed", verdict.Code);
     }
 
     [Fact]

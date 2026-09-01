@@ -7,7 +7,8 @@ namespace Xakpc.Alpaca.NøIdea.Alpaca.Gateways;
 /// </summary>
 /// <remarks>
 /// This class is the only place SDK market-data types are converted into project records. No
-/// request names a feed; the account default applies (ADR-010).
+/// request relies on an account default. Stock requests use IEX and option requests use the
+/// Indicative feed so the application stays within the Alpaca Basic data entitlement.
 /// </remarks>
 public sealed class LiveMarketDataGateway(AlpacaClients clients) : IMarketDataGateway
 {
@@ -22,7 +23,7 @@ public sealed class LiveMarketDataGateway(AlpacaClients clients) : IMarketDataGa
     public async Task<LatestTrade> GetLatestTradeAsync(string symbol, CancellationToken cancellationToken)
     {
         var trade = await _clients.StockData.GetLatestTradeAsync(
-            new LatestMarketDataRequest(symbol), cancellationToken);
+            new LatestMarketDataRequest(symbol) { Feed = MarketDataFeed.Iex }, cancellationToken);
 
         return new LatestTrade(symbol, trade.Price, trade.TimestampUtc);
     }
@@ -34,8 +35,12 @@ public sealed class LiveMarketDataGateway(AlpacaClients clients) : IMarketDataGa
         DateTimeOffset to,
         CancellationToken cancellationToken)
     {
-        var page = await _clients.StockData.ListHistoricalBarsAsync(
-            new HistoricalBarsRequest(symbol, from.UtcDateTime, to.UtcDateTime, ParseTimeFrame(timeframe)), cancellationToken);
+        var request = new HistoricalBarsRequest(
+            symbol, from.UtcDateTime, to.UtcDateTime, ParseTimeFrame(timeframe))
+        {
+            Feed = MarketDataFeed.Iex,
+        };
+        var page = await _clients.StockData.ListHistoricalBarsAsync(request, cancellationToken);
 
         return page.Items
             .Select(bar => new PriceBar(
@@ -49,7 +54,10 @@ public sealed class LiveMarketDataGateway(AlpacaClients clients) : IMarketDataGa
     {
         ArgumentNullException.ThrowIfNull(query);
 
-        var request = new OptionChainRequest(query.Underlying);
+        var request = new OptionChainRequest(query.Underlying)
+        {
+            OptionsFeed = OptionsFeed.Indicative,
+        };
 
         if (query.OptionType is not null)
         {

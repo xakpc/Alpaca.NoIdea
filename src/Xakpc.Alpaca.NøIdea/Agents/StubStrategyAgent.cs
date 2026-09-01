@@ -58,7 +58,7 @@ public sealed class StubStrategyAgent : IStrategyAgent
                     Kind = kind,
                     ContractSymbol = pick.Contract.ContractSymbol,
                     Contracts = 1,
-                    Probability = null,
+                    ProfitProbability = null,
                     Reasoning = $"stub: cheapest mechanically tradeable contract at {pick.CostPerContract:N2} USD",
                 },
             ],

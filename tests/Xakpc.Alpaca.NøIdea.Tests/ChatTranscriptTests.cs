@@ -145,6 +145,69 @@ public class ChatTranscriptTests
     }
 
     [Fact]
+    public void TheLineBeforeTheCallSaysWhatWhereAndHow()
+    {
+        // A seat holds the console for minutes. This one line is all a person has during that
+        // wait, so it must carry the whole call on its own and stay on its own event id: the
+        // prompt dump under the Request id is tens of kilobytes and would bury it.
+        var logger = new CapturingLogger();
+
+        ChatTranscript.Sending(
+            logger, "quant", "vote", "gpt-5.6-terra", "PR-4831",
+            [
+                new ChatMessage(ChatRole.System, "You are the quant seat."),
+                new ChatMessage(ChatRole.User, "proposal_id: PR-4831"),
+            ],
+            [AIFunctionFactory.Create(() => "ok", "cast_vote", "Votes.")],
+            ChatToolMode.RequireSpecific("cast_vote"),
+            1500,
+            0.4f);
+
+        var line = Assert.Single(logger.Lines);
+
+        Assert.Equal(RunEvents.Chat("quant", ChatEvent.Sending), line.Id);
+        Assert.NotEqual(RunEvents.Chat("quant", ChatEvent.Request), line.Id);
+
+        // What: the seat, the phase, the proposal it belongs to.
+        Assert.Contains("quant [vote]", line.Message, StringComparison.Ordinal);
+        Assert.Contains("PR-4831", line.Message, StringComparison.Ordinal);
+
+        // Where: the model that is about to be billed for the wait.
+        Assert.Contains("gpt-5.6-terra", line.Message, StringComparison.Ordinal);
+
+        // How: the size of the payload, the toolbox, what the seat must do with it, and the
+        // sampling settings.
+        Assert.Contains("2 messages", line.Message, StringComparison.Ordinal);
+        Assert.Contains("1 tools [cast_vote]", line.Message, StringComparison.Ordinal);
+        Assert.Contains("must call cast_vote", line.Message, StringComparison.Ordinal);
+        Assert.Contains("max 1500 output tokens", line.Message, StringComparison.Ordinal);
+        Assert.Contains("temperature 0.40", line.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ASeatThatSendsNoTemperatureSaysSo()
+    {
+        // A reasoning model that answers 400 to `temperature` is an abstention, so the line
+        // must show that the value was left unset rather than print a default that was never
+        // sent.
+        var logger = new CapturingLogger();
+
+        ChatTranscript.Sending(
+            logger, "quant", "analysis", "gpt-5.6-terra", "PR-4831",
+            [new ChatMessage(ChatRole.User, "payload")],
+            [],
+            ChatToolMode.Auto,
+            3000,
+            temperature: null);
+
+        var line = Assert.Single(logger.Lines);
+
+        Assert.Contains("temperature unset", line.Message, StringComparison.Ordinal);
+        Assert.Contains("0 tools [none]", line.Message, StringComparison.Ordinal);
+        Assert.Contains("tools optional", line.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EachSeatOwnsItsOwnEventIds()
     {
         // A block per seat is what makes "show me only the proposer" a filter and not a

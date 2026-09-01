@@ -61,6 +61,13 @@ public static class ModelPricing
             // numbers and structured reasoning, so its output is what to watch.
             ["gpt-5.6-terra"] = new(2.00m, 12.00m) { CachedInputPerMillion = 0.20m },
 
+            // Checked 2026-09-01. Cheap-profile OpenAI seat.
+            ["gpt-5.4-nano"] = new(0.20m, 1.25m) { CachedInputPerMillion = 0.02m },
+
+            // Cheap-profile Anthropic seats.
+            ["claude-haiku-4-5-20251001"] =
+                new(1.00m, 5.00m) { CachedInputPerMillion = 0.10m },
+
             // ---- not seated. Kept for a quick switch back, and equally stale. ----
 
             // Read off the published table 2026-08-31. This entry held 15.00/75.00/1.50,
@@ -71,7 +78,6 @@ public static class ModelPricing
             // base; only the 0.50 read rate is modelled.
             ["claude-opus-5"] = new(5.00m, 25.00m) { CachedInputPerMillion = 0.50m },
 
-            ["claude-haiku-4-5-20251001"] = new(1.00m, 5.00m) { CachedInputPerMillion = 0.10m },
             ["gpt-5"] = new(1.25m, 10.00m) { CachedInputPerMillion = 0.125m },
             ["grok-4"] = new(3.00m, 15.00m),
         };

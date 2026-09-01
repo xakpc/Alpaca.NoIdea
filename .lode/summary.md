@@ -21,12 +21,22 @@ flowchart LR
 
 ```powershell
 dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live --dry-run --once --agent stub
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live --dry-run --cheap
 dotnet run --project src/Xakpc.Alpaca.NøIdea -- --audit --last 20
 ```
 
 The host supports `--live`, `--smoke`, `--check-mcp`, and read-only `--audit` operations.
 `--dry-run` replaces only the trading gateway. It still reads live data and writes the audit.
-The host has no data-import or market-simulation operation.
+The host has no data-import or market-simulation operation. A Spectre.Console operator view
+shows run, cycle, account, catalog, risk, order, war-room, and model-wait events in aligned
+columns. The live view animates while a seat waits for a model and counts down the gap between
+cycles. Each process writes the complete clipped information log to a timestamped plain file
+under `data/logs/`.
+Live stock requests use IEX. Live option-chain requests use the Indicative feed.
+A normal live process stops when the Alpaca clock reports that the market is closed.
+
+`--smoke` is a paper-account mutation. It submits an option buy and then cancels the order or
+closes a fill. `--check-mcp` is the read-only MCP diagnostic.
 
 ## Current storage
 
@@ -55,16 +65,36 @@ version `3`. `data/raw/` remains separate research input and is not read by the 
 - Open decisions and order reservations commit in one SQLite transaction.
 - Close decisions use the same client-ID reservation and broker reconciliation path as buys.
 - Pending sells block duplicate mandatory and war-room close requests.
-- Policy, review cursors, order lifecycle, prior-close equity, and daily fills survive restart.
+- Policy, review cursors, and order lifecycle survive restart. Alpaca supplies prior-close
+  equity and daily fills. The missing-prior-close fallback is process-local only.
 - A risk-reducing close is attempted once even if its first audit write fails. The session
   stops after that attempt.
-- `--audit` is read-only and returns failure when it finds an incomplete or broken link.
+- `--audit` opens SQLite read-only and returns failure when it finds an incomplete or broken
+  link. Process startup still creates the normal plain log file.
+- Live startup verifies the schema but does not run the integrity audit. This is an active
+  repair item.
 
 ## Current verification
 
-The solution has 104 passing tests. A live-data dry run on 2026-08-31 read the paper account,
-sent no order, and wrote one hold decision and one equity snapshot. The audit integrity check
-reported no fault.
+The solution has 151 passing tests. The 2026-09-01 dry-run sitting is the current baseline. It
+took 8 minutes 30 seconds and 0.7346 USD. The room refused a TSLA 370 call because two seats
+on different providers found a negative expected value of about -260 USD independently. A
+refusal that carries its reasons is the expected result, not a fault.
+
+A refusal is now counted and stored as a rejection. The cycle count, the decision row, and the
+review pass keep the option symbol, the probability, and the rejection code, so the refusal
+can be scored later. A proposal that never existed stays a hold and is not counted.
+
+The room deadline is 13 minutes, and each model call has its own limit. Because a sitting can
+last longer than the ten-minute quote age, the loop reads a current quote for the selected
+contract before the final risk check, and rejects the trade when it cannot. Numbers the
+proposer states are compared with the catalog before any seat is paid. See
+[war-room summary](war-room/summary.md) and [live cycle](trading/live-cycle.md).
+
+The current database is not audit-clean. Earlier interrupted dry runs left incomplete
+sittings. Counterfactual scoring stays open. The vote phase has not run in any observed
+sitting. See
+[after-session improvements](plans/after-session-improvements.md).
 
 ## Related lodes
 
@@ -72,4 +102,4 @@ reported no fault.
 - [Live cycle](trading/live-cycle.md)
 - [Audit schema](storage/schema.md)
 - [Observability](operations/observability.md)
-- [Historical model evidence](research/historical-model-evidence.md)
+- [Research summary](research/summary.md)

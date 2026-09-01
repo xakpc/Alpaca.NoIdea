@@ -1,14 +1,13 @@
 # Risk Guardrails
 
-Deterministic C# owns every permission to add account risk. The model can request an action,
-but it cannot bypass a guardrail.
+Deterministic C# owns every permission to add account risk. A model can request an action or
+narrow a strategy policy. It cannot change `RiskOptions` or bypass `RiskGuard`.
 
 ```mermaid
 flowchart TD
-    A[Proposed action] --> V[Pre-validation]
-    V --> C[Current catalog lookup]
+    A[Proposed action] --> C[Current catalog lookup]
     C --> R[RiskGuard]
-    R -->|Allowed| D[Audit and reserve]
+    R -->|Allowed| D[Decision and reservation transaction]
     D --> B[Paper broker]
     R -->|Rejected| E[Decision event]
 ```
@@ -18,39 +17,72 @@ var verdict = riskGuard.CanOpen(action, candidate, snapshot, policy);
 if (!verdict.Allowed) return;
 ```
 
-## Hard rules
+## Verdict shape
 
-- Paper environment only.
-- Long calls and long puts only.
-- Current two-sided quote required.
-- Spread and quote age must pass.
-- Contract must exist in the current catalog.
-- No duplicate held or pending contract.
-- Per-trade, total, daily-loss, position-count, and daily-open limits apply.
-- An account-wide halt gives an exact reason. The reason identifies a missing equity baseline,
-  unknown pending risk, or the measured daily loss.
-- Prior-close equity is the daily-loss baseline. If Alpaca does not supply it, the loop can use
-  current equity only when the account has no position and no fill for the current US market day.
-  The loop keeps this fallback value for the rest of the process. All other missing-baseline
-  cases fail closed.
-- Expiration must finish before the competition flatten boundary.
-- An accepted decision and order reservation commit before broker submission.
-- A failed audit write stops the session.
-
-Dry run uses the same rules and current data. It replaces the trading gateway with a gateway
-that records planned orders and sends none.
+A verdict carries two texts. `Reason` explains one candidate and can contain a measured
+value. `Code` names the rule that decided and never contains a value, so a caller can count
+thousands of rejections into a small number of groups.
 
 ```csharp
-var accountVerdict = riskGuard.CanConsiderNewPositions(snapshot);
-if (!accountVerdict.Allowed)
-{
-    logger.LogWarning("New positions halted: {Reason}", accountVerdict.Reason);
-}
+RiskVerdict.Reject("quote-too-old", $"quote is {age.TotalMinutes:N0} minutes old");
 ```
+
+An allowed verdict has the code `allowed`. A code is kebab-case letters only. A test enforces
+this shape, because a code that holds a number makes each row a separate group and the count
+gives no information.
+
+## Hard limits
+
+| Limit | Current value |
+|---|---:|
+| Risk per trade | 2% of equity |
+| Total premium exposure | 10% of equity |
+| Daily loss halt | 5% from prior-close equity |
+| Concurrent open and pending positions | 4 |
+| Filled opening positions per US market day | 4 |
+| Hard DTE range | 1 to 21 days |
+| Maximum contracts per trade | 5 |
+| Spread divided by ask | 15% |
+| Maximum quote age | 10 minutes |
+| Competition flatten | 2026-09-03 19:30 UTC |
+
+The opening policy defaults to 2–10 DTE, 50 percent take profit, 40 percent stop loss, and
+one contract. `StrategyPolicy.ClampTo` keeps every revision inside the hard limits.
+
+## Contract and account rules
+
+- Only long calls and long puts can open.
+- The contract must exist in the current catalog and have a tradeable quote.
+- Premium paid is the maximum risk for a long option.
+- Held contracts, pending buys, cash, total exposure, slot count, and daily opens all apply.
+- Prior-close equity is the normal daily baseline. If Alpaca omits it, current equity is a
+  process-local fallback only when the account has no position and no fill today.
+- Unknown prior-close equity after a position or fill fails closed.
+- Unknown pending buy risk fails closed.
+
+The current expiration check permits a contract date through 2026-09-04. It rejects a later
+date. `MandatoryExitReason` still forces an exit at 2026-09-03 19:30 UTC. This permits a Friday
+contract while requiring a Thursday close. The active improvement plan records the unresolved
+policy decision.
+
+## Order and exit rules
+
+Hard exits for take profit, stop loss, and competition flatten run before model work. A
+missing current position price holds the position instead of closing it without a price.
+
+An accepted decision and order reservation commit before broker submission. A pending sell
+blocks a duplicate close. An uncertain buy is not replayed. An uncertain risk-reducing sell
+can be retried with the same client ID after broker reconciliation.
+
+Dry run uses the same market reads and risk checks. `DryRunTradingGateway` intercepts broker
+writes. `--allow-stale-quotes` is valid only with dry run. It skips only quote-age checks in
+the catalog, proposal pre-validation, and final risk validation. A missing timestamp and all
+other quote-quality failures still reject.
 
 ## Related lodes
 
-- [Strategy parameters](strategy-parameters.md)
-- [Contract catalog](tradeable-contract-catalog.md)
-- [Fault handling](../operations/fault-handling.md)
-- [Audit schema](../storage/schema.md)
+- [Trading summary](summary.md)
+- [Live cycle](live-cycle.md)
+- [Storage schema](../storage/schema.md)
+- [Fault and recovery behavior](../operations/summary.md)
+- [Open strategy questions](../plans/open-strategy-questions.md)

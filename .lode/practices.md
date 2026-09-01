@@ -38,7 +38,6 @@ typed Alpaca SDK through `ITradingGateway`.
 
 ## Related lodes
 
-- [Technology stack](architecture/technology-stack.md)
-- [Application structure](architecture/application-structure.md)
-- [Testing strategy](operations/testing-strategy.md)
+- [Architecture summary](architecture/summary.md)
+- [Operations summary](operations/summary.md)
 - [Storage summary](storage/summary.md)

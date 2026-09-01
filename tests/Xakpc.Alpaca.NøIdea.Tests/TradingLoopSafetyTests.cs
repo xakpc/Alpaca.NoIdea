@@ -30,6 +30,46 @@ public sealed class TradingLoopSafetyTests
     }
 
     [Fact]
+    public async Task ADeclinedProposalIsCountedAsRejected()
+    {
+        // The 2026-09-01 run reported "0 rejected" for a cycle that judged a contract and
+        // turned it down, which reads as a cycle where nothing happened.
+        await WithLoopAsync(
+            OrderLifecycle.Open, blocked: false, pendingClose: false,
+            async (loop, _, agent) =>
+            {
+                agent.Decision = StrategyDecision.Declined(
+                    "the catalyst is already in the price",
+                    new DecisionRejection { Code = "WITHDRAWN_BY_PROPOSER", Stage = "room" },
+                    "TSLA260904C00370000",
+                    0.43m);
+
+                var result = await loop.RunCycleAsync(CancellationToken.None);
+
+                Assert.Equal(1, result.ActionsRejected);
+                Assert.Equal(0, result.OrdersSubmitted);
+            },
+            hasPosition: false);
+    }
+
+    [Fact]
+    public async Task APlainHoldIsNotCountedAsRejected()
+    {
+        // Proposing nothing and declining something must stay distinguishable.
+        await WithLoopAsync(
+            OrderLifecycle.Open, blocked: false, pendingClose: false,
+            async (loop, _, agent) =>
+            {
+                agent.Decision = StrategyDecision.Nothing("the catalog is empty");
+
+                var result = await loop.RunCycleAsync(CancellationToken.None);
+
+                Assert.Equal(0, result.ActionsRejected);
+            },
+            hasPosition: false);
+    }
+
+    [Fact]
     public async Task APendingSellSuppressesMandatoryAndWarRoomCloses()
     {
         await WithLoopAsync(OrderLifecycle.Open, blocked: false, pendingClose: true, async (loop, gateway, agent) =>
@@ -142,12 +182,15 @@ public sealed class TradingLoopSafetyTests
         public int ReviewCalls { get; private set; }
         public StrategyContext? LastContext { get; private set; }
 
+        /// <summary>What the agent returns, when a test needs something other than a hold.</summary>
+        public StrategyDecision? Decision { get; set; }
+
         public Task<StrategyDecision> DecideAsync(
             StrategyContext context, CancellationToken cancellationToken)
         {
             DecideCalls++;
             LastContext = context;
-            return Task.FromResult(StrategyDecision.Nothing("test hold"));
+            return Task.FromResult(Decision ?? StrategyDecision.Nothing("test hold"));
         }
 
         public Task<StrategyDecision> ReviewPositionAsync(
