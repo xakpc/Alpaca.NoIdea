@@ -356,6 +356,20 @@ public sealed partial class TradingStore
             "PRAGMA user_version;", cancellationToken: cancellationToken));
     }
 
+    /// <summary>
+    /// The journal mode the database file is in. Expected to be <c>wal</c>.
+    /// </summary>
+    /// <remarks>
+    /// The cycle loop and the hard-exit loop both write, and the default rollback journal makes
+    /// one of two concurrent writers fail rather than wait.
+    /// </remarks>
+    public async Task<string> JournalModeAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        return await connection.ExecuteScalarAsync<string>(new CommandDefinition(
+            "PRAGMA journal_mode;", cancellationToken: cancellationToken)) ?? "";
+    }
+
     private sealed record PositionThesisDbRow
     {
         public string ContractSymbol { get; init; } = "";

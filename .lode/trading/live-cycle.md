@@ -4,6 +4,9 @@ The loop reads the Alpaca market clock during regular US market hours. After eac
 cycle, it waits the configured 30 minutes. A normal session stops when the clock reports a
 closed market. `--once` is the explicit out-of-hours diagnostic override.
 
+The deterministic exits also run on a separate one-minute timer, in parallel with this cycle.
+See [hard-exit loop](hard-exit-loop.md). The order below is the order inside one cycle.
+
 > **Existing positions are handled first. New trades are considered only after the current
 > positions are safe.**
 
@@ -37,7 +40,8 @@ flowchart TD
 
 1. **Hard exits run before anything is asked of an agent.** A stop-loss, a take-profit and the
    competition flatten are deterministic and consult nobody, so a hung or broken model can
-   never delay one.
+   never delay one. They also run on their own one-minute timer, so they do not wait for the
+   next cycle either. See [hard-exit loop](hard-exit-loop.md).
 2. **The war room sits in the middle.** It only ever produces data.
 3. **`RiskGuard` runs last, immediately before submission.** `TryOpenAsync` first reads the
    current quote for the selected contract and judges that, not the catalog row. The catalog is
@@ -65,6 +69,10 @@ the durable decision, order intent, policy, and review cursors.
 level, or the competition flatten time. The first two come from the `StrategyPolicy` the agent
 writes; the flatten time does not, because missing the measurement point cannot be recovered
 from.
+
+`TradingLoop.RunHardExitsAsync` calls the same `ManageOpenPositionsAsync` on the one-minute
+timer. There is one copy of the exit rules and two callers. A broker gate makes sure that only
+one of them can act on a position at a time.
 
 A position with no current price is **held**, not closed blindly.
 
@@ -150,6 +158,12 @@ if (await RefreshAsync(candidate, cancellationToken) is not { } refreshed)
 candidate = refreshed;
 var verdict = _riskGuard.CanOpen(action, candidate, snapshot, Policy);
 ```
+
+The account view is refreshed with the quote. `RefreshRiskSnapshotAsync` builds a new
+`RiskSnapshot` inside the broker gate immediately before the risk check. The snapshot from the
+start of the cycle is 8 to 10 minutes old by then, and a hard exit can close a position and
+change equity while the room debates. The first snapshot is evidence for the room. Only the
+refreshed one can authorise an order.
 
 `RiskGuard.CanOpen` checks per-trade risk, total exposure, position counts, the daily limit,
 contract quality, quote age, and the expiration window. A refreshed quote that is itself too

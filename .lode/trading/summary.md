@@ -59,13 +59,28 @@ at most 200 rows.
 
 ## Cadence
 
-`LiveSession` runs during regular US market hours. After a cycle completes, it waits the
-configured 30 minutes. The start-to-start interval therefore includes the sitting time plus
-30 minutes. A recoverable cycle fault changes the next wait to five minutes.
+`LiveSession` runs two timers during regular US market hours.
+
+| Timer | Interval | What it does |
+|---|---|---|
+| Cycle | 30 min | Catalog, war room, position review, and new trades |
+| Hard exit | 1 min | Stop-loss, take-profit, and competition flatten only |
+
+After a cycle completes, it waits the configured 30 minutes. The start-to-start interval
+therefore includes the sitting time plus 30 minutes. A recoverable cycle fault changes the next
+wait to five minutes.
+
+The exit timer is separate because the exits use no model. At the cycle cadence a stop-loss was
+sampled only once every 38 to 41 minutes, which does not stop a one to three day option. Alpaca
+has no stop order type and no bracket order class for options, so this loop is the only
+mechanism. See [hard-exit loop](hard-exit-loop.md).
+
+`--once` runs one cycle and starts no exit timer.
 
 ## Related lodes
 
 - [Live cycle](live-cycle.md)
+- [Hard-exit loop](hard-exit-loop.md)
 - [Risk guardrails](risk-guardrails.md)
 - [War room](../war-room/summary.md)
 - [Market-data policy](../alpaca/market-data-policy.md)

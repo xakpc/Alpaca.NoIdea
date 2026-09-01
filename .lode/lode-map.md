@@ -39,12 +39,14 @@ describe the current runtime.
 
 - [War-room summary](war-room/summary.md) - Proposal, review, discussion, and vote.
 - [LLM summary](llm/summary.md) - Model call and cost contracts.
+- [Call limits](llm/call-limits.md) - Deadline, seat, transport, and retry limits.
 - [Persona contracts](llm/persona-contracts.md) - Trust, forecasts, evidence, and voting meaning.
 
 ## Trading and Alpaca
 
 - [Trading summary](trading/summary.md) - Live loop, fixed universe, and contract catalog.
 - [Live cycle](trading/live-cycle.md) - Ordered cycle contract.
+- [Hard-exit loop](trading/hard-exit-loop.md) - Exit timer, broker gate, and order limits.
 - [Risk guardrails](trading/risk-guardrails.md) - Hard limits and fail-closed rules.
 - [Alpaca summary](alpaca/summary.md) - SDK and MCP separation.
 - [MCP integration](alpaca/mcp-integration.md) - Connection, run-mode, and safety contracts.

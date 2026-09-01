@@ -105,9 +105,27 @@ Initialization is idempotent for schema version `3`. Schema version `2` does not
 Startup gives an archive instruction and stops. The operator must archive `trader.db` and its
 SQLite sidecars, then start with a clean file.
 
+## Concurrent access
+
+The cycle loop and the hard-exit loop both write. The store opens one connection for each
+operation, so two settings are required:
+
+| Setting | Where | Why |
+|---|---|---|
+| `PRAGMA journal_mode = WAL` | `CreateSchemaAsync` | A reader can run while a writer holds the file. The mode stays in the database file. |
+| `PRAGMA busy_timeout` | `OpenAsync` | A pragma applies to the connection that runs it. Each new connection must set it again. |
+
+`TradingStore.BusyTimeout` is five seconds. Without both settings the second concurrent writer
+fails immediately with `SQLITE_BUSY`. WAL adds `-wal` and `-shm` sidecar files beside
+`trader.db`. `JournalModeAsync` reports the current mode. `--audit` opens the database
+read-only and works normally against WAL.
+
+See [hard-exit loop](../trading/hard-exit-loop.md).
+
 ## Related lodes
 
 - [Storage summary](summary.md)
+- [Hard-exit loop](../trading/hard-exit-loop.md)
 - [Operations](../operations/summary.md)
 - [Research summary](../research/summary.md)
 - [After-session improvements](../plans/after-session-improvements.md)

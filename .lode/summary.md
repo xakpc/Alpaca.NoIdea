@@ -61,7 +61,11 @@ version `3`. `data/raw/` remains separate research input and is not read by the 
 
 - Agents have read-only research tools and have no broker tool.
 - The typed Alpaca SDK is the only broker-write path.
-- `RiskGuard` validates every open action after the war-room vote.
+- `RiskGuard` validates every open action after the war-room vote, on an account snapshot read
+  immediately before submission and not on the snapshot the room debated.
+- The deterministic exits run on a one-minute timer, separate from the 30-minute cycle. Alpaca
+  has no stop order type and no bracket order class for options, so no broker-side exit is
+  possible. One broker gate stops the two loops from sending two sells for one position.
 - Open decisions and order reservations commit in one SQLite transaction.
 - Close decisions use the same client-ID reservation and broker reconciliation path as buys.
 - Pending sells block duplicate mandatory and war-room close requests.
@@ -76,7 +80,7 @@ version `3`. `data/raw/` remains separate research input and is not read by the 
 
 ## Current verification
 
-The solution has 151 passing tests. The 2026-09-01 dry-run sitting is the current baseline. It
+The solution has 161 passing tests. The 2026-09-01 dry-run sitting is the current baseline. It
 took 8 minutes 30 seconds and 0.7346 USD. The room refused a TSLA 370 call because two seats
 on different providers found a negative expected value of about -260 USD independently. A
 refusal that carries its reasons is the expected result, not a fault.

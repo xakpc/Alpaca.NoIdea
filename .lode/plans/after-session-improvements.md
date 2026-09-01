@@ -44,8 +44,12 @@ rejected its own change because the same problems remain, and withdrew.
 refused the trade for 0.7346 USD. A refusal is a decision, not a fault.
 
 The 2026-08-31 session gave the earlier baseline: 3 cycles, 21 model calls, 2,555,755 tokens,
-4.6095 USD, and no order. One seat lost 439.7 seconds to four network timeouts. That specific
-fault is now controlled by the per-call limit.
+4.6095 USD, and no order.
+
+Network timeouts are controlled by the transport limit and not by the per-call limit. The
+per-call limit only reports the fault after the retries finish. Grok seats lost 439.7, 474.2,
+and 540.1 seconds to transport retries because the SDK gave one HTTP request 100 seconds while
+a healthy Grok turn needs more. See [call limits](../llm/call-limits.md).
 
 ## P0 - Require a clean audit at live startup
 
@@ -110,6 +114,10 @@ submission tool. Measure the used output tokens before you select the value.
 
 ## P1 - Use a fixed cycle schedule
 
+This item applies to the 30-minute war-room cycle only. The deterministic exits no longer use
+that cadence: they run on a separate one-minute timer. See
+[hard-exit loop](../trading/hard-exit-loop.md).
+
 The code waits 30 minutes after a cycle completes. The measured cycle starts were 38 and 41
 minutes apart because the sittings used 7 to 10 minutes. The Lode currently describes one
 cycle every 30 minutes.
@@ -153,6 +161,17 @@ The proposer must also verify price-path claims from bars. The AMZN statement "n
 bounce" was false. The market persona also called the Indicative option feed `OPRA` and called
 the 2026-09-03 flatten time "tomorrow" on 2026-08-31. Prompts must receive the feed name and
 exact remaining session count as typed context.
+
+## P1 - Report the cost of a failed call
+
+`TokenLedger` records a call from its response. A failed call has no response, so it records
+nothing. The two failed runs on 2026-09-01 printed `Run cost 1 calls, 0 tokens, about
+0.0000 USD` although each retry sent a prompt of about 400,000 tokens and was billed.
+
+**Contract:** A cycle cost line must not report 0.0000 USD when a seat failed. Count the failed
+attempt, and mark the token total as incomplete when a call returns no usage.
+
+See [call limits](../llm/call-limits.md).
 
 ## P2 - Reduce cost after correctness repairs
 

@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.ClientModel.Primitives;
 using Microsoft.Extensions.AI;
 using OpenAI;
 using Xakpc.Alpaca.NøIdea.Alpaca;
@@ -42,6 +43,20 @@ public sealed class ChatClientFactory : IDisposable
     /// <summary>The xAI endpoint. Grok speaks the OpenAI protocol.</summary>
     private static readonly Uri GrokEndpoint = new("https://api.x.ai/v1");
 
+    /// <summary>How long one HTTP request to Grok may take before the transport kills it.</summary>
+    /// <remarks>
+    /// A reasoning turn is one HTTP request, and the tool loop makes one request per turn, so
+    /// this is a per-turn limit and not a per-call limit. Grok turns in the search phase carry
+    /// 300,000 to 400,000 input tokens. Measured healthy turns reach about 180 seconds, and one
+    /// measured sitting averaged 143 seconds across five turns. Four minutes admits the slow but
+    /// healthy turn and still kills a dead socket well inside the seat's own limit.
+    /// </remarks>
+    private static readonly TimeSpan GrokRequestTimeout = TimeSpan.FromMinutes(4);
+
+    /// <summary>How long one HTTP request to OpenAI may take before the transport kills it.</summary>
+    /// <remarks>OpenAI turns measure between 10 and 100 seconds, so it needs less room than Grok.</remarks>
+    private static readonly TimeSpan OpenAiRequestTimeout = TimeSpan.FromMinutes(3);
+
     private readonly Dictionary<ModelProvider, IChatClient> _clients = [];
     private readonly Lock _gate = new();
     private readonly ChatModelProfile _models;
@@ -84,6 +99,40 @@ public sealed class ChatClientFactory : IDisposable
             .ToArray();
     }
 
+    /// <summary>
+    /// The transport settings for one OpenAI-protocol host.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The SDK defaults are wrong for a reasoning model that invokes tools. They give one HTTP
+    /// request 100 seconds and then retry it three times, and they count a slow generation as a
+    /// retryable fault. A healthy Grok search turn is longer than 100 seconds, so the default
+    /// cancels work that would have completed, re-sends the same 400,000-token prompt, and is
+    /// billed for each attempt. The seat then reports a fault after nine minutes, the room loses
+    /// the cycle, and the token ledger sees no response and records nothing.
+    /// </para>
+    /// <para>
+    /// One retry keeps the answer to a rate limit or a bad gateway, which is what a retry is for.
+    /// It removes the retry of a slow generation, which no number of attempts can make faster.
+    /// The seat's own <c>CallTimeout</c> stays the outer limit, as it is written to be.
+    /// </para>
+    /// </remarks>
+    private static OpenAIClientOptions Transport(TimeSpan requestTimeout, Uri? endpoint = null)
+    {
+        var options = new OpenAIClientOptions
+        {
+            NetworkTimeout = requestTimeout,
+            RetryPolicy = new ClientRetryPolicy(maxRetries: 1),
+        };
+
+        if (endpoint is not null)
+        {
+            options.Endpoint = endpoint;
+        }
+
+        return options;
+    }
+
     public IChatClient For(ModelProvider provider, string personaName)
     {
         if (provider == ModelProvider.None)
@@ -111,7 +160,9 @@ public sealed class ChatClientFactory : IDisposable
 
                 ModelProvider.OpenAi =>
 #pragma warning disable OPENAI001 // Responses API is required for reasoning models that invoke tools.
-                    new OpenAIClient(new ApiKeyCredential(key))
+                    new OpenAIClient(
+                            new ApiKeyCredential(key),
+                            Transport(OpenAiRequestTimeout))
                         .GetResponsesClient()
                         .AsIChatClient(_models.OpenAi),
 #pragma warning restore OPENAI001
@@ -121,7 +172,7 @@ public sealed class ChatClientFactory : IDisposable
                 ModelProvider.Grok =>
                     new OpenAIClient(
                             new ApiKeyCredential(key),
-                            new OpenAIClientOptions { Endpoint = GrokEndpoint })
+                            Transport(GrokRequestTimeout, GrokEndpoint))
                         .GetChatClient(_models.Grok)
                         .AsIChatClient(),
 

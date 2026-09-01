@@ -30,6 +30,9 @@ public sealed partial class TradingStore(string connectionString) : IWarRoomAudi
 {
     public const int CurrentSchemaVersion = 3;
 
+    /// <summary>How long a write waits for another writer before it gives up.</summary>
+    public static readonly TimeSpan BusyTimeout = TimeSpan.FromSeconds(5);
+
     private readonly string _connectionString = connectionString
         ?? throw new ArgumentNullException(nameof(connectionString));
 
@@ -47,8 +50,13 @@ public sealed partial class TradingStore(string connectionString) : IWarRoomAudi
             Path.Combine(AppContext.BaseDirectory, "Storage", "Schema.sql"), cancellationToken);
 
         await using var connection = await OpenAsync(cancellationToken);
+
+        // Write-ahead logging is a property of the database file, so it survives in the file
+        // once set and does not need repeating for each connection. It is what lets a reader
+        // run while a writer holds the file. The hard-exit loop and the cycle loop both write,
+        // and the default rollback journal would make one of them fail rather than wait.
         await connection.ExecuteAsync(new CommandDefinition(
-            "PRAGMA busy_timeout = 30000;", cancellationToken: cancellationToken));
+            "PRAGMA journal_mode = WAL;", cancellationToken: cancellationToken));
 
         var version = await connection.ExecuteScalarAsync<long>(new CommandDefinition(
             "PRAGMA user_version;", cancellationToken: cancellationToken));
@@ -255,10 +263,24 @@ public sealed partial class TradingStore(string connectionString) : IWarRoomAudi
             sql, new { clientOrderId }, cancellationToken: cancellationToken));
     }
 
+    /// <summary>
+    /// Opens one connection for one operation.
+    /// </summary>
+    /// <remarks>
+    /// The store opens a new connection for each operation rather than holding one, so the
+    /// busy timeout must be set here: a pragma applies to the connection that runs it, not to
+    /// the database file. Without it the timeout is zero and the second of two concurrent
+    /// writers fails immediately with <c>SQLITE_BUSY</c>. The hard-exit loop and the cycle
+    /// loop both write, so this is a correctness requirement and not a performance option.
+    /// Five seconds is far longer than any write this application makes.
+    /// </remarks>
     private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
         var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
+        await connection.ExecuteAsync(new CommandDefinition(
+            $"PRAGMA busy_timeout = {(int)BusyTimeout.TotalMilliseconds};",
+            cancellationToken: cancellationToken));
         return connection;
     }
 }

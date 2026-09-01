@@ -64,6 +64,24 @@ public sealed class TradingLoop(
     private readonly PositionReviewTriggers? _triggers =
         agent is IPositionReviewer ? new PositionReviewTriggers(new ReviewTriggerOptions(), time) : null;
 
+    /// <summary>
+    /// Serialises every region that reads positions or orders and then acts on what it read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The hard-exit loop runs on its own timer, so two callers can reach the broker at once.
+    /// The race that matters is check-then-mutate: two paths both see no pending close for one
+    /// symbol and both send a sell. Holding this gate across the read and the submission makes
+    /// that impossible.
+    /// </para>
+    /// <para>
+    /// <b>The war room never holds this gate.</b> A sitting takes 8 to 10 minutes and produces
+    /// only data. Gating it would put the stop-loss back behind a model answering, which is the
+    /// exact fault this design removes.
+    /// </para>
+    /// </remarks>
+    private readonly SemaphoreSlim _brokerGate = new(1, 1);
+
     private StrategyPolicy _policy = new();
     private OrderCoordinator? _orderCoordinator;
     private bool _initialized;
@@ -128,6 +146,55 @@ public sealed class TradingLoop(
         _initialized = true;
     }
 
+    /// <summary>
+    /// Runs the deterministic exits alone, without the catalog, the room, or any model call.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the same work as step 2 of <see cref="RunCycleAsync"/> and it calls the same
+    /// <c>ManageOpenPositionsAsync</c>. It exists so the exits can run on a one-minute timer
+    /// while a cycle is somewhere in the middle of an eight-minute sitting. A stop-loss checked
+    /// once every 38 to 41 minutes is a poll, not a stop.
+    /// </para>
+    /// <para>
+    /// A pass is two Alpaca reads. <c>MandatoryExitReason</c> is a pure function and the price
+    /// it judges comes from the position payload, so no option chain is read and no token is
+    /// spent.
+    /// </para>
+    /// <para>
+    /// It does not call <see cref="InitializeAsync"/>. That method guards itself with a plain
+    /// boolean, which is not safe to enter from two threads, so the session initialises once
+    /// before it starts this loop. An uninitialised loop reports no work rather than racing.
+    /// </para>
+    /// </remarks>
+    public async Task<CloseBatchResult> RunHardExitsAsync(CancellationToken cancellationToken)
+    {
+        if (_orderCoordinator is not { } coordinator)
+        {
+            return new CloseBatchResult();
+        }
+
+        await _brokerGate.WaitAsync(cancellationToken);
+
+        try
+        {
+            var positions = await _trading.ListPositionsAsync(cancellationToken);
+            if (positions.Count == 0)
+            {
+                return new CloseBatchResult();
+            }
+
+            var pendingOrders = await coordinator.ReconcileAndListPendingAsync(
+                replayMissingSells: false, cancellationToken);
+
+            return await ManageOpenPositionsAsync(positions, pendingOrders, cancellationToken);
+        }
+        finally
+        {
+            _brokerGate.Release();
+        }
+    }
+
     public async Task<CycleResult> RunCycleAsync(CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken);
@@ -135,13 +202,46 @@ public sealed class TradingLoop(
         var todayEastern = MarketCalendar.ToEastern(now).Date;
         var dayStartUtc = MarketCalendar.ToUtc(todayEastern);
 
-        // 1. Account state. Alpaca is the source of truth, never SQLite.
-        var account = await _trading.GetAccountAsync(cancellationToken);
-        var positions = await _trading.ListPositionsAsync(cancellationToken);
-        var pendingOrders = await _orderCoordinator!.ReconcileAndListPendingAsync(
-            replayMissingSells: !_startupOrdersReconciled, cancellationToken);
-        _startupOrdersReconciled = false;
-        var dailyOrders = await _trading.ListOrdersSinceAsync(dayStartUtc, cancellationToken);
+        AccountState account;
+        IReadOnlyList<PositionState> positions;
+        IReadOnlyList<OrderState> pendingOrders;
+        IReadOnlyList<OrderState> dailyOrders;
+        CloseBatchResult mandatory;
+
+        // Steps 1 and 2 read positions and orders and then act on what they read, so the
+        // hard-exit loop must not interleave with them. The gate ends before the catalog is
+        // built: everything after it is either a read or the room, and the room must never
+        // hold a gate that a stop-loss waits on.
+        await _brokerGate.WaitAsync(cancellationToken);
+
+        try
+        {
+            // 1. Account state. Alpaca is the source of truth, never SQLite.
+            account = await _trading.GetAccountAsync(cancellationToken);
+            positions = await _trading.ListPositionsAsync(cancellationToken);
+            pendingOrders = await _orderCoordinator!.ReconcileAndListPendingAsync(
+                replayMissingSells: !_startupOrdersReconciled, cancellationToken);
+            _startupOrdersReconciled = false;
+            dailyOrders = await _trading.ListOrdersSinceAsync(dayStartUtc, cancellationToken);
+
+            // 2. Deterministic exits, BEFORE the agent is consulted. A stop-loss must not depend
+            //    on a model answering. The hard-exit loop runs the same method on its own timer.
+            mandatory = await ManageOpenPositionsAsync(
+                positions, pendingOrders, cancellationToken);
+
+            if (mandatory.AttemptedSymbols.Count > 0)
+            {
+                positions = await _trading.ListPositionsAsync(cancellationToken);
+                pendingOrders = await _orderCoordinator.ReconcileAndListPendingAsync(
+                    replayMissingSells: false, cancellationToken);
+                account = await _trading.GetAccountAsync(cancellationToken);
+            }
+        }
+        finally
+        {
+            _brokerGate.Release();
+        }
+
         var openedToday = dailyOrders
             .Where(order => order.IsBuy && order.FilledQuantity > 0)
             .Select(order => string.IsNullOrWhiteSpace(order.ClientOrderId)
@@ -150,21 +250,9 @@ public sealed class TradingLoop(
             .Distinct(StringComparer.Ordinal)
             .Count();
 
-        // 2. Deterministic exits, BEFORE the agent is consulted. A stop-loss must not depend
-        //    on a model answering.
-        var mandatory = await ManageOpenPositionsAsync(
-            positions, pendingOrders, cancellationToken);
         var closed = mandatory.ConfirmedClosed;
         var closeSubmitted = mandatory.Submitted;
         var rejected = mandatory.Rejected;
-
-        if (mandatory.AttemptedSymbols.Count > 0)
-        {
-            positions = await _trading.ListPositionsAsync(cancellationToken);
-            pendingOrders = await _orderCoordinator.ReconcileAndListPendingAsync(
-                replayMissingSells: false, cancellationToken);
-            account = await _trading.GetAccountAsync(cancellationToken);
-        }
 
         if (account.IsTradingBlocked || account.IsAccountBlocked
             || account.OptionsTradingLevel is null or <= 0)
@@ -205,29 +293,9 @@ public sealed class TradingLoop(
             }
         }
 
-        var dayOpeningEquity = ResolveDayOpeningEquity(
-            DateOnly.FromDateTime(todayEastern), account, positions, dailyOrders);
-        var snapshot = new RiskSnapshot
-        {
-            Equity = account.Equity,
-            Cash = account.Cash,
-            DayOpeningEquity = dayOpeningEquity,
-            OpenPositions = positions.Count,
-            OpenPositionCost = positions.Sum(p => p.AverageEntryPrice * Math.Abs(p.Quantity) * 100m),
-            PositionsOpenedToday = openedToday,
-            PendingOpenPositions = pendingOrders
-                .Where(order => order.IsBuy && order.RemainingQuantity > 0)
-                .Select(order => order.ContractSymbol)
-                .Except(positions.Select(position => position.Symbol), StringComparer.Ordinal)
-                .Distinct(StringComparer.Ordinal)
-                .Count(),
-            PendingOrderCost = pendingOrders
-                .Where(order => order.IsBuy)
-                .Sum(order => order.RemainingNotional ?? 0m),
-            PendingRiskKnown = pendingOrders
-                .Where(order => order.IsBuy && order.RemainingQuantity > 0)
-                .All(order => order.RemainingNotional is not null),
-        };
+        var snapshot = BuildRiskSnapshot(
+            DateOnly.FromDateTime(todayEastern), account, positions, pendingOrders, dailyOrders,
+            openedToday);
 
         var newPositionVerdict = _riskGuard.CanConsiderNewPositions(snapshot);
         var halted = !newPositionVerdict.Allowed;
@@ -400,8 +468,7 @@ public sealed class TradingLoop(
                     break;
 
                 case StrategyActionKind.ClosePosition:
-                    if (await TryCloseAsync(action, positions, pendingOrders, cancellationToken)
-                        is { } closeResult)
+                    if (await TryCloseAsync(action, cancellationToken) is { } closeResult)
                     {
                         closeSubmitted += closeResult.Submitted;
                         closed += closeResult.ConfirmedClosed;
@@ -412,7 +479,7 @@ public sealed class TradingLoop(
 
                 case StrategyActionKind.OpenCall:
                 case StrategyActionKind.OpenPut:
-                    if (await TryOpenAsync(action, catalog, snapshot, cancellationToken))
+                    if (await TryOpenAsync(action, catalog, cancellationToken))
                     {
                         submitted++;
                         snapshot = snapshot with { OpenPositions = snapshot.OpenPositions + 1 };
@@ -443,6 +510,69 @@ public sealed class TradingLoop(
     }
 
     // ------------------------------------------------------------------ exits
+
+    /// <summary>
+    /// Builds the risk view that <see cref="RiskGuard"/> judges an opening against.
+    /// </summary>
+    /// <remarks>
+    /// Extracted so the cycle can build it twice: once before the room sits, and once inside
+    /// the broker gate immediately before a submission. A sitting takes 8 to 10 minutes and a
+    /// hard exit can close a position while it runs, so the first snapshot is evidence for the
+    /// room and only the second one may authorise money.
+    /// </remarks>
+    private RiskSnapshot BuildRiskSnapshot(
+        DateOnly tradingDay,
+        AccountState account,
+        IReadOnlyList<PositionState> positions,
+        IReadOnlyList<OrderState> pendingOrders,
+        IReadOnlyList<OrderState> dailyOrders,
+        int openedToday) => new()
+        {
+            Equity = account.Equity,
+            Cash = account.Cash,
+            DayOpeningEquity = ResolveDayOpeningEquity(tradingDay, account, positions, dailyOrders),
+            OpenPositions = positions.Count,
+            OpenPositionCost = positions.Sum(p => p.AverageEntryPrice * Math.Abs(p.Quantity) * 100m),
+            PositionsOpenedToday = openedToday,
+            PendingOpenPositions = pendingOrders
+                .Where(order => order.IsBuy && order.RemainingQuantity > 0)
+                .Select(order => order.ContractSymbol)
+                .Except(positions.Select(position => position.Symbol), StringComparer.Ordinal)
+                .Distinct(StringComparer.Ordinal)
+                .Count(),
+            PendingOrderCost = pendingOrders
+                .Where(order => order.IsBuy)
+                .Sum(order => order.RemainingNotional ?? 0m),
+            PendingRiskKnown = pendingOrders
+                .Where(order => order.IsBuy && order.RemainingQuantity > 0)
+                .All(order => order.RemainingNotional is not null),
+        };
+
+    /// <summary>
+    /// Reads the account again and rebuilds the risk view. Call inside the broker gate.
+    /// </summary>
+    private async Task<RiskSnapshot> RefreshRiskSnapshotAsync(
+        DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var todayEastern = MarketCalendar.ToEastern(now).Date;
+        var account = await _trading.GetAccountAsync(cancellationToken);
+        var positions = await _trading.ListPositionsAsync(cancellationToken);
+        var pendingOrders = await _orderCoordinator!.ReconcileAndListPendingAsync(
+            replayMissingSells: false, cancellationToken);
+        var dailyOrders = await _trading.ListOrdersSinceAsync(
+            MarketCalendar.ToUtc(todayEastern), cancellationToken);
+        var openedToday = dailyOrders
+            .Where(order => order.IsBuy && order.FilledQuantity > 0)
+            .Select(order => string.IsNullOrWhiteSpace(order.ClientOrderId)
+                ? order.BrokerOrderId ?? order.ContractSymbol
+                : order.ClientOrderId)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+
+        return BuildRiskSnapshot(
+            DateOnly.FromDateTime(todayEastern), account, positions, pendingOrders, dailyOrders,
+            openedToday);
+    }
 
     private async Task<CloseBatchResult> ManageOpenPositionsAsync(
         IReadOnlyList<PositionState> positions,
@@ -502,37 +632,62 @@ public sealed class TradingLoop(
         return result;
     }
 
+    /// <remarks>
+    /// The room decided to close this position minutes ago, and a hard exit may have closed it
+    /// in the meantime. Positions and pending orders are therefore read again inside the broker
+    /// gate: the caller's lists are evidence the room saw, not a basis for sending an order.
+    /// </remarks>
     private async Task<CloseBatchResult?> TryCloseAsync(
         StrategyAction action,
-        IReadOnlyList<PositionState> positions,
-        IReadOnlyList<OrderState> pendingOrders,
         CancellationToken cancellationToken)
     {
-        if (action.ContractSymbol is not { } symbol
-            || positions.FirstOrDefault(p => string.Equals(p.Symbol, symbol, StringComparison.Ordinal))
-                is not { } position)
+        if (action.ContractSymbol is not { } symbol)
         {
-            _logger.LogWarning(
-                "The agent asked to close {Symbol}, which is not an open position. Ignored.",
-                action.ContractSymbol ?? "(none)");
+            _logger.LogWarning("The agent asked to close nothing. Ignored.");
             await RecordDecisionAsync(
                 action, null, "position-review", "rejected", "position", "not open",
                 cancellationToken);
             return new CloseBatchResult { Rejected = 1 };
         }
 
-        if (HasPendingClose(symbol, pendingOrders))
-        {
-            await RecordPositionDecisionAsync(
-                action, position, "position-review", "held", "close pending",
-                "a sell order is already pending", cancellationToken);
-            return new CloseBatchResult();
-        }
+        await _brokerGate.WaitAsync(cancellationToken);
 
-        _logger.LogInformation("Closing {Symbol} on the agent's request: {Why}", symbol, action.Reasoning);
-        var submitted = await CloseWithAuditAsync(
-            action, position, "position-review", action.Reasoning, cancellationToken);
-        return new CloseBatchResult().Add(symbol, submitted.Order);
+        try
+        {
+            var current = await _trading.ListPositionsAsync(cancellationToken);
+            if (current.FirstOrDefault(p => string.Equals(p.Symbol, symbol, StringComparison.Ordinal))
+                is not { } position)
+            {
+                _logger.LogWarning(
+                    "The agent asked to close {Symbol}, which is not an open position. Ignored.",
+                    symbol);
+                await RecordDecisionAsync(
+                    action, null, "position-review", "rejected", "position", "not open",
+                    cancellationToken);
+                return new CloseBatchResult { Rejected = 1 };
+            }
+
+            var currentPending = await _orderCoordinator!.ReconcileAndListPendingAsync(
+                replayMissingSells: false, cancellationToken);
+
+            if (HasPendingClose(symbol, currentPending))
+            {
+                await RecordPositionDecisionAsync(
+                    action, position, "position-review", "held", "close pending",
+                    "a sell order is already pending", cancellationToken);
+                return new CloseBatchResult();
+            }
+
+            _logger.LogInformation(
+                "Closing {Symbol} on the agent's request: {Why}", symbol, action.Reasoning);
+            var submitted = await CloseWithAuditAsync(
+                action, position, "position-review", action.Reasoning, cancellationToken);
+            return new CloseBatchResult().Add(symbol, submitted.Order);
+        }
+        finally
+        {
+            _brokerGate.Release();
+        }
     }
 
 
@@ -747,7 +902,6 @@ public sealed class TradingLoop(
     private async Task<bool> TryOpenAsync(
         StrategyAction action,
         IReadOnlyList<TradeableContractView> candidates,
-        RiskSnapshot snapshot,
         CancellationToken cancellationToken)
     {
         // The contract must be one the harness offered this cycle. A symbol the agent
@@ -780,73 +934,91 @@ public sealed class TradingLoop(
             return false;
         }
 
-        // The catalog was built at the start of the cycle and the room may debate for longer
-        // than MaxQuoteAge. Judging the original row would reject every otherwise valid trade
-        // on a stale quote, and the limit price below would be set from a price nobody is
-        // offering any more. This is a safety read: the typed gateway, never an agent tool.
-        if (await RefreshAsync(candidate, cancellationToken) is not { } refreshed)
+        // Everything from the quote refresh to the submission is one check-then-act, so it runs
+        // under the broker gate. A hard exit that fires mid-sitting changes both the quote's
+        // context and the account, and neither may change between the check and the order.
+        await _brokerGate.WaitAsync(cancellationToken);
+
+        try
         {
-            var reason = $"no current quote for {candidate.Contract.ContractSymbol}";
-            _logger.LogWarning(
-                RunEvents.RiskRejected,
-                "Could not refresh {Symbol} before the risk check. Rejected.",
-                candidate.Contract.ContractSymbol);
-            await RecordDecisionAsync(
-                action, candidate, "new-trade", "rejected", "quote refresh", reason,
-                cancellationToken);
-            return false;
-        }
-
-        candidate = refreshed;
-
-        var verdict = _riskGuard.CanOpen(action, candidate, snapshot, Policy);
-        if (!verdict.Allowed)
-        {
-            _logger.LogInformation(
-                RunEvents.RiskRejected,
-                "Risk rejected {Symbol}: {Reason}.", candidate.Contract.ContractSymbol, verdict.Reason);
-            await RecordDecisionAsync(
-                action, candidate, "new-trade", "rejected", "risk guard", verdict.Reason,
-                cancellationToken);
-            return false;
-        }
-
-        var clientOrderId = $"{Mode}-{Guid.NewGuid():N}"[..32];
-        var limitPrice = decimal.Round(candidate.Contract.Ask!.Value, 2);
-
-        var submitted = await _orderCoordinator!.SubmitAsync(
-            BuildDecision(
-                action, candidate, "new-trade", "accepted", "allowed", verdict.Reason),
-            new OrderRequest
+            // The catalog was built at the start of the cycle and the room may debate for longer
+            // than MaxQuoteAge. Judging the original row would reject every otherwise valid trade
+            // on a stale quote, and the limit price below would be set from a price nobody is
+            // offering any more. This is a safety read: the typed gateway, never an agent tool.
+            if (await RefreshAsync(candidate, cancellationToken) is not { } refreshed)
             {
-                ClientOrderId = clientOrderId,
-                ContractSymbol = candidate.Contract.ContractSymbol,
-                Quantity = action.Contracts,
-                IsBuy = true,
-                LimitPrice = limitPrice,
-            },
-            riskReducing: false,
-            cancellationToken);
+                var reason = $"no current quote for {candidate.Contract.ContractSymbol}";
+                _logger.LogWarning(
+                    RunEvents.RiskRejected,
+                    "Could not refresh {Symbol} before the risk check. Rejected.",
+                    candidate.Contract.ContractSymbol);
+                await RecordDecisionAsync(
+                    action, candidate, "new-trade", "rejected", "quote refresh", reason,
+                    cancellationToken);
+                return false;
+            }
 
-        var order = submitted.Order;
+            candidate = refreshed;
 
-        if (order.Lifecycle is OrderLifecycle.Rejected
-            or OrderLifecycle.Canceled or OrderLifecycle.Expired)
-        {
-            _logger.LogWarning(
-                "{Symbol} was rejected by the broker: {Status}.",
-                candidate.Contract.ContractSymbol, order.RawStatus);
-            return false;
+            // The snapshot the room saw is 8 to 10 minutes old by now, and a hard exit may have
+            // closed a position and moved equity since. Risk is judged on a snapshot read here,
+            // not on the one that was evidence for the debate.
+            var current = await RefreshRiskSnapshotAsync(_time.GetUtcNow(), cancellationToken);
+
+            var verdict = _riskGuard.CanOpen(action, candidate, current, Policy);
+            if (!verdict.Allowed)
+            {
+                _logger.LogInformation(
+                    RunEvents.RiskRejected,
+                    "Risk rejected {Symbol}: {Reason}.",
+                    candidate.Contract.ContractSymbol, verdict.Reason);
+                await RecordDecisionAsync(
+                    action, candidate, "new-trade", "rejected", "risk guard", verdict.Reason,
+                    cancellationToken);
+                return false;
+            }
+
+            var clientOrderId = $"{Mode}-{Guid.NewGuid():N}"[..32];
+            var limitPrice = decimal.Round(candidate.Contract.Ask!.Value, 2);
+
+            var submitted = await _orderCoordinator!.SubmitAsync(
+                BuildDecision(
+                    action, candidate, "new-trade", "accepted", "allowed", verdict.Reason),
+                new OrderRequest
+                {
+                    ClientOrderId = clientOrderId,
+                    ContractSymbol = candidate.Contract.ContractSymbol,
+                    Quantity = action.Contracts,
+                    IsBuy = true,
+                    LimitPrice = limitPrice,
+                },
+                riskReducing: false,
+                cancellationToken);
+
+            var order = submitted.Order;
+
+            if (order.Lifecycle is OrderLifecycle.Rejected
+                or OrderLifecycle.Canceled or OrderLifecycle.Expired)
+            {
+                _logger.LogWarning(
+                    "{Symbol} was rejected by the broker: {Status}.",
+                    candidate.Contract.ContractSymbol, order.RawStatus);
+                return false;
+            }
+
+            _logger.LogInformation(
+                RunEvents.OrderDecided,
+                "{State} {Contracts}x {Symbol} at {Price:N2} ({Cost:N2} USD). {Why}",
+                DryRun ? "Would open (dry run)" : "Opened",
+                action.Contracts, candidate.Contract.ContractSymbol, limitPrice,
+                limitPrice * action.Contracts * 100m, action.Reasoning);
+
+            return true;
         }
-
-        _logger.LogInformation(
-            RunEvents.OrderDecided,
-            "{State} {Contracts}x {Symbol} at {Price:N2} ({Cost:N2} USD). {Why}",
-            DryRun ? "Would open (dry run)" : "Opened",
-            action.Contracts, candidate.Contract.ContractSymbol, limitPrice,
-            limitPrice * action.Contracts * 100m, action.Reasoning);
-
-        return true;
+        finally
+        {
+            _brokerGate.Release();
+        }
     }
 
     /// <summary>
@@ -1089,7 +1261,8 @@ public sealed class TradingLoop(
         _policy = clamped;
     }
 
-    private sealed record CloseBatchResult
+    /// <summary>What one batch of close attempts did. Public because the hard-exit loop reports it.</summary>
+    public sealed record CloseBatchResult
     {
         public int Submitted { get; init; }
         public int ConfirmedClosed { get; init; }

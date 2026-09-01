@@ -32,6 +32,8 @@ var response = await client.GetResponseAsync(messages, options, cancellationToke
 - Tool calls and results persist with proposal ID, persona, phase, and model.
 - `TokenLedger` records calls and tokens by persona.
 - Model failure cannot directly increase risk.
+- Each seat has its own call limit, each HTTP turn has its own transport limit, and a request
+  gets one retry. See [call limits](call-limits.md).
 - Audit persistence failure is fatal.
 - The Alpaca allowlist rejects account, order, position-change, exercise, shell, file, and
   secret-access tools.
@@ -53,6 +55,7 @@ model-text, tool-call, and tool-result events. It does not hide warnings or erro
 
 - [War room](../war-room/summary.md)
 - [War-room context](../war-room/summary.md)
+- [Call limits](call-limits.md)
 - [Persona contracts](persona-contracts.md)
 - [Alpaca integration](../alpaca/mcp-integration.md)
 - [Storage schema](../storage/schema.md)
