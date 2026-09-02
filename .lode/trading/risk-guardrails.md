@@ -46,7 +46,7 @@ gives no information.
 | Maximum quote age | 10 minutes |
 | Competition flatten | 2026-09-03 19:30 UTC |
 
-The opening policy defaults to 2–10 DTE, 50 percent take profit, 40 percent stop loss, and
+The opening policy defaults to 1–10 DTE, 50 percent take profit, 40 percent stop loss, and
 one contract. `StrategyPolicy.ClampTo` keeps every revision inside the hard limits.
 
 ## Contract and account rules
@@ -60,10 +60,25 @@ one contract. `StrategyPolicy.ClampTo` keeps every revision inside the hard limi
 - Unknown prior-close equity after a position or fill fails closed.
 - Unknown pending buy risk fails closed.
 
-The current expiration check permits a contract date through 2026-09-04. It rejects a later
-date. `MandatoryExitReason` still forces an exit at 2026-09-03 19:30 UTC. This permits a Friday
-contract while requiring a Thursday close. The active improvement plan records the unresolved
-policy decision.
+## The exit horizon
+
+The expiration check permits a contract date through 2026-09-04. It rejects a later date.
+`MandatoryExitReason` forces an exit at 2026-09-03 19:30 UTC. A Friday contract is therefore
+permitted while a Thursday close is required.
+
+**Every position is sold before it expires.** The flatten is 30 minutes before a close, and no
+permitted contract expires earlier than the flatten day. This is a property of the system, not
+a defect in one candidate. The room is told so directly: `TradingConstraints` carries
+`PositionsExitAtUtc`, `HoursToForcedExit`, and `ExitIsAlwaysPreExpiry`, and each seat is
+instructed to judge the mark-to-market value at the exit. Expiration-payoff and
+break-even-at-expiry arguments do not apply.
+
+A seat that judges expiration payoff rejects the entire eligible universe, because no contract
+can pass. Three consecutive live cycles produced no order for this reason.
+
+`StrategyPolicy.MinDaysToExpiration` is 1. `ClampTo(risk, today)` additionally lowers the floor
+to fit the flatten, because the floor is persisted in `strategy_state` and a saved value inside
+the hard bounds cannot be lowered by the hard-bound clamp.
 
 ## Order and exit rules
 

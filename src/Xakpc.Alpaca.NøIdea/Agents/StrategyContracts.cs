@@ -174,6 +174,17 @@ public sealed record PortfolioCapacity(
     int FreePositionSlots,
     bool PendingRiskKnown);
 
+/// <param name="PositionsExitAtUtc">
+/// When every open position is sold, whatever its expiration. Restates
+/// <paramref name="CompetitionFlattenUtc"/> as the horizon a seat values against, because a
+/// reviewer that reads the flatten as a deadline scores expiration payoff instead of the exit
+/// price and then rejects the whole eligible universe.
+/// </param>
+/// <param name="HoursToForcedExit">Hours from now until the forced exit.</param>
+/// <param name="ExitIsAlwaysPreExpiry">
+/// True while no permitted contract can expire before the forced exit, so selling early is the
+/// design rather than a defect in one candidate.
+/// </param>
 public sealed record TradingConstraints(
     int MinDaysToExpiration,
     int MaxDaysToExpiration,
@@ -182,7 +193,10 @@ public sealed record TradingConstraints(
     decimal MaxTotalRisk,
     decimal MaxSpreadFraction,
     TimeSpan MaxQuoteAge,
-    DateTimeOffset CompetitionFlattenUtc);
+    DateTimeOffset CompetitionFlattenUtc,
+    DateTimeOffset PositionsExitAtUtc,
+    decimal HoursToForcedExit,
+    bool ExitIsAlwaysPreExpiry);
 
 public sealed record PortfolioPositionView
 {
@@ -225,6 +239,9 @@ public sealed record StrategyContext
     /// measured results.
     /// </summary>
     public IReadOnlyList<PastOutcome> RecentOutcomes { get; init; } = [];
+
+    /// <summary>What the room already refused, newest first.</summary>
+    public IReadOnlyList<RecentRejection> RecentRejections { get; init; } = [];
 
     /// <summary>How many positions may still be opened, after the hard limits.</summary>
     public required int RemainingPositionSlots { get; init; }
@@ -277,6 +294,17 @@ public interface IExplainsDecision
 
     IReadOnlyList<string> LastThesisConditions => [];
 }
+
+/// <summary>One operation the room refused, so the next sitting does not repeat it.</summary>
+/// <remarks>
+/// The room has no memory of its own: each sitting starts from nothing. Without this the
+/// proposer re-derives the same thesis every cycle and loses to the same arguments, which is
+/// what three consecutive cycles did on 2026-09-01.
+/// </remarks>
+public sealed record RecentRejection(
+    DateTimeOffset AtUtc,
+    string? ContractSymbol,
+    string? Reason);
 
 /// <summary>One closed trade, for the agent to learn from.</summary>
 public sealed record PastOutcome(

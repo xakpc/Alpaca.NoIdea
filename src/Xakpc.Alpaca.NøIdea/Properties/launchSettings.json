@@ -2,7 +2,7 @@
   "profiles": {
     "Xakpc.Alpaca.NøIdea": {
       "commandName": "Project",
-      "commandLineArgs": "--live --dry-run --once --cheap --allow-stale-quotes"
+      "commandLineArgs": "--live --no-rebuttal"
     },
     "Container (Dockerfile)": {
       "commandName": "Docker"

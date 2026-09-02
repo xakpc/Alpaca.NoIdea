@@ -189,6 +189,59 @@ public class AuditTrailTests : IAsyncLifetime
         }
     }
 
+    // ---------------------------------------------------------------- room memory
+
+    [Fact]
+    public async Task ALiveRefusalIsRememberedByADryRun()
+    {
+        // The room's memory shipped scoped by mode, which made it empty in the case that needs
+        // it most: a dry run rehearsing what the live loop already refused. A refusal is a
+        // judgement about the market, and the market does not know which mode observed it.
+        await _store.RecordDecisionEventAsync(
+            Decision("rejected") with { Mode = "live" }, CancellationToken.None);
+
+        var remembered = await _store.RecentRejectionsAsync(5, CancellationToken.None);
+
+        var only = Assert.Single(remembered);
+        Assert.Equal("SPY260904C00770000", only.ContractSymbol);
+        Assert.Contains("not yet priced", only.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OnlyRefusedNewTradesAreRemembered()
+    {
+        await _store.RecordDecisionEventAsync(
+            Decision("rejected"), CancellationToken.None);
+        await _store.RecordDecisionEventAsync(
+            Decision("held"), CancellationToken.None);
+
+        // An opened position is not a refusal, and a position review is not a new trade.
+        await _store.RecordDecisionEventAsync(
+            Decision("opened"), CancellationToken.None);
+        await _store.RecordDecisionEventAsync(
+            Decision("rejected") with { Purpose = "position-review" }, CancellationToken.None);
+
+        var remembered = await _store.RecentRejectionsAsync(10, CancellationToken.None);
+
+        Assert.Equal(2, remembered.Count);
+    }
+
+    [Fact]
+    public async Task TheMemoryIsNewestFirstAndHonoursItsLimit()
+    {
+        foreach (var reason in new[] { "oldest", "middle", "newest" })
+        {
+            await _store.RecordDecisionEventAsync(
+                Decision("rejected") with { Reason = reason }, CancellationToken.None);
+        }
+
+        var remembered = await _store.RecentRejectionsAsync(2, CancellationToken.None);
+
+        Assert.Equal(2, remembered.Count);
+        Assert.Equal("newest", remembered[0].Reason);
+        Assert.Equal("middle", remembered[1].Reason);
+    }
+
     private static DecisionEventRow Decision(string outcome) => new()
     {
         TimestampUtc = 1_756_000_000,

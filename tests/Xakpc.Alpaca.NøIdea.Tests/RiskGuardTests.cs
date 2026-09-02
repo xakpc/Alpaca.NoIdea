@@ -94,6 +94,54 @@ public class RiskGuardTests
     }
 
     [Fact]
+    public void AnExpirationFloorLongerThanTheContestIsLoweredToFitIt()
+    {
+        // The floor is saved in SQLite, so a value written before the contest was close can
+        // outlive the run that chose it. Clamping to the hard bounds alone cannot catch this:
+        // two days is inside [1, 21]. On the day before the flatten a two-day floor admits
+        // only contracts that outlive the contest, which is the opposite of the floor's job.
+        var contest = new RiskOptions
+        {
+            CompetitionFlattenUtc = new DateTimeOffset(2026, 9, 3, 19, 30, 0, TimeSpan.Zero),
+        };
+
+        var clamped = new StrategyPolicy { MinDaysToExpiration = 2 }
+            .ClampTo(contest, new DateOnly(2026, 9, 2));
+
+        Assert.Equal(2, clamped.MinDaysToExpiration);
+
+        // One day later there is only the flatten day and the day after it left.
+        var onFlattenDay = new StrategyPolicy { MinDaysToExpiration = 2 }
+            .ClampTo(contest, new DateOnly(2026, 9, 3));
+
+        Assert.Equal(1, onFlattenDay.MinDaysToExpiration);
+    }
+
+    [Fact]
+    public void TheExpirationFloorNeverFallsBelowTheHardMinimum()
+    {
+        var contest = new RiskOptions
+        {
+            CompetitionFlattenUtc = new DateTimeOffset(2026, 9, 3, 19, 30, 0, TimeSpan.Zero),
+        };
+
+        // Past the flatten entirely. The floor must still be a legal number, not zero.
+        var clamped = new StrategyPolicy { MinDaysToExpiration = 5 }
+            .ClampTo(contest, new DateOnly(2026, 9, 20));
+
+        Assert.Equal(contest.HardMinDaysToExpiration, clamped.MinDaysToExpiration);
+    }
+
+    [Fact]
+    public void ClampingWithoutADateLeavesTheExpirationFloorAlone()
+    {
+        // The contest-aware clamp is opt-in. Callers that pass no date get the old behaviour.
+        var clamped = new StrategyPolicy { MinDaysToExpiration = 5 }.ClampTo(Options);
+
+        Assert.Equal(5, clamped.MinDaysToExpiration);
+    }
+
+    [Fact]
     public void APolicyCannotSetAZeroStopWhichWouldCloseEverythingImmediately()
     {
         var clamped = new StrategyPolicy

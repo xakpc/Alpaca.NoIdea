@@ -17,7 +17,13 @@ namespace Xakpc.Alpaca.NøIdea.Trading;
 /// </remarks>
 public sealed record StrategyPolicy
 {
-    public int MinDaysToExpiration { get; init; } = 2;
+    /// <summary>
+    /// The shortest contract life the policy will select. One, not two, because the contest
+    /// flatten bounds the holding period anyway: a two-day floor on the day before the flatten
+    /// permits only contracts that outlive the contest, which is the opposite of what the
+    /// floor is for.
+    /// </summary>
+    public int MinDaysToExpiration { get; init; } = 1;
 
     public int MaxDaysToExpiration { get; init; } = 10;
 
@@ -41,12 +47,35 @@ public sealed record StrategyPolicy
     /// clamped policy rather than a rejected cycle — the run continues, more conservatively
     /// than asked, and the clamp is recorded.
     /// </remarks>
-    public StrategyPolicy ClampTo(RiskOptions risk)
+    /// <param name="risk">The hard bounds. Nothing here can widen them.</param>
+    /// <param name="today">
+    /// The current date. When supplied, the expiration floor is additionally lowered to fit the
+    /// contest: a policy must never demand more contract life than the flatten permits, or it
+    /// selects nothing. Omit it to clamp against the hard bounds alone.
+    /// </param>
+    public StrategyPolicy ClampTo(RiskOptions risk, DateOnly? today = null)
     {
         ArgumentNullException.ThrowIfNull(risk);
 
         var minDte = Math.Clamp(
             MinDaysToExpiration, risk.HardMinDaysToExpiration, risk.HardMaxDaysToExpiration);
+
+        // A policy loaded from SQLite carries whatever floor a previous run saved. Clamping to
+        // the hard bounds cannot lower it, because the saved value is already inside them — so
+        // a stale floor would quietly outlive the change that lowered the default. Bound it by
+        // the contest instead. RiskGuard admits a contract expiring the day after the flatten,
+        // so the floor may reach one day past it and no further.
+        if (today is { } date)
+        {
+            var lastUsefulDay = DateOnly.FromDateTime(
+                risk.CompetitionFlattenUtc.UtcDateTime.Date.AddDays(1));
+            var lastUsefulDte = lastUsefulDay.DayNumber - date.DayNumber;
+
+            minDte = Math.Clamp(
+                Math.Min(minDte, Math.Max(lastUsefulDte, risk.HardMinDaysToExpiration)),
+                risk.HardMinDaysToExpiration,
+                risk.HardMaxDaysToExpiration);
+        }
 
         var maxDte = Math.Clamp(
             MaxDaysToExpiration, risk.HardMinDaysToExpiration, risk.HardMaxDaysToExpiration);

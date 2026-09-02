@@ -55,6 +55,15 @@ public sealed class TradingLoop(
     private readonly TimeProvider _time = time ?? throw new ArgumentNullException(nameof(time));
     private readonly ILogger _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
+    /// <summary>
+    /// How many refused operations the room is reminded of. Enough to stop it re-proposing
+    /// the same thesis for the rest of a session, short enough not to crowd the catalog.
+    /// </summary>
+    private const int RecentRejectionLimit = 5;
+
+    /// <summary>Today in UTC. The date the expiration rules count from.</summary>
+    private DateOnly Today => DateOnly.FromDateTime(_time.GetUtcNow().UtcDateTime);
+
     /// <summary>True when a decorator is intercepting orders, so nothing reaches the broker.</summary>
     public bool DryRun { get; init; }
 
@@ -100,7 +109,8 @@ public sealed class TradingLoop(
     public StrategyPolicy Policy
     {
         get => _policy;
-        init => _policy = (value ?? throw new ArgumentNullException(nameof(value))).ClampTo(riskOptions);
+        init => _policy = (value ?? throw new ArgumentNullException(nameof(value)))
+            .ClampTo(riskOptions, DateOnly.FromDateTime(time.GetUtcNow().UtcDateTime));
     }
 
     /// <summary>The symbols the loop looks at each cycle.</summary>
@@ -121,7 +131,7 @@ public sealed class TradingLoop(
         {
             if (await _store.LoadPolicyAsync(Mode, cancellationToken) is { } policy)
             {
-                _policy = policy.ClampTo(_riskOptions);
+                _policy = policy.ClampTo(_riskOptions, Today);
             }
             if (_triggers is not null)
             {
@@ -368,17 +378,11 @@ public sealed class TradingLoop(
             PortfolioPositions = await BuildPortfolioPositionsAsync(positions, cancellationToken),
             PendingOrders = pendingOrders,
             Capacity = new PortfolioCapacity(remainingRisk, freeSlots, snapshot.PendingRiskKnown),
-            Constraints = new TradingConstraints(
-                Policy.MinDaysToExpiration,
-                Policy.MaxDaysToExpiration,
-                Policy.MaxContractsPerTrade,
-                account.Equity * _riskOptions.MaxRiskPerTradeFraction,
-                account.Equity * _riskOptions.MaxTotalRiskFraction,
-                _riskOptions.MaxSpreadFraction,
-                _riskOptions.MaxQuoteAge,
-                _riskOptions.CompetitionFlattenUtc),
+            Constraints = BuildConstraints(account, now),
             News = news,
             RecentOutcomes = [],
+            RecentRejections = await _store.RecentRejectionsAsync(
+                RecentRejectionLimit, cancellationToken),
             RemainingPositionSlots = freeSlots,
             NewPositionsHalted = halted,
             NewPositionsHaltReason = halted ? newPositionVerdict.Reason : null,
@@ -410,7 +414,7 @@ public sealed class TradingLoop(
         var revised = false;
         if (decision.RevisedPolicy is { } proposed)
         {
-            var clamped = proposed.ClampTo(_riskOptions);
+            var clamped = proposed.ClampTo(_riskOptions, Today);
             revised = clamped.DiffersFrom(Policy);
 
             if (revised)
@@ -883,19 +887,36 @@ public sealed class TradingLoop(
                             .Count()),
             pendingOrders.Where(order => order.IsBuy && order.RemainingQuantity > 0)
                 .All(order => order.RemainingNotional is not null)),
-        Constraints = new TradingConstraints(
-            Policy.MinDaysToExpiration,
+        Constraints = BuildConstraints(account, now),
+        News = news,
+        RemainingPositionSlots = Math.Max(0, _riskOptions.MaxConcurrentPositions - positions.Count),
+        NewPositionsHalted = false,
+    };
+
+    /// <summary>
+    /// What the agent may not exceed, and the horizon it must value against.
+    /// </summary>
+    /// <remarks>
+    /// <c>PositionsExitAtUtc</c> repeats the flatten deliberately. A seat reads
+    /// <c>CompetitionFlattenUtc</c> as a deadline and then scores the contract's expiration
+    /// payoff, which every permitted contract fails because the flatten always lands first.
+    /// Naming the exit as the valuation moment is what makes the room able to judge a trade
+    /// rather than reject the whole universe.
+    /// </remarks>
+    private TradingConstraints BuildConstraints(AccountState account, DateTimeOffset now) =>
+        new(Policy.MinDaysToExpiration,
             Policy.MaxDaysToExpiration,
             Policy.MaxContractsPerTrade,
             account.Equity * _riskOptions.MaxRiskPerTradeFraction,
             account.Equity * _riskOptions.MaxTotalRiskFraction,
             _riskOptions.MaxSpreadFraction,
             _riskOptions.MaxQuoteAge,
-            _riskOptions.CompetitionFlattenUtc),
-        News = news,
-        RemainingPositionSlots = Math.Max(0, _riskOptions.MaxConcurrentPositions - positions.Count),
-        NewPositionsHalted = false,
-    };
+            _riskOptions.CompetitionFlattenUtc,
+            _riskOptions.CompetitionFlattenUtc,
+            (decimal)Math.Max(0d, (_riskOptions.CompetitionFlattenUtc - now).TotalHours),
+            // The flatten is half an hour before a close, and RiskGuard admits nothing that
+            // expires earlier than the flatten day. No permitted contract can expire first.
+            ExitIsAlwaysPreExpiry: true);
 
     // ------------------------------------------------------------------ entries
 
@@ -1247,7 +1268,7 @@ public sealed class TradingLoop(
     private async Task ApplyPolicyAsync(
         StrategyPolicy proposed, CancellationToken cancellationToken)
     {
-        var clamped = proposed.ClampTo(_riskOptions);
+        var clamped = proposed.ClampTo(_riskOptions, Today);
         try
         {
             await _store.SavePolicyAsync(Mode, clamped, _time.GetUtcNow(), cancellationToken);

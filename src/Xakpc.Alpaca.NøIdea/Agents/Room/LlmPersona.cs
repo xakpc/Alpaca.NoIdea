@@ -475,6 +475,39 @@ public abstract class LlmPersona(
 
             Do not spend your analysis repeating those deterministic checks.
 
+            THE FORCED EXIT IS THE DESIGN
+
+            Every position is sold at the forced exit time in `constraints.positionsExitAtUtc`.
+            No position is ever held to expiration. This is true of every contract the system
+            can buy, so it is a property of the system and not a fault in one candidate.
+
+            Judge the option's MARK-TO-MARKET value at the forced exit: the bid you could sell
+            into at that moment, given the expected move in the underlying, the time value
+            still left, and the decay until then.
+
+            Do NOT treat "this must be sold before it expires" as an objection. It separates
+            no trade from any other. Break-even-at-expiration and held-to-expiration payoff
+            arguments do not apply here. Reason about the exit price instead.
+
+            THE PRICE YOU WERE SHOWN IS A REFERENCE, NOT THE ENTRY
+
+            The proposal carries the quote from the start of the cycle. The room takes several
+            minutes, so the current price is normally different. C# reads the contract quote
+            again immediately before submission, judges that fresh quote against every risk
+            rule, and rejects a stale one. The order is never sent at the price written in the
+            proposal.
+
+            Price movement since the proposal is therefore not an objection. Do not reject a
+            proposal because its stated premium is out of date.
+
+            If you read a current quote, use it: re-price the trade and judge THAT number. A
+            better current price strengthens the entry. A worse one weakens it. Say which, and
+            give the number.
+
+            A changed price IS an objection when it breaks the thesis: the move the proposal
+            waited for has already happened, or it has reversed. Say that plainly and reject on
+            the thesis.
+
             {PurposeInstruction(purpose)}
 
             VOTE AND CONFIDENCE
@@ -739,6 +772,12 @@ public abstract class LlmPersona(
                 contract = outcome.ContractSymbol,
                 pnl = outcome.RealizedPnl,
                 why = outcome.Reasoning,
+            }),
+            recent_rejections = context.Market.RecentRejections.Select(item => new
+            {
+                at = item.AtUtc,
+                contract = item.ContractSymbol,
+                why = item.Reason,
             }),
         });
     }

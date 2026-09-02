@@ -145,6 +145,13 @@ See [war room](../war-room/summary.md). Propose, pre-validate, analyse independe
 rebut, vote privately, tally to a verdict and a size. A modified rebuttal creates version 2
 and gets a new independent analysis, discussion, and private vote.
 
+The room reads two things the cycle itself does not use. `TradingConstraints` carries
+`PositionsExitAtUtc`, `HoursToForcedExit`, and `ExitIsAlwaysPreExpiry`, which name the moment
+every seat must value the contract at. `RecentRejections` carries the last five refused
+new-trade operations from `decision_events` across every mode, which is the room's only
+memory between sittings.
+See [persona contracts](../llm/persona-contracts.md).
+
 ## 7. Risk and submission
 
 The loop reads the current quote for the selected contract first, then judges that row.

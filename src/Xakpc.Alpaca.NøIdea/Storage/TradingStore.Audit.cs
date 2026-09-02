@@ -2,6 +2,7 @@ using System.Data.Common;
 using System.Text.Json;
 using Dapper;
 using Microsoft.Data.Sqlite;
+using Xakpc.Alpaca.NøIdea.Agents;
 using Xakpc.Alpaca.NøIdea.Agents.Room;
 
 namespace Xakpc.Alpaca.NøIdea.Storage;
@@ -282,6 +283,55 @@ public sealed partial class TradingStore
         var rows = await connection.QueryAsync<AuditEntry>(new CommandDefinition(
             sql, new { limit }, cancellationToken: cancellationToken));
         return [.. rows];
+    }
+
+    /// <summary>
+    /// The new-trade operations the room most recently refused, newest first.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Feeds the room its own short-term memory. A sitting starts from nothing, so without
+    /// this the proposer re-derives an already-defeated thesis and pays for the same debate
+    /// again. Held and rejected both count: a hold is a refusal to open, whatever produced it.
+    /// </para>
+    /// <para>
+    /// <b>Every mode is read, not only the caller's.</b> A refusal records a judgement about
+    /// the market, and the market does not know which mode observed it. Scoping this by mode
+    /// empties the memory in the case that needs it most: a dry run rehearsing what the live
+    /// loop already refused an hour earlier. <see cref="RecentDecisionsAsync"/> is
+    /// mode-agnostic for the same reason.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyList<RecentRejection>> RecentRejectionsAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            SELECT timestamp_utc AS TimestampUtc,
+                   option_symbol AS OptionSymbol,
+                   reason AS Reason
+            FROM decision_events
+            WHERE purpose = 'new-trade'
+              AND outcome IN ('rejected', 'held')
+            ORDER BY id DESC LIMIT @limit
+            """;
+        await using var connection = await OpenAsync(cancellationToken);
+        var rows = await connection.QueryAsync<RejectionRow>(new CommandDefinition(
+            sql, new { limit }, cancellationToken: cancellationToken));
+
+        return [.. rows.Select(row => new RecentRejection(
+            DateTimeOffset.FromUnixTimeSeconds(row.TimestampUtc),
+            row.OptionSymbol,
+            row.Reason))];
+    }
+
+    /// <summary>Dapper's shape for <see cref="RecentRejectionsAsync"/>: the row stores unix seconds.</summary>
+    private sealed record RejectionRow
+    {
+        public long TimestampUtc { get; init; }
+        public string? OptionSymbol { get; init; }
+        public string? Reason { get; init; }
     }
 
     public async Task<IReadOnlyDictionary<string, long>> AuditRowCountsAsync(

@@ -201,11 +201,7 @@ After P0 and P1 are complete:
 
 ## Required decisions
 
-The code permits an option to expire on the day after the competition flatten date. Current
-code permits a 2026-09-04 expiration and forces a close on 2026-09-03. Confirm whether that
-combination is intended before changing `RiskGuard`.
-
-Also confirm whether a proposer withdrawal ends the sitting or whether reviewers must still
+Confirm whether a proposer withdrawal ends the sitting or whether reviewers must still
 vote on the last trade proposal. The current code lets the proposer end the sitting alone.
 
 Evidence from 2026-09-01: the withdrawal agreed with both reviewers, so a vote would have

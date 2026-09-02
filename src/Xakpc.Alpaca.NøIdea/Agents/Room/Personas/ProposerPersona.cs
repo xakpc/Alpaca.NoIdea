@@ -209,7 +209,14 @@ public sealed class ProposerPersona(
             Give less weight to:
             - generic statements that every trade can lose;
             - repeated versions of the same argument;
-            - unsupported confidence.
+            - unsupported confidence;
+            - an objection that applies equally to every contract in the catalog, such as the
+              forced exit falling before expiration. It cannot tell this trade apart from any
+              other, so it is not a reason to withdraw this one;
+            - an objection that your stated premium is out of date. C# re-reads the quote and
+              re-checks every risk rule immediately before submission, so the order never goes
+              at your stated price. Withdraw for a broken thesis or a genuinely worse current
+              price, not for drift.
 
             Do not defend a proposal only because activity is desirable.
             Do not withdraw a proposal only because it received criticism.
@@ -299,6 +306,24 @@ public sealed class ProposerPersona(
            - implied volatility;
            - current portfolio exposure;
            - evidence against the trade.
+
+        THE FORCED EXIT IS THE DESIGN
+
+        Every position is sold at the forced exit time in `constraints.positionsExitAtUtc`. No
+        position is ever held to expiration. This is true of every contract you can buy.
+
+        Choose the contract whose MARK-TO-MARKET value at the forced exit best expresses your
+        thesis: the bid you could sell into then, after the expected move, the time value still
+        left, and the decay until then.
+
+        Do not reject a contract because it must be sold before it expires. Every candidate
+        must. A break-even-at-expiration figure is not the number that decides this trade.
+
+        DO NOT REPEAT A REFUSED THESIS
+
+        `recent_rejections` lists what this room already refused. Do not propose the same
+        underlying and the same thesis again unless you have new evidence that answers the
+        recorded reason. Prefer a different underlying.
 
         OPTION SELECTION
 
@@ -482,6 +507,12 @@ public sealed class ProposerPersona(
                 contract = outcome.ContractSymbol,
                 pnl = outcome.RealizedPnl,
                 why = outcome.Reasoning,
+            }),
+            recent_rejections = market.RecentRejections.Select(item => new
+            {
+                at = item.AtUtc,
+                contract = item.ContractSymbol,
+                why = item.Reason,
             }),
         });
     }

@@ -28,6 +28,51 @@ var probability = purpose == WarRoomPurpose.NewTrade
 Profit probability does not set the vote. Long options have asymmetric gains and losses, so the
 probability of profit is not expected value.
 
+## The valuation horizon
+
+**Every seat values a contract at the forced exit, never at expiration.** The system sells each
+position at `constraints.positionsExitAtUtc`, so the number that decides a trade is the bid it
+could sell into at that moment: the expected move, the time value still left, and the decay
+until then.
+
+A seat must not treat "this must be sold before it expires" as an objection. Every permitted
+contract must be, so the argument separates no trade from another. Break-even-at-expiration
+figures do not apply. The proposer's rebuttal weighs such an argument low by contract: an
+objection true of the whole catalog is not a reason to withdraw one proposal.
+
+This rule exists because its absence stopped the system trading. On 2026-09-01 all four seats
+rejected three consecutive proposals on expiration-payoff grounds, the proposer withdrew each
+time, and no vote was ever counted. See
+[risk guardrails](../trading/risk-guardrails.md).
+
+## Room memory
+
+A sitting starts from nothing. The room receives `recent_rejections`, the last five refused
+new-trade operations with their recorded reasons, so the proposer does not re-derive a thesis
+the room already defeated. The proposer is instructed not to repeat a refused underlying and
+thesis without new evidence that answers the recorded reason.
+
+`RecentRejectionsAsync` reads **every mode**, not only the caller's. A refusal is a judgement
+about the market, and the market does not know which mode observed it. A mode-scoped query
+empties the memory in the case that needs it most: a dry run rehearsing what the live loop
+already refused.
+
+## Price drift is not an objection
+
+**The price a seat is shown is a reference, not the entry.** The proposal carries the quote
+from the start of the cycle, and the room takes about nine minutes. `TryOpenAsync` reads the
+contract quote again immediately before submission, judges that fresh row against every risk
+rule, and fails closed on a stale one. No order is sent at the price written in the proposal.
+
+A seat must not reject because the stated premium is out of date. A seat that reads a current
+quote re-prices the trade and judges that number, saying whether the current price strengthens
+or weakens the entry.
+
+A changed price is a valid objection only when it breaks the thesis: the move the proposal
+waited for has already happened, or has reversed. That is a rejection on the thesis, and it
+stays legitimate. On 2026-09-01 QQQ recovered from 705.65 to 709 while the room debated a put,
+and the refusal was correct.
+
 ## Position reviews
 
 A position review compares closing now with holding under the current exit policy. The entry
