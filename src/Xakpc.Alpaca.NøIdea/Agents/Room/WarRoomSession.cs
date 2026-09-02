@@ -68,10 +68,29 @@ public sealed record WarRoomOptions
     public const int MaximumDiscussionRounds = 4;
 
     /// <summary>
-    /// The weighted conviction a proposal must exceed. 0 means "more conviction for than
-    /// against". Raising it approaches the spec's 4-of-5 recommendation.
+    /// The weighted conviction a new trade must exceed. 0 means "more conviction for than
+    /// against". Raising it approaches the spec's 4-of-5 recommendation. A negative value
+    /// opens a position unless the room is concretely against it, which is a deliberate
+    /// activity setting and not a relaxation of any risk rule.
     /// </summary>
-    public decimal ApproveThreshold { get; init; }
+    public decimal NewTradeApproveThreshold { get; init; }
+
+    /// <summary>
+    /// The weighted conviction a position review must exceed to close a position.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately separate from <see cref="NewTradeApproveThreshold"/> and deliberately left
+    /// at zero. One shared number moves both doors at once: a threshold low enough to open a
+    /// position on weak conviction is equally low for the sitting that decides to close it, so
+    /// the room could flatten the position it had just opened. Closing needs a real majority.
+    /// </remarks>
+    public decimal PositionReviewApproveThreshold { get; init; }
+
+    /// <summary>The threshold that applies to one purpose.</summary>
+    public decimal ApproveThresholdFor(WarRoomPurpose purpose) =>
+        purpose == WarRoomPurpose.NewTrade
+            ? NewTradeApproveThreshold
+            : PositionReviewApproveThreshold;
 
     /// <summary>Spec §33.2. A missing or faulted vote rejects rather than shrinking quorum.</summary>
     public bool RequireEveryVoter { get; init; } = true;
@@ -316,14 +335,15 @@ public sealed class WarRoomSession(
                 vote.Persona, vote.Vote, vote.Confidence, vote.Rationale);
         }
 
-        var tally = VoteTally.Count(votes, _options.ApproveThreshold, _options.RequireEveryVoter);
+        var tally = VoteTally.Count(
+            votes, _options.ApproveThresholdFor(request.Purpose), _options.RequireEveryVoter);
         var cost = ledger.Snapshot();
-        var verdict = tally.SizeMultiplier > 0m ? WarRoomVerdict.Approved : WarRoomVerdict.Rejected;
+        var verdict = tally.Approved ? WarRoomVerdict.Approved : WarRoomVerdict.Rejected;
         _logger.LogInformation(
             RunEvents.VerdictReached,
             "{Id}: {Tally}. Verdict {Verdict}. Cost {Cost}.",
             request.ProposalId, tally,
-            tally.SizeMultiplier > 0m ? "APPROVED" : "REJECTED", cost);
+            tally.Approved ? "APPROVED" : "REJECTED", cost);
 
         var finalOperation = ApplySize(operation, tally);
         var finalPass = new ProposalReviewPass
@@ -347,7 +367,7 @@ public sealed class WarRoomSession(
         return await CompleteAsync(new WarRoomOutcome
         {
             ProposalId = request.ProposalId,
-            Verdict = tally.SizeMultiplier > 0m ? WarRoomVerdict.Approved : WarRoomVerdict.Rejected,
+            Verdict = verdict,
             Operation = finalOperation,
             Tally = tally,
             Cost = cost,

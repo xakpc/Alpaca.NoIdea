@@ -88,11 +88,23 @@ anything — it asks whether the original thesis still holds. Five are built:
 
 | Trigger | Fires when |
 |---|---|
-| Expiration | Two days or fewer remain |
+| First review | The position has never been judged |
+| Expiration | Two days or fewer remain, at most once per Eastern trading day |
 | Profit milestone | Up 30% |
-| Loss milestone | Down 20%, short of the hard stop |
+| Loss milestone | Down 40%, short of the hard stop |
 | New news | Rolling headline count rises to three or more |
 | Scheduled | 90 minutes since the last review |
+
+**No trigger except the first review fires within `MinimumReviewGap`, which is 60 minutes.**
+A trigger reports a condition, and a condition that has not changed is not new information.
+Without the gap a standing condition convenes a paid sitting every cycle: every contract the
+system may buy expires inside the expiration window, so that trigger alone would fire on every
+cycle for the rest of the day, and each sitting is another chance to close a position nothing
+is wrong with. The first review also settles the expiration question for that day, because it
+reads the position whole.
+
+A filled opening records the review cursor immediately, so the room does not pay for a second
+sitting to re-examine a decision minutes old.
 
 A triggered position goes to the **same** `WarRoomSession` a new trade goes to, with
 `AllowedActions = [ClosePosition]`. `ADJUST` stays disabled until adjustment code is
@@ -165,6 +177,13 @@ if (await RefreshAsync(candidate, cancellationToken) is not { } refreshed)
 candidate = refreshed;
 var verdict = _riskGuard.CanOpen(action, candidate, snapshot, Policy);
 ```
+
+Before the snapshot is built, the cycle cancels any **opening** order that has been resting
+unfilled for longer than one cycle interval. Nothing else retires one, and an open buy is
+charged against capacity twice: `RiskGuard` counts it in `PendingOpenPositions` against the
+concurrent-position limit, and the catalog builder excludes its contract from every later
+cycle. One stuck order therefore spends a quarter of the day's position slots while owning
+nothing. A sell is never cancelled here, because an unfilled exit must keep trying.
 
 The account view is refreshed with the quote. `RefreshRiskSnapshotAsync` builds a new
 `RiskSnapshot` inside the broker gate immediately before the risk check. The snapshot from the

@@ -36,6 +36,16 @@ public sealed class QuantPersona(
         automatic rejection; request the exact-contract snapshot when the missing value is
         important to the decision.
 
+        Report the exit bid you expect at the forced exit in three cases: the underlying
+        unchanged, the thesis working, and the thesis failing. The flat case is a cost to
+        state, not a verdict. Every long option loses on a flat underlying, so that number
+        alone never separates one candidate from another.
+
+        Reject on the contract when a nearby strike or expiration clearly expresses the same
+        thesis better, or when the contract cannot express it at all. A required move that
+        sits inside the implied-volatility range is ordinary option pricing and is not a
+        defect; say the size of the move and let the room weigh it.
+
         Separate measurements from estimates. Say clearly when the operation needs an
         implausibly large move to pay, and equally clearly when the numbers support it.
         """;

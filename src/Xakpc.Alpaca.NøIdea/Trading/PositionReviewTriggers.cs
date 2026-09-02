@@ -22,13 +22,30 @@ public sealed record ReviewTriggerOptions
     public decimal ProfitMilestone { get; init; } = 0.30m;
 
     /// <summary>§10.5. A loss short of the hard stop, worth asking whether the thesis holds.</summary>
-    public decimal LossMilestone { get; init; } = 0.20m;
+    /// <remarks>
+    /// Kept inside <see cref="StrategyPolicy.StopLossFraction"/>, and moved with it. A
+    /// milestone far below the stop asks the room to reconsider a position the hard exit is
+    /// deliberately still holding, on every cycle, until one sitting decides to close it. The
+    /// milestone should catch a position on its way to the stop, not replace the stop.
+    /// </remarks>
+    public decimal LossMilestone { get; init; } = 0.40m;
 
     /// <summary>§10.12. Review when this little time remains.</summary>
     public int ExpirationReviewDays { get; init; } = 2;
 
     /// <summary>§10.6. Review when this many fresh headlines appeared since the last review.</summary>
     public int NewsCountTrigger { get; init; } = 3;
+
+    /// <summary>The shortest gap between two sittings over the same position.</summary>
+    /// <remarks>
+    /// Every trigger except the first review is rate-limited by this. Without it a condition
+    /// that stays true fires on every cycle: each contract the system may buy expires within
+    /// <see cref="ExpirationReviewDays"/>, so the expiration trigger alone would convene a
+    /// paid sitting every cycle for the rest of the day, and each sitting is another chance to
+    /// close a position nothing is actually wrong with. A trigger reports a condition, and a
+    /// condition that has not changed does not need to be reported twice.
+    /// </remarks>
+    public TimeSpan MinimumReviewGap { get; init; } = TimeSpan.FromMinutes(60);
 }
 
 /// <summary>
@@ -53,6 +70,7 @@ public sealed class PositionReviewTriggers(ReviewTriggerOptions options, TimePro
 
     private readonly Dictionary<string, DateTimeOffset> _lastReviewed = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _lastNewsSeen = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTime> _expirationReviewedOn = new(StringComparer.Ordinal);
 
     /// <summary>The first trigger that fires, or null when the position needs nothing.</summary>
     /// <param name="freshNewsCount">Headlines for the underlying since the last review.</param>
@@ -65,10 +83,38 @@ public sealed class PositionReviewTriggers(ReviewTriggerOptions options, TimePro
         ArgumentNullException.ThrowIfNull(position);
 
         var now = _time.GetUtcNow();
+        var reviewedBefore = _lastReviewed.TryGetValue(position.Symbol, out var last);
 
-        // §10.12 first: time is the one thing that cannot be recovered.
-        if (daysToExpiration is { } days && days <= _options.ExpirationReviewDays)
+        // A position nobody has looked at yet is judged once, immediately.
+        if (!reviewedBefore)
         {
+            // That sitting reads the position whole, expiration included, so it settles the
+            // expiration question for the day as well. Otherwise the room is called back an
+            // hour later to consider a fact it has already seen.
+            if (daysToExpiration is { } remaining && remaining <= _options.ExpirationReviewDays)
+            {
+                _expirationReviewedOn[position.Symbol] = MarketCalendar.ToEastern(now).Date;
+            }
+
+            return new ReviewTrigger("first review", "this position has never been reviewed");
+        }
+
+        // Everything below reports a market condition, and a condition that is still true is
+        // not new information. Without this gate the standing ones re-fire every cycle.
+        if (now - last < _options.MinimumReviewGap)
+        {
+            return null;
+        }
+
+        // §10.12 first: time is the one thing that cannot be recovered. Once per Eastern
+        // trading day, because "the expiration is close" is true from the moment it becomes
+        // true until the position is gone, and repeating it says nothing new.
+        if (daysToExpiration is { } days
+            && days <= _options.ExpirationReviewDays
+            && MarketCalendar.ToEastern(now).Date
+                != _expirationReviewedOn.GetValueOrDefault(position.Symbol))
+        {
+            _expirationReviewedOn[position.Symbol] = MarketCalendar.ToEastern(now).Date;
             return new ReviewTrigger("expiration", $"{days} day(s) to expiration");
         }
 
@@ -93,11 +139,6 @@ public sealed class PositionReviewTriggers(ReviewTriggerOptions options, TimePro
             && freshNewsCount > _lastNewsSeen.GetValueOrDefault(position.Symbol))
         {
             return new ReviewTrigger("new news", $"{freshNewsCount} fresh headline(s)");
-        }
-
-        if (!_lastReviewed.TryGetValue(position.Symbol, out var last))
-        {
-            return new ReviewTrigger("first review", "this position has never been reviewed");
         }
 
         if (now - last >= _options.ScheduledInterval)

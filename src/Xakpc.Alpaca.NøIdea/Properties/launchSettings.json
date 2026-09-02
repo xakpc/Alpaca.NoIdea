@@ -2,7 +2,7 @@
   "profiles": {
     "Xakpc.Alpaca.NøIdea": {
       "commandName": "Project",
-      "commandLineArgs": "--live --no-rebuttal"
+      "commandLineArgs": "--live --rounds 1 --new-trade-approve-threshold -0.15 --cycle-minutes 20"
     },
     "Container (Dockerfile)": {
       "commandName": "Docker"

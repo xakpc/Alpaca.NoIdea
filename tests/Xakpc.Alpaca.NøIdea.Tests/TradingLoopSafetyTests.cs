@@ -243,7 +243,7 @@ public sealed class TradingLoopSafetyTests
                     Symbol = "SPY260904C00770000",
                     Quantity = 1,
                     AverageEntryPrice = 2m,
-                    CurrentPrice = 1m,
+                    CurrentPrice = 0.7m,
                 },
                 ]
                 : []);

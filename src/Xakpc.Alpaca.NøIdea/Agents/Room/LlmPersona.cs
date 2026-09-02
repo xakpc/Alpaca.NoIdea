@@ -92,6 +92,17 @@ public abstract class LlmPersona(
 
     protected virtual int MaxOutputTokens => 3000;
 
+    /// <summary>The output budget for the independent analysis, which is the longest phase.</summary>
+    /// <remarks>
+    /// Separate from <see cref="MaxOutputTokens"/> because running out here is silent and
+    /// expensive: the call succeeds, the model spends its whole allowance reasoning, never
+    /// reaches <c>submit_analysis</c>, and the seat becomes a fault. Under
+    /// <c>RequireEveryVoter</c> one such seat fails quorum and rejects the proposal. That
+    /// happened to the skeptic on 2026-09-01, which stopped on length after 4,840 output
+    /// tokens against a 3,000 limit.
+    /// </remarks>
+    protected virtual int MaxAnalysisOutputTokens => MaxOutputTokens;
+
     /// <summary>How long one model call may take before it is cancelled.</summary>
     /// <remarks>
     /// The 2026-08-31 session lost 439.7s in one seat across four network-timeout retries,
@@ -141,7 +152,7 @@ public abstract class LlmPersona(
 
         var failed = await CallAsync(
             Phase.Independent, context, [.. ResearchTools, tool],
-            ChatToolMode.Auto, MaxOutputTokens, cancellationToken);
+            ChatToolMode.Auto, MaxAnalysisOutputTokens, cancellationToken);
 
         if (failed is not null)
         {
@@ -512,10 +523,7 @@ public abstract class LlmPersona(
 
             VOTE AND CONFIDENCE
 
-            APPROVE when the evidence supports positive marginal expected value. REJECT when it
-            supports negative marginal expected value. ABSTAIN when the available evidence cannot
-            support either conclusion. Profit probability alone does not decide the vote because
-            option gains and losses are asymmetric.
+            {VoteStandard(purpose)}
 
             Confidence measures the quality of the evidence behind your vote:
             - 0 for an abstention;
@@ -535,12 +543,74 @@ public abstract class LlmPersona(
             - Abstaining is legitimate when you cannot form a defensible view.
             - Do not approve merely because the system should trade.
             - Do not reject merely because the trade can lose.
+            - Group agreement is not evidence. Reaching the same conclusion as another seat
+              adds nothing unless you reached it from data the other seat did not use.
 
             Use tools when additional information can materially change your judgement.
             Do not call tools only to accumulate research.
 
             {PhaseInstruction(phase, purpose)}
             """;
+
+    /// <summary>What each vote means, which differs by purpose.</summary>
+    /// <remarks>
+    /// <para>
+    /// The new-trade standard is deliberately not "positive expected value against cash". Every
+    /// contract the system may buy is a short-dated long option held to a forced exit, so any
+    /// seat can derive a negative expected value from spread plus decay alone, on every
+    /// candidate, forever. On 2026-09-01 three seats did exactly that four times out of four.
+    /// A test that no member of the eligible universe can pass is not a judgement about the
+    /// trade in front of the room.
+    /// </para>
+    /// <para>
+    /// So a reject must name something wrong with <em>this</em> proposal, and a seat with only
+    /// a general worry abstains. Abstention is not agreement: it lowers conviction and shrinks
+    /// the position through the size multiplier. The position-review standard is unchanged,
+    /// because closing a position is the risk-reducing direction and needs no encouragement.
+    /// </para>
+    /// </remarks>
+    private static string VoteStandard(WarRoomPurpose purpose) => purpose switch
+    {
+        WarRoomPurpose.NewTrade =>
+            """
+            APPROVE when the thesis is coherent, the contract can express it, and you found no
+            concrete contradiction. You do not have to believe the trade will win.
+
+            REJECT only when you can name a specific defect in THIS proposal:
+            - a stated fact is false;
+            - the arithmetic is wrong;
+            - the contract cannot express the stated thesis;
+            - the timing is impossible, for example the catalyst lands after the forced exit;
+            - the move the thesis waits for has already reversed, and you give the numbers;
+            - a current quote breaks the entry;
+            - a stated constraint is violated.
+
+            ABSTAIN for everything else, including these, which are NOT rejections:
+            - time decay over the holding window. Every candidate has it. It is a known cost,
+              already inside the per-trade risk limit.
+            - the required move sits inside the implied-volatility range. That is true of every
+              fairly priced option and separates no candidate from another.
+            - the move has already started, or the news is already in the price, unless you
+              show the move has reversed.
+            - no scheduled catalyst exists. A catalyst is one kind of evidence, not a
+              requirement.
+            - your own forecast edge is small or you are simply unsure.
+
+            An abstention is the honest vote for "nothing specific is wrong and I am not
+            convinced". It lowers the room's conviction and shrinks the position. It is not
+            an endorsement, and it is not a veto.
+
+            Profit probability alone does not decide the vote, because option gains and losses
+            are asymmetric.
+            """,
+        _ =>
+            """
+            APPROVE when the evidence supports positive marginal expected value. REJECT when it
+            supports negative marginal expected value. ABSTAIN when the available evidence cannot
+            support either conclusion. Profit probability alone does not decide the vote because
+            option gains and losses are asymmetric.
+            """,
+    };
 
     private static string PurposeInstruction(WarRoomPurpose purpose) => purpose switch
     {
@@ -551,6 +621,16 @@ public abstract class LlmPersona(
             Compare the operation with keeping the capital in cash. Judge the thesis, timing,
             direction, strike, expiration, premium, spread, implied volatility, time decay,
             relevant evidence, nearby alternatives, and portfolio context.
+
+            Give three cases, not one break-even. For each, state the underlying price you
+            assume at the forced exit and the option bid you could sell into there:
+            - LOSS: the thesis fails;
+            - BASE: the underlying is roughly unchanged;
+            - GAIN: the thesis works.
+
+            One break-even hides the shape of the payoff. A trade whose base case loses a
+            little and whose gain case pays several times that can still be worth taking, and
+            a single break-even number cannot show it.
 
             Return `profit_probability`: your probability from 0 to 1 that the position produces
             positive realized P&L when the system exits, including a forced contest exit. Treat it
@@ -632,8 +712,10 @@ public abstract class LlmPersona(
             Reconsider your independent judgement using any useful evidence exposed during the
             discussion.
 
-            You may keep or change your initial vote. If you change it, state the specific
-            evidence or argument that caused the change.
+            You may keep or change your initial vote. A change requires a fact, a number, or a
+            contradiction you did not have when you voted the first time. Name it. That another
+            seat reached a different conclusion is not such a fact, and neither is the count of
+            seats on either side: they read the same proposal you did.
 
             Do not vote according to the number of reviewers on either side.
 

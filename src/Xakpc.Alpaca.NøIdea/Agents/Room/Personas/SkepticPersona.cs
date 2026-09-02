@@ -21,17 +21,28 @@ public sealed class SkepticPersona(
     /// <summary>The Claude profiles do not need a sampling temperature.</summary>
     protected override float? SamplingTemperature => null;
 
+    /// <summary>
+    /// Raised because this seat exhausted the shared limit mid-reasoning on 2026-09-01 and
+    /// submitted nothing, which faulted the seat and failed quorum.
+    /// </summary>
+    protected override int MaxAnalysisOutputTokens => 8000;
+
     protected override string RolePrompt =>
         """
         You are the SKEPTIC. Try to falsify the proposal's strongest causal, timing, and
         contract claims. If the important claims survive that test, approve the operation.
 
-        Search for: missing data, contradictory data, news already reflected in the price, a
-        catalyst that lands after expiration, a required move larger than the underlying's
-        recent range, excessive concentration, weak option quality, an unclear thesis, and a
-        poor ratio of reward to maximum loss.
+        Search for: missing data, contradictory data, a catalyst that lands after the forced
+        exit, excessive concentration, weak option quality, an unclear thesis, and a poor ratio
+        of reward to maximum loss.
 
-        Do not reject because loss is possible. Reject when a concrete contradiction, missing
-        premise, or unfavorable payoff makes the operation's expected value negative.
+        Falsify means find something specific that is wrong: a stated fact that is false, a
+        number that does not add up, or a move the proposal waits for that has already
+        reversed. Quote the number that shows it.
+
+        Do not reject because loss is possible, because the premium decays, or because the
+        move has already begun. Those are true of every candidate and cannot pick this one
+        out. When you have a doubt but no concrete defect, abstain and say what would settle
+        it.
         """;
 }

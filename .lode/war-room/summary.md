@@ -121,13 +121,40 @@ as a sunk cost. See [persona contracts](../llm/persona-contracts.md).
 ```text
 net = Σ(+confidence approve, −confidence reject, 0 abstain) ÷ every voter
 
-net ≤ ApproveThreshold  → rejected
-net >  ApproveThreshold → approved, contracts = max(1, round(desired × net))
+approved = quorum met AND net > threshold
+size     = approved ? clamp(net, 0, 1) : 0
+contracts = approved ? clamp(round(desired × size), 1, desired) : 0
 ```
 
-`ApproveThreshold` is **0** today. A faulted voter dilutes conviction rather than vanishing,
-so a half-broken room cannot look unanimous, and under `RequireEveryVoter` a fault rejects
-outright.
+**The verdict is `Approved`, never the size.** The two are separate because a negative
+threshold clears a proposal whose conviction is below zero, while the size floors at zero:
+nothing may size up on negative conviction. Reading the verdict from the size therefore turned
+every such approval back into a rejection and made a negative threshold impossible to use. A
+cleared proposal always trades at least one contract, and never more than the proposer asked
+for.
+
+A faulted voter dilutes conviction rather than vanishing, so a half-broken room cannot look
+unanimous, and under `RequireEveryVoter` a fault rejects outright whatever the threshold.
+
+### Two thresholds, not one
+
+| Purpose | Threshold | Flag |
+|---|---|---|
+| New trade | `-0.15` | `--new-trade-approve-threshold` |
+| Position review | `0`, fixed | none |
+
+They are separate because one number moves both doors at once. A bar low enough to open a
+position on weak conviction is equally low for the sitting that decides to close it, so the
+room could flatten the position it had just opened. Closing needs a real majority.
+
+At `-0.15` with four voters, one reject at 0.50 confidence still clears, one at 0.60 does not,
+and two rejects never do. A room that abstains unanimously has net 0 and opens one contract.
+That is the intended path: the reviewer standard sends a weak objection to abstention, and an
+abstention lowers conviction without blocking. `RiskGuard` still judges the trade afterwards
+and cannot be outvoted.
+
+`--approve-threshold` no longer exists. It fails startup rather than defaulting to 0 silently,
+because there is no unknown-argument check and 0 is exactly the setting that opened nothing.
 
 ## Failure behavior
 

@@ -33,7 +33,7 @@ public sealed class HardExitLoopTests
         {
             await loop.InitializeAsync(CancellationToken.None);
 
-            // Entry 2.00, now 1.00: down 50 percent, past the 40 percent stop.
+            // Entry 2.00, now 0.70: down 65 percent, past the 60 percent stop.
             var result = await loop.RunHardExitsAsync(CancellationToken.None);
 
             var sent = Assert.Single(gateway.Submitted);
@@ -173,7 +173,7 @@ public sealed class HardExitLoopTests
         DateTimeOffset? now = null,
         bool hasPosition = true,
         bool pendingClose = false,
-        decimal? currentPrice = 1m)
+        decimal? currentPrice = 0.7m)
     {
         var path = Path.Combine(Path.GetTempPath(), $"hard-exit-{Guid.NewGuid():N}.db");
 

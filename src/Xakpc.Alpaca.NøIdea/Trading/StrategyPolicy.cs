@@ -31,7 +31,14 @@ public sealed record StrategyPolicy
     public decimal TakeProfitFraction { get; init; } = 0.50m;
 
     /// <summary>Close a loser at this loss against the entry premium.</summary>
-    public decimal StopLossFraction { get; init; } = 0.40m;
+    /// <remarks>
+    /// Wide on purpose for a short-dated long option. A contract bought two days from
+    /// expiration at a delta near 0.65 gives back 40 percent of its premium on an ordinary
+    /// adverse move plus one day of decay, so a tighter stop flattens the book on noise and
+    /// leaves nothing open at the close. The premium is the whole loss either way, and
+    /// <see cref="RiskOptions.MaxRiskPerTradeFraction"/> already caps it.
+    /// </remarks>
+    public decimal StopLossFraction { get; init; } = 0.60m;
 
     public int MaxContractsPerTrade { get; init; } = 1;
 

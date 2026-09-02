@@ -46,8 +46,22 @@ gives no information.
 | Maximum quote age | 10 minutes |
 | Competition flatten | 2026-09-03 19:30 UTC |
 
-The opening policy defaults to 1–10 DTE, 50 percent take profit, 40 percent stop loss, and
+The opening policy defaults to 1–10 DTE, 50 percent take profit, 60 percent stop loss, and
 one contract. `StrategyPolicy.ClampTo` keeps every revision inside the hard limits.
+
+The stop is wide on purpose. A contract bought two days from expiration at a delta near 0.65
+gives back 40 percent of its premium on an ordinary adverse move plus one day of decay, so a
+tighter stop flattens the book on noise and leaves nothing open at the close. The premium is
+the whole loss either way, and the per-trade risk fraction already caps it.
+
+`LossMilestone`, which convenes the room rather than closing anything, sits at 40 percent and
+moves with the stop. A milestone far below the stop asks the room to reconsider a position the
+hard exit is deliberately still holding.
+
+A policy stored in `strategy_state` outlives a change to these defaults: `LoadPolicyAsync`
+deserializes it and `ClampTo` only bounds a loaded value, so it cannot lower a saved number.
+The table is currently empty, so the defaults apply. Clear it, or start on a fresh database,
+if a saved policy must be replaced.
 
 ## Contract and account rules
 

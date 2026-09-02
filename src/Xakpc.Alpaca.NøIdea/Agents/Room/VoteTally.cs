@@ -46,18 +46,36 @@ public sealed record VoteTally
 
     public required bool QuorumMet { get; init; }
 
+    /// <summary>Whether the room cleared the proposal.</summary>
+    /// <remarks>
+    /// The verdict, not the size, is the decision. A negative approve threshold deliberately
+    /// clears a proposal whose net conviction is below zero, while <see cref="SizeMultiplier"/>
+    /// floors at zero because nothing may size <em>up</em> on negative conviction. Reading the
+    /// verdict off the multiplier therefore turned every such approval back into a rejection
+    /// and made a negative threshold impossible to use.
+    /// </remarks>
+    public required bool Approved { get; init; }
+
     /// <summary>
     /// Applies the tally to a proposed contract count.
     /// </summary>
     /// <remarks>
-    /// A cleared proposal always trades at least one contract: rounding a positive conviction
-    /// down to zero would silently turn an approval into a rejection, which is a different
-    /// decision wearing the same name.
+    /// A cleared proposal always trades at least one contract: rounding a conviction down to
+    /// zero would silently turn an approval into a rejection, which is a different decision
+    /// wearing the same name. The floor keys off <see cref="Approved"/> and not the multiplier,
+    /// because a proposal cleared on a negative threshold has a zero multiplier and must still
+    /// trade the minimum.
     /// </remarks>
-    public int ContractsFor(int proposed) =>
-        SizeMultiplier <= 0m
-            ? 0
-            : Math.Max(1, (int)Math.Round(proposed * SizeMultiplier, MidpointRounding.AwayFromZero));
+    public int ContractsFor(int proposed)
+    {
+        if (!Approved || proposed <= 0)
+        {
+            return 0;
+        }
+
+        var scaled = (int)Math.Round(proposed * SizeMultiplier, MidpointRounding.AwayFromZero);
+        return Math.Clamp(scaled, 1, proposed);
+    }
 
     /// <summary>
     /// Counts the votes.
@@ -90,6 +108,7 @@ public sealed record VoteTally
                 Net = 0m,
                 SizeMultiplier = 0m,
                 QuorumMet = false,
+                Approved = false,
             };
         }
 
@@ -122,10 +141,16 @@ public sealed record VoteTally
             Net = net,
             SizeMultiplier = approved ? Math.Clamp(net, 0m, 1m) : 0m,
             QuorumMet = quorumMet,
+            Approved = approved,
         };
     }
 
     public override string ToString() =>
         $"{Approvals} approve, {Rejections} reject, {Abstentions} abstain, {Faults} faulted; "
-        + $"net {Net:F2}, size {SizeMultiplier:P0}";
+        + $"net {Net:F2}, size {SizeDescription}";
+
+    // "size 0%" on a cleared proposal reads as "approved but trades nothing", which is the
+    // opposite of what happens: ContractsFor floors an approval at one contract.
+    private string SizeDescription =>
+        Approved && SizeMultiplier <= 0m ? "minimum" : SizeMultiplier.ToString("P0");
 }

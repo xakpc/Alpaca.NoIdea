@@ -80,10 +80,15 @@ version `3`. `data/raw/` remains separate research input and is not read by the 
 
 ## Current verification
 
-The solution has 161 passing tests. The 2026-09-01 dry-run sitting is the current baseline. It
-took 8 minutes 30 seconds and 0.7346 USD. The room refused a TSLA 370 call because two seats
-on different providers found a negative expected value of about -260 USD independently. A
-refusal that carries its reasons is the expected result, not a fault.
+The solution has 186 passing tests. The 2026-09-01 live session is the current full-session
+baseline: 4 sittings, 4 rejections, 52 model calls, 5.6665 USD, no order. A single sitting
+takes about 8 minutes 30 seconds and 0.73 to 1.40 USD.
+
+A refusal that carries its reasons is a decision, not a fault. A standard that refuses every
+contract the system may buy is a fault, and that is what four unanimous rejections exposed. A
+new-trade reviewer now rejects only on a concrete contradiction and abstains otherwise, and
+the new-trade approve threshold is -0.15 while closes stay at 0. See
+[persona contracts](llm/persona-contracts.md) and [war-room summary](war-room/summary.md).
 
 A refusal is now counted and stored as a rejection. The cycle count, the decision row, and the
 review pass keep the option symbol, the probability, and the rejection code, so the refusal
@@ -95,9 +100,9 @@ contract before the final risk check, and rejects the trade when it cannot. Numb
 proposer states are compared with the catalog before any seat is paid. See
 [war-room summary](war-room/summary.md) and [live cycle](trading/live-cycle.md).
 
-The current database is not audit-clean. Earlier interrupted dry runs left incomplete
-sittings. Counterfactual scoring stays open. The vote phase has not run in any observed
-sitting. See
+The database is audit-clean: `--audit` returns success over nine complete sittings. The
+`strategy_state` table holds no policy, so the policy defaults apply. Counterfactual scoring
+stays open. The vote phase has now run in four sittings, all rejections. See
 [after-session improvements](plans/after-session-improvements.md).
 
 ## Related lodes

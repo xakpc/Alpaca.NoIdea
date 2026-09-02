@@ -66,7 +66,6 @@ describe the current runtime.
 
 - [Research summary](research/summary.md) - Retained negative model result.
 - [After-session improvements](plans/after-session-improvements.md) - Prioritized live-session repairs.
-- [Activity-first room plan](plans/activity-first-room.md) - Proposed changes for open positions on 2026-09-02, for review.
 - [Open strategy questions](plans/open-strategy-questions.md) - Questions for real trades.
 
 ## Reading paths

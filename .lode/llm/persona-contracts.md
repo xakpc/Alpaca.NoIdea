@@ -13,11 +13,38 @@ flowchart LR
     V --> C[Deterministic tally]
 ```
 
-## New trades
+## New trades: reject only on a concrete contradiction
 
-A new-trade reviewer compares the operation with keeping the capital in cash. An approval means
-that the evidence supports positive marginal expected value. Profit probability is a separate
-forecast of positive realized P&L at the system exit.
+A new-trade reviewer approves when the thesis is coherent, the contract can express it, and it
+found no concrete contradiction. It does not have to believe the trade will win.
+
+A rejection must name a specific defect in **this** proposal: a stated fact is false, the
+arithmetic is wrong, the contract cannot express the thesis, the timing is impossible, the move
+has demonstrably reversed, a current quote breaks the entry, or a constraint is violated.
+
+Everything else is an abstention. These in particular are not rejections:
+
+- time decay over the holding window;
+- a required move inside the implied-volatility range;
+- a move that has already started, or news already in the price, without evidence of reversal;
+- no scheduled catalyst;
+- a small forecast edge, or plain uncertainty.
+
+**Why the standard is not expected value against cash.** Every contract the system may buy is a
+short-dated long option held to a forced exit, so any seat can derive a negative expected value
+from spread plus decay alone, on every candidate, forever. A test no member of the eligible
+universe can pass is not a judgement about the trade in front of the room. On 2026-09-01 three
+seats applied that test four times out of four, and the system opened nothing all day.
+
+Abstention is not agreement. It lowers conviction and shrinks the position through the size
+multiplier, and it does not veto. See [war-room summary](../war-room/summary.md).
+
+The position-review standard is unchanged and still marginal expected value, because closing is
+the risk-reducing direction and needs no encouragement.
+
+A vote change between the initial analysis and the final vote requires a fact, number, or
+contradiction the seat did not have. That other seats disagree is not such a fact. On
+2026-09-01 the skeptic approved twice and then reversed both times citing convergence.
 
 ```csharp
 var probability = purpose == WarRoomPurpose.NewTrade
@@ -27,6 +54,29 @@ var probability = purpose == WarRoomPurpose.NewTrade
 
 Profit probability does not set the vote. Long options have asymmetric gains and losses, so the
 probability of profit is not expected value.
+
+## Three cases, not one break-even
+
+A new-trade reviewer and the proposer both state the exit bid at the forced exit for a loss
+case, a base case, and a gain case, with the assumed underlying price for each. The proposer
+also gives a probability for each; the three must total 1, and it compares the weighted exit
+bid with the entry ask.
+
+One break-even hides the shape of the payoff. A probability of profit near one half is normal
+and acceptable when the gain case carries the loss case, which a single break-even number
+cannot show. A proposal whose own weighted exit bid is below the entry ask is not submitted.
+
+The proposer prefers an in-the-money contract at absolute delta 0.60 to 0.75 when one is
+eligible, so the exit mark follows the underlying rather than the decaying time value. It is a
+preference, not a gate: the nearest eligible delta is used when the band is empty.
+
+## Output budgets
+
+The independent analysis has its own limit, `MaxAnalysisOutputTokens`, and the skeptic's is
+8,000 against a 3,000 default. Exhausting it is silent and expensive: the call succeeds, the
+model spends its allowance reasoning, never reaches `submit_analysis`, and the seat becomes a
+fault. Under `RequireEveryVoter` one such seat fails quorum and rejects the proposal. That
+happened on 2026-09-01 after 4,840 output tokens.
 
 ## The valuation horizon
 

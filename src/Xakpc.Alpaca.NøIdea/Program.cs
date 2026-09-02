@@ -249,16 +249,43 @@ if (args.Contains("--live"))
             return 1;
         }
 
+        // The old name silently defaulted to 0 when it stopped being read, and 0 is exactly the
+        // setting that opened nothing. An unknown argument is not otherwise diagnosed, so fail
+        // loudly rather than run a session under a threshold the operator did not choose.
+        if (args.Contains("--approve-threshold"))
+        {
+            log.LogError(
+                "--approve-threshold no longer exists. Use --new-trade-approve-threshold. "
+                + "The position-review threshold is deliberately fixed at 0.");
+            return 1;
+        }
+
+        var newTradeThreshold = 0m;
+
+        if (ArgumentValue("--new-trade-approve-threshold") is { } thresholdText)
+        {
+            if (!decimal.TryParse(
+                    thresholdText, NumberStyles.Number, CultureInfo.InvariantCulture,
+                    out newTradeThreshold)
+                || newTradeThreshold < -1m
+                || newTradeThreshold >= 1m)
+            {
+                log.LogError(
+                    "--new-trade-approve-threshold must be a decimal in [-1, 1). Got '{Value}'.",
+                    thresholdText);
+                return 1;
+            }
+        }
+
         var warRoomOptions = new WarRoomOptions
         {
             DiscussionRounds = int.TryParse(ArgumentValue("--rounds"), out var parsedRounds)
                 ? parsedRounds
                 : 2,
-            ApproveThreshold = decimal.TryParse(
-                ArgumentValue("--approve-threshold"), NumberStyles.Number,
-                CultureInfo.InvariantCulture, out var parsedThreshold)
-                ? parsedThreshold
-                : 0m,
+            NewTradeApproveThreshold = newTradeThreshold,
+
+            // Not configurable. See WarRoomOptions.PositionReviewApproveThreshold.
+            PositionReviewApproveThreshold = 0m,
             AllowRebuttal = !args.Contains("--no-rebuttal"),
         };
 
@@ -276,11 +303,12 @@ if (args.Contains("--live"))
 
         log.LogInformation(
             "War room seated: proposer[{ProposerProvider}] + {Seats}. {Rounds} discussion round(s), "
-            + "approve threshold {Threshold}.",
+            + "new-trade threshold {NewTradeThreshold}, position-review threshold {ReviewThreshold}.",
             roomProposer.Provider,
             string.Join(", ", personas.Select(persona => $"{persona.Name}[{persona.Provider}]")),
             Math.Clamp(warRoomOptions.DiscussionRounds, 1, WarRoomOptions.MaximumDiscussionRounds),
-            warRoomOptions.ApproveThreshold);
+            warRoomOptions.NewTradeApproveThreshold,
+            warRoomOptions.PositionReviewApproveThreshold);
     }
 
     var liveLoop = new TradingLoop(

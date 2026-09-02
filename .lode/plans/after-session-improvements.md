@@ -18,7 +18,25 @@ flowchart TD
 
 ## Measured baseline
 
-The 2026-09-01 single-cycle dry run is the current baseline for the room.
+The 2026-09-01 live session is the current full-session baseline. It ran 13:46 to 16:00 ET,
+which is a partial day, and opened nothing.
+
+| Item | Measured value |
+|---|---|
+| Sittings | 4 |
+| Verdicts | 4 rejected, each 0 approve, 3 reject, 1 abstain |
+| Net vote | -0.39 to -0.55 |
+| Model calls | 52 |
+| Tokens | 3,982,341 |
+| Estimated cost | 5.6665 USD |
+| Orders | 0 |
+
+Four causes were found and repaired: the reviewer standard rejected the entire eligible
+universe, a negative approve threshold could not execute, one threshold served both new trades
+and closes, and the skeptic lost an analysis to its output limit. The proposer's own profit
+probabilities were 0.46 to 0.54, so the room was not refusing a trade the proposer disowned.
+
+The single-cycle dry run below remains the timing and cost baseline for one sitting.
 
 | Item | Measured value |
 |---|---|
@@ -100,17 +118,12 @@ catalog and a difference above one percent returns `REJECT_FABRICATED_QUOTE`. Th
 and duplicate-submission halves stay open. The tool still converts an empty thesis to
 `(no thesis given)` rather than refusing it.
 
-## P1 - Give the skeptic sufficient output tokens
+## Closed - Give the skeptic sufficient output tokens
 
-The skeptic reached its 3,000-token output limit twice on 2026-08-31 and submitted no
-analysis. The call did not fail. The model used all of its output allowance on reasoning and
-never called `submit_analysis`, so the seat became a fault and an abstention.
-
-The seat runs on a reasoning profile with no sampling temperature. It did not hit the limit
-on 2026-09-01, but the limit is unchanged, so the fault can return.
-
-**Contract:** A reasoning seat must have sufficient output tokens to reason and then call its
-submission tool. Measure the used output tokens before you select the value.
+Done. The analysis phase has its own budget, `MaxAnalysisOutputTokens`, and the skeptic's is
+8,000. The seat reached the shared 3,000 limit twice on 2026-08-31 and again on 2026-09-01,
+each time spending its allowance on reasoning and never calling `submit_analysis`, which made
+the seat a fault and failed quorum. See [persona contracts](../llm/persona-contracts.md).
 
 ## P1 - Use a fixed cycle schedule
 

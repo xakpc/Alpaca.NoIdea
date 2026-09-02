@@ -563,6 +563,9 @@ public sealed class TradingLoop(
         var positions = await _trading.ListPositionsAsync(cancellationToken);
         var pendingOrders = await _orderCoordinator!.ReconcileAndListPendingAsync(
             replayMissingSells: false, cancellationToken);
+
+        pendingOrders = await CancelStaleOpeningOrdersAsync(pendingOrders, now, cancellationToken);
+
         var dailyOrders = await _trading.ListOrdersSinceAsync(
             MarketCalendar.ToUtc(todayEastern), cancellationToken);
         var openedToday = dailyOrders
@@ -576,6 +579,72 @@ public sealed class TradingLoop(
         return BuildRiskSnapshot(
             DateOnly.FromDateTime(todayEastern), account, positions, pendingOrders, dailyOrders,
             openedToday);
+    }
+
+    /// <summary>
+    /// Cancels an opening order that never filled, and returns what is still pending.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An open buy is charged against capacity twice over: <c>RiskGuard</c> counts it in
+    /// <c>PendingOpenPositions</c> against the concurrent-position limit, and the catalog
+    /// builder excludes its contract from every later cycle. Nothing else retires it, so an
+    /// order left resting at a price the market moved away from silently spends one of four
+    /// position slots for the rest of the session while owning nothing.
+    /// </para>
+    /// <para>
+    /// A buy that has not filled within a cycle is not going to fill at that price. Cancelling
+    /// releases the slot and lets the room propose the contract again on current numbers.
+    /// A sell is never touched here: an unfilled exit must keep trying.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyList<OrderState>> CancelStaleOpeningOrdersAsync(
+        IReadOnlyList<OrderState> pendingOrders,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var stale = pendingOrders
+            .Where(order => order.IsBuy
+                            && order.RemainingQuantity > 0
+                            && order.BrokerOrderId is not null
+                            && order.SubmittedUtc is { } submitted
+                            && now - submitted >= _tradingOptions.CycleInterval)
+            .ToArray();
+
+        if (stale.Length == 0)
+        {
+            return pendingOrders;
+        }
+
+        var cancelled = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var order in stale)
+        {
+            try
+            {
+                await _trading.CancelOrderAsync(order.BrokerOrderId!, cancellationToken);
+                cancelled.Add(order.ClientOrderId);
+
+                _logger.LogInformation(
+                    RunEvents.OrderDecided,
+                    "Cancelled unfilled buy {Contracts}x {Symbol} at {Price:N2}, "
+                    + "resting since {Submitted:u}. The position slot is free again.",
+                    order.RemainingQuantity, order.ContractSymbol, order.LimitPrice,
+                    order.SubmittedUtc);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                // A cancel that loses a race with a fill is the normal failure here, and the
+                // next reconciliation reads the truth from the broker either way.
+                _logger.LogWarning(
+                    "Could not cancel {Symbol}: {Reason}. Leaving it to reconciliation.",
+                    order.ContractSymbol, error.Message);
+            }
+        }
+
+        return cancelled.Count == 0
+            ? pendingOrders
+            : [.. pendingOrders.Where(order => !cancelled.Contains(order.ClientOrderId))];
     }
 
     private async Task<CloseBatchResult> ManageOpenPositionsAsync(
@@ -1033,6 +1102,15 @@ public sealed class TradingLoop(
                 DryRun ? "Would open (dry run)" : "Opened",
                 action.Contracts, candidate.Contract.ContractSymbol, limitPrice,
                 limitPrice * action.Contracts * 100m, action.Reasoning);
+
+            // The room has just judged this contract on current data. Start the review cursor
+            // here, or the position arrives at the next cycle never reviewed, fires "first
+            // review", and pays for a second sitting to re-examine a decision minutes old.
+            if (_triggers is not null)
+            {
+                await MarkReviewedAsync(
+                    candidate.Contract.ContractSymbol, newsCount: 0, cancellationToken);
+            }
 
             return true;
         }
