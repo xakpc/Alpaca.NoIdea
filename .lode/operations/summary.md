@@ -118,9 +118,35 @@ dotnet test Xakpc.Alpaca.NøIdea.slnx --no-restore --nologo
 dotnet run --project src/Xakpc.Alpaca.NøIdea -- --audit --last 50
 ```
 
-The deterministic suite currently has 104 passing tests. The present `trader.db` is not
-audit-clean because earlier interrupted dry runs left incomplete sittings. Do not describe an
-older clean audit as the current database state.
+The deterministic suite currently has 195 passing tests.
+
+## Human-facing documents
+
+The repository root holds three documents for a person. No code reads them. Each one is a view
+of the lode, so a change to a contract must also change the document that states it.
+
+| File | Reader | Content |
+|---|---|---|
+| `README.md` | A visitor to the repository | Premise, architecture diagram, the seats, the hard limits, the commands, the first trading day, and the known limits. |
+| `DEVELOPMENT.md` | A developer on a workstation | Prerequisites, keys, the MCP container, the run commands, and the common faults. |
+| `AGENTS.md` | A coding agent | Repository instructions. |
+| `LICENSE` | A visitor to the repository | MIT, Pavel Osadchuk, 2026. The `README.md` footer links to it. |
+
+`README.md` states no number that the lode does not support. Its sources are
+[risk guardrails](../trading/risk-guardrails.md), [war-room summary](../war-room/summary.md),
+[trading summary](../trading/summary.md), [storage schema](../storage/schema.md), and
+[session baselines](../plans/session-baselines.md). Its "Known limits" section is the public
+view of [after-session improvements](../plans/after-session-improvements.md).
+
+`docs/console.png` is the one image the README shows. It is a copy of
+`presentation/third-day-console.png`, because `presentation/` is git-ignored and a README image
+must be tracked. It shows cycles 8 and 9 of the 2026-09-02 session and the run summary, so its
+figures must stay equal to the second process row in
+[session baselines](../plans/session-baselines.md): 9 cycles, 77 calls, 5,824,097 tokens,
+9.3829 USD, and 100,199.84 USD of equity. Replace both files together.
+
+`DEVELOPMENT.md` and [local development](local-development.md) must agree.
+[Presentation](presentation.md) covers the separate submission deck in `presentation/`.
 
 ## Related
 

@@ -58,11 +58,12 @@ describe the current runtime.
 
 - [Storage summary](storage/summary.md) - Durable audit purpose.
 - [Schema](storage/schema.md) - Eight-table schema, integrity, and evidence links.
-- [Operations summary](operations/summary.md) - Deployment, commands, recovery, faults, and tests.
+- [Operations summary](operations/summary.md) - Deployment, commands, recovery, faults, tests, and the human-facing documents.
 - [Local development](operations/local-development.md) - Commands and services.
 - [Observability](operations/observability.md) - Audit inspection.
 - [Console rendering](operations/console-rendering.md) - Operator view, symbols, and terminal safety.
 - [Competition constraints](operations/competition-constraints.md) - Event rules.
+- [Presentation](operations/presentation.md) - Submission deck, video script, and their evidence sources.
 
 ## Research and plans
 
