@@ -21,14 +21,17 @@ submits paper orders. Every sitting, tool call, review pass, vote, decision, and
 SQLite before any money moves.
 
 <p align="center">
-  <img alt="The operator console at the end of a live session" src="docs/console.png" width="820">
+  <img alt="A full war-room sitting in the operator console: the proposer's search, four parallel reviewer analyses, a discussion round, the rebuttal, four private votes, and the approved tally" src="docs/console.png" width="880">
 </p>
 
 <p align="center">
-  <sub>The last two cycles of 2026-09-02 and the run summary. The catalog is empty because the
-  day's fourth open had already filled, so <code>daily-new-position-limit</code> refuses all 7,968
-  contracts and the room can only review what is already open. Per-seat spend is printed at the
-  end of every run.</sub>
+  <sub>One sitting end to end, dry run, 2026-09-03. The proposer searches for 4:58 across 20 tool
+  calls and proposes an NVDA 222.50 call. Four reviewers analyse in parallel and each one's
+  reasoning is on the record: the skeptic tries to falsify three load-bearing claims and finds no
+  contradiction, the quant abstains, and <code>exposure</code> rejects because the trade would take
+  the last position slot. After one discussion round and a rebuttal the room votes 2–1–1, net 0.09,
+  and sizes it at 9%. Being a dry run, the order it would have sent is printed and nothing reaches
+  the broker. 11 model calls, 1,176,049 tokens, 1.5160 USD.</sub>
 </p>
 
 ## The premise

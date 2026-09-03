@@ -17,9 +17,12 @@ flowchart LR
 
 | File | Purpose |
 |---|---|
-| `index.html` | Eleven-slide deck. One self-contained file, no build step and no local assets. |
-| `video-script.md` | 60-second voiceover script: four beats, cue sheet, recording notes, and a clean full transcript. Half the runtime is one real sitting cut to 30 seconds, start to NO_TRADE. |
-| `third-day-console.png` | Operator console at run complete, cropped to the window. Embedded in the deck as a base64 data URI. |
+| `index.html` | Twelve-slide deck. One self-contained file, no build step and no local assets. |
+| `video-script.md` | Two voiceover scripts with clean transcripts. Script A is the 60-second cut, half of it one real sitting ending in NO_TRADE. Script B is a 3:40 deck walkthrough, one block per slide. A merge section splices them into about 4:09. |
+| `submission.md` | LabLab submission text: a 426-word long description, the short description, and the links. |
+| `export-deck.sh` | Renders `export/slide-01..12.png` (3840x2160) and `export/deck.pdf` (12 pages, 13.333in x 7.5in) with headless Chrome. Re-run after editing the deck. |
+| `room-sitting.png` | One full sitting in the operator console, 2026-09-03 dry run, cropped. Embedded in slide 6 and copied to `docs/console.png` for the README. |
+| `third-day-console.png` | Operator console at run complete, 2026-09-02. Embedded in the result slide. |
 | `third-day.png` | The original uncropped capture. Kept as the source. |
 | `Pavel Osadchuk, resume 2026.pdf` | Source for the author and ask slides. Not embedded. |
 
