@@ -379,3 +379,4 @@ cli_*_windows_amd64/
 *.log
 log-*.txt
 logs-*.txt
+presentation
