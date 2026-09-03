@@ -28,6 +28,11 @@ public enum WarRoomVerdict
 /// not cancel one that is certain. Abstentions lower the average without opposing, which is
 /// the correct treatment of "I have no view" — it should dilute conviction, not defeat it.
 /// </para>
+/// <para>
+/// Dilution alone is not consent. A room where every seat abstains has a net of exactly zero,
+/// which clears any negative threshold, so silence used to buy. New money therefore needs one
+/// seat that voted Approve as well. See <c>requireAnApproval</c> on <see cref="Count"/>.
+/// </para>
 /// </remarks>
 public sealed record VoteTally
 {
@@ -90,10 +95,18 @@ public sealed record VoteTally
     /// Spec §33.2 and §22. When true, a missing or faulted vote rejects the proposal for this
     /// cycle rather than proceeding on a smaller quorum.
     /// </param>
+    /// <param name="requireAnApproval">
+    /// When true, a proposal also needs one seat that voted Approve. A room that only abstains
+    /// has a net of exactly zero, which clears a negative threshold on silence alone. That is
+    /// how one open was authorised while two seats stated a profit probability of 0.41 and no
+    /// seat backed the trade. Use it for new money. A close must stay easy to authorise, so the
+    /// position-review path leaves it false.
+    /// </param>
     public static VoteTally Count(
         IReadOnlyList<PersonaVote> votes,
         decimal approveThreshold = 0m,
-        bool requireEveryVoter = true)
+        bool requireEveryVoter = true,
+        bool requireAnApproval = false)
     {
         ArgumentNullException.ThrowIfNull(votes);
 
@@ -130,7 +143,9 @@ public sealed record VoteTally
         // rather than vanishing, so a room that half broke cannot look unanimous.
         var net = weighted / votes.Count;
         var quorumMet = !requireEveryVoter || faults == 0;
-        var approved = quorumMet && net > approveThreshold;
+        var approved = quorumMet
+            && net > approveThreshold
+            && (!requireAnApproval || approvals > 0);
 
         return new VoteTally
         {

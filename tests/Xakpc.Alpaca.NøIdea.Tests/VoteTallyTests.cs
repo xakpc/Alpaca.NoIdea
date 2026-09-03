@@ -6,10 +6,18 @@ namespace Xakpc.Alpaca.NøIdea.Tests;
 /// The arithmetic that decides whether the system ever opens a position.
 /// </summary>
 /// <remarks>
+/// <para>
 /// These exist because a negative approve threshold silently could not trade. The verdict was
 /// read off <c>SizeMultiplier</c>, which floors at zero, so every proposal cleared on negative
 /// conviction was recorded as rejected and sized to nothing. The threshold looked configured
 /// and did nothing.
+/// </para>
+/// <para>
+/// The repair had its own edge: a threshold below zero is cleared by a room that says nothing
+/// at all. New money therefore needs an approving seat as well, and the tests below hold both
+/// halves in place — the threshold measures conviction against, the approval rule measures
+/// whether anybody was for it.
+/// </para>
 /// </remarks>
 public class VoteTallyTests
 {
@@ -64,21 +72,91 @@ public class VoteTallyTests
         Assert.Equal(1, tally.ContractsFor(4));
     }
 
+    /// <summary>Four seats with no view at all.</summary>
+    private static IReadOnlyList<PersonaVote> SilentRoom() =>
+    [
+        Abstain("skeptic"), Abstain("quant"), Abstain("market"), Abstain("exposure"),
+    ];
+
     [Fact]
-    public void AnAbstainingRoomClearsTheActivityThresholdAtMinimumSize()
+    public void AnAbstainingRoomClearsTheThresholdOnItsOwn()
+    {
+        var tally = VoteTally.Count(SilentRoom(), ActivityThreshold);
+
+        // The threshold answers "how much conviction against is tolerable". Silence carries
+        // none, so it passes that question. That is the arithmetic, not the decision.
+        Assert.True(tally.Approved);
+        Assert.Equal(0m, tally.Net);
+        Assert.Equal(0, tally.Approvals);
+    }
+
+    [Fact]
+    public void ASilentRoomCannotOpenAPosition()
+    {
+        var tally = VoteTally.Count(SilentRoom(), ActivityThreshold, requireAnApproval: true);
+
+        // On 2026-09-02 this room bought 1,392 USD of META, with two seats stating a profit
+        // probability of 0.41 and no seat backing the trade. Nobody's silence spends money.
+        Assert.False(tally.Approved);
+        Assert.Equal(0, tally.ContractsFor(1));
+        Assert.Equal(4, tally.Abstentions);
+    }
+
+    [Fact]
+    public void OneApprovingSeatIsEnoughToOpen()
     {
         IReadOnlyList<PersonaVote> votes =
         [
-            Abstain("skeptic"), Abstain("quant"), Abstain("market"), Abstain("exposure"),
+            Vote("skeptic", VoteKind.Approve, 0.50m),
+            Abstain("quant"),
+            Abstain("market"),
+            Abstain("exposure"),
         ];
 
-        var tally = VoteTally.Count(votes, ActivityThreshold);
+        var tally = VoteTally.Count(votes, ActivityThreshold, requireAnApproval: true);
 
-        // Deliberate. "Nothing specific is wrong" is the vote the new reviewer standard asks
-        // for, and at a negative threshold it opens a position rather than blocking one.
+        // The rule asks whether anybody wanted the trade, not for a majority. An abstention
+        // still dilutes: net is 0.125, not 0.50.
         Assert.True(tally.Approved);
-        Assert.Equal(0m, tally.Net);
+        Assert.Equal(0.125m, tally.Net);
         Assert.Equal(1, tally.ContractsFor(1));
+    }
+
+    [Fact]
+    public void AnApprovalDoesNotRescueARoomThatIsAgainstTheTrade()
+    {
+        IReadOnlyList<PersonaVote> votes =
+        [
+            Vote("skeptic", VoteKind.Approve, 0.50m),
+            Vote("quant", VoteKind.Reject, 0.90m),
+            Vote("market", VoteKind.Reject, 0.90m),
+            Abstain("exposure"),
+        ];
+
+        var tally = VoteTally.Count(votes, ActivityThreshold, requireAnApproval: true);
+
+        // Both conditions must hold. The approval satisfies one and the threshold still fails.
+        Assert.False(tally.Approved);
+        Assert.True(tally.Net < ActivityThreshold);
+    }
+
+    [Fact]
+    public void AClosingRoomStillDecidesOnConvictionAlone()
+    {
+        IReadOnlyList<PersonaVote> votes =
+        [
+            Vote("skeptic", VoteKind.Reject, 0.60m),
+            Abstain("quant"),
+            Abstain("market"),
+            Abstain("exposure"),
+        ];
+
+        // A close is judged at a threshold of zero and without the approval rule, because a
+        // position must stay easy to leave. Here the room is against closing, so it holds.
+        var tally = VoteTally.Count(votes, requireAnApproval: false);
+
+        Assert.False(tally.Approved);
+        Assert.Equal(0, tally.Approvals);
     }
 
     [Fact]

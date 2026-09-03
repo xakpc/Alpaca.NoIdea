@@ -70,6 +70,41 @@ public sealed class TradingLoopSafetyTests
     }
 
     [Fact]
+    public async Task AReviewThatDecidesToCloseReachesTheBroker()
+    {
+        // The position is 5 percent down, so no hard exit fires and the review is the only
+        // thing that can close it. This is the path a room that votes against holding uses.
+        await WithLoopAsync(
+            OrderLifecycle.Filled, blocked: false, pendingClose: false,
+            async (loop, gateway, agent) =>
+            {
+                agent.ReviewDecision = new StrategyDecision
+                {
+                    Actions =
+                    [
+                        new StrategyAction
+                        {
+                            Kind = StrategyActionKind.ClosePosition,
+                            ContractSymbol = "SPY260904C00770000",
+                            Contracts = 1,
+                            Reasoning = "the room voted against holding",
+                        },
+                    ],
+                };
+
+                var result = await loop.RunCycleAsync(CancellationToken.None);
+
+                Assert.Equal(1, agent.ReviewCalls);
+                var order = Assert.Single(gateway.Submitted);
+                Assert.Equal("SPY260904C00770000", order.ContractSymbol);
+                Assert.False(order.IsBuy);
+                Assert.Equal(1, result.CloseOrdersSubmitted);
+                Assert.Equal(1, result.PositionsClosed);
+            },
+            positionPrice: 1.9m);
+    }
+
+    [Fact]
     public async Task APendingSellSuppressesMandatoryAndWarRoomCloses()
     {
         await WithLoopAsync(OrderLifecycle.Open, blocked: false, pendingClose: true, async (loop, gateway, agent) =>
@@ -140,7 +175,8 @@ public sealed class TradingLoopSafetyTests
         Func<TradingLoop, LoopGateway, ReviewingAgent, Task> test,
         bool hasPosition = true,
         decimal? previousCloseEquity = 100_000m,
-        bool hasFillToday = false)
+        bool hasFillToday = false,
+        decimal positionPrice = 0.7m)
     {
         var path = Path.Combine(Path.GetTempPath(), $"loop-safety-{Guid.NewGuid():N}.db");
         try
@@ -149,7 +185,7 @@ public sealed class TradingLoopSafetyTests
             await store.CreateSchemaAsync(CancellationToken.None);
             var gateway = new LoopGateway(
                 closeLifecycle, blocked, pendingClose, hasPosition,
-                previousCloseEquity, hasFillToday);
+                previousCloseEquity, hasFillToday, positionPrice);
             var agent = new ReviewingAgent();
             var risk = new RiskOptions();
             var loop = new TradingLoop(
@@ -185,6 +221,11 @@ public sealed class TradingLoopSafetyTests
         /// <summary>What the agent returns, when a test needs something other than a hold.</summary>
         public StrategyDecision? Decision { get; set; }
 
+        /// <summary>What a position review returns. A hold unless a test says otherwise.</summary>
+        public StrategyDecision? ReviewDecision { get; set; }
+
+        public PositionState? LastReviewed { get; private set; }
+
         public Task<StrategyDecision> DecideAsync(
             StrategyContext context, CancellationToken cancellationToken)
         {
@@ -202,7 +243,8 @@ public sealed class TradingLoopSafetyTests
             CancellationToken cancellationToken)
         {
             ReviewCalls++;
-            return Task.FromResult(StrategyDecision.Nothing("test hold"));
+            LastReviewed = position;
+            return Task.FromResult(ReviewDecision ?? StrategyDecision.Nothing("test hold"));
         }
     }
 
@@ -212,7 +254,8 @@ public sealed class TradingLoopSafetyTests
         bool hasInitialPendingClose,
         bool hasPosition,
         decimal? previousCloseEquity,
-        bool hasFillToday) : ITradingGateway
+        bool hasFillToday,
+        decimal positionPrice) : ITradingGateway
     {
         private readonly List<OrderState> _knownOrders = hasInitialPendingClose
             ? [Order("existing-close", OrderLifecycle.Open)]
@@ -243,7 +286,7 @@ public sealed class TradingLoopSafetyTests
                     Symbol = "SPY260904C00770000",
                     Quantity = 1,
                     AverageEntryPrice = 2m,
-                    CurrentPrice = 0.7m,
+                    CurrentPrice = positionPrice,
                 },
                 ]
                 : []);

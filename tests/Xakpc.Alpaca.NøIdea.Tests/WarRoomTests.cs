@@ -315,6 +315,92 @@ public class WarRoomTests
     }
 
 
+    // ---------------------------------------------------------------- rejected hold
+
+    /// <summary>The position every review test below judges.</summary>
+    private static PositionState ReviewedPosition() => new()
+    {
+        Symbol = "TEST260904C00100000",
+        Quantity = 1,
+        AverageEntryPrice = 1.00m,
+        CurrentPrice = 0.80m,
+    };
+
+    private static Task<StrategyDecision> ReviewAsync(WarRoomAgent agent) =>
+        agent.ReviewPositionAsync(
+            Request().Market, ReviewedPosition(), "loss milestone", -0.20m, 2,
+            CancellationToken.None);
+
+    [Fact]
+    public async Task ARoomThatVotesAgainstHoldingClosesThePosition()
+    {
+        // A review that asks for nothing is a hold, and a rejected hold used to end the sitting
+        // with the position still open. On 2026-09-02 the room rejected the META hold 0 to 3 at
+        // a net of -0.53, two seats wrote the exit arithmetic, and no order was ever sent.
+        var decision = await ReviewAsync(Agent(
+            Proposer(ProposedOperation.Nothing("the thesis still holds")),
+            [
+                new RecordingPersona("skeptic", VoteKind.Reject, 0.75m),
+                new RecordingPersona("quant", VoteKind.Reject, 0.75m),
+            ]));
+
+        var action = Assert.Single(decision.Actions);
+        Assert.Equal(StrategyActionKind.ClosePosition, action.Kind);
+        Assert.Equal("TEST260904C00100000", action.ContractSymbol);
+        Assert.Equal(1, action.Contracts);
+
+        // The close still carries why, so the decision row is not silent about its origin.
+        Assert.NotNull(decision.Rejection);
+        Assert.Equal("room", decision.Rejection!.Stage);
+    }
+
+    [Fact]
+    public async Task ABrokenRoomDoesNotLiquidateThePosition()
+    {
+        // RequireEveryVoter turns one failed seat into a Rejected verdict. A room that half
+        // broke has not decided anything, and must never be able to sell the book.
+        var decision = await ReviewAsync(Agent(
+            Proposer(ProposedOperation.Nothing("the thesis still holds")),
+            [
+                new RecordingPersona("skeptic", VoteKind.Reject, 0.75m),
+                new ThrowingPersona("quant"),
+            ]));
+
+        var action = Assert.Single(decision.Actions);
+        Assert.Equal(StrategyActionKind.Hold, action.Kind);
+    }
+
+    [Fact]
+    public async Task ARoomThatBacksTheHoldKeepsThePosition()
+    {
+        var decision = await ReviewAsync(Agent(
+            Proposer(ProposedOperation.Nothing("the thesis still holds")),
+            [
+                new RecordingPersona("skeptic", VoteKind.Approve, 0.75m),
+                new RecordingPersona("quant", VoteKind.Approve, 0.75m),
+            ]));
+
+        var action = Assert.Single(decision.Actions);
+        Assert.Equal(StrategyActionKind.Hold, action.Kind);
+        Assert.Null(decision.Rejection);
+    }
+
+    [Fact]
+    public async Task ARejectedNewTradeNeverBecomesAnOrder()
+    {
+        // The escalation belongs to the review path alone. A rejected new trade opens nothing.
+        var decision = await Agent(
+            Proposer(OneTrade()),
+            [
+                new RecordingPersona("skeptic", VoteKind.Reject, 0.75m),
+                new RecordingPersona("quant", VoteKind.Reject, 0.75m),
+            ])
+            .DecideAsync(MarketWithCatalog(), CancellationToken.None);
+
+        Assert.All(decision.Actions, action =>
+            Assert.Equal(StrategyActionKind.Hold, action.Kind));
+    }
+
     // ---------------------------------------------------------------- rejection semantics
 
     [Fact]

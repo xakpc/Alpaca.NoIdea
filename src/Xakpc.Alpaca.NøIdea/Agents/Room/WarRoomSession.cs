@@ -95,6 +95,16 @@ public sealed record WarRoomOptions
     /// <summary>Spec §33.2. A missing or faulted vote rejects rather than shrinking quorum.</summary>
     public bool RequireEveryVoter { get; init; } = true;
 
+    /// <summary>A new trade also needs one seat that voted Approve.</summary>
+    /// <remarks>
+    /// A room where every seat abstains has a net of exactly zero, which clears a negative
+    /// <see cref="NewTradeApproveThreshold"/>. On 2026-09-02 that authorised an open of
+    /// 1,392 USD on four abstentions, two of which stated a profit probability of 0.41. The
+    /// threshold answers "how much conviction against is tolerable"; this answers "did anybody
+    /// want this trade". It applies to new money only, because a close must stay easy.
+    /// </remarks>
+    public bool RequireApprovalToOpen { get; init; } = true;
+
     /// <summary>Wall-clock budget for one sitting. The room stops discussing when it passes.</summary>
     /// <remarks>
     /// Measured against the 2026-09-01 sitting, which took 8:30: propose 3:59, independent
@@ -336,7 +346,11 @@ public sealed class WarRoomSession(
         }
 
         var tally = VoteTally.Count(
-            votes, _options.ApproveThresholdFor(request.Purpose), _options.RequireEveryVoter);
+            votes,
+            _options.ApproveThresholdFor(request.Purpose),
+            _options.RequireEveryVoter,
+            requireAnApproval: _options.RequireApprovalToOpen
+                && request.Purpose == WarRoomPurpose.NewTrade);
         var cost = ledger.Snapshot();
         var verdict = tally.Approved ? WarRoomVerdict.Approved : WarRoomVerdict.Rejected;
         _logger.LogInformation(

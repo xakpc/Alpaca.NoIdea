@@ -189,7 +189,57 @@ public sealed class WarRoomAgent(
 
         Record(outcome);
 
-        return ToDecision(outcome);
+        return EscalatedClose(outcome, position) ?? ToDecision(outcome);
+    }
+
+    /// <summary>
+    /// Turns a room that voted against holding into a close, or null when it did not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A review proposal that asks for nothing is a hold, and a rejected hold used to leave the
+    /// position open. On 2026-09-02 the room rejected the META hold 0 approve to 3 reject at a
+    /// net of -0.53, with two seats writing the exit arithmetic, and no order was sent. The
+    /// room's own conclusion had no way to reach the broker.
+    /// </para>
+    /// <para>
+    /// Every condition below is a guard, not a formality. A verdict alone is not enough:
+    /// <see cref="WarRoomVerdict.Rejected"/> also carries a proposer withdrawal and, under
+    /// <c>RequireEveryVoter</c>, a room where one seat merely failed. Both arrive with an empty
+    /// or faulted tally, and a broken room must never liquidate the book. Only a complete vote
+    /// with real conviction against holding closes a position.
+    /// </para>
+    /// </remarks>
+    private static StrategyDecision? EscalatedClose(WarRoomOutcome outcome, PositionState position)
+    {
+        if (outcome.Verdict != WarRoomVerdict.Rejected || outcome.Operation.TradesAnything)
+        {
+            return null;
+        }
+
+        var tally = outcome.Tally;
+        if (!tally.QuorumMet || tally.Faults > 0 || tally.Net >= 0m)
+        {
+            return null;
+        }
+
+        return new StrategyDecision
+        {
+            Actions =
+            [
+                new StrategyAction
+                {
+                    Kind = StrategyActionKind.ClosePosition,
+                    ContractSymbol = position.Symbol,
+                    Contracts = Math.Abs(position.Quantity),
+                    Reasoning =
+                        $"The room voted against holding ({tally}). Close on that vote. "
+                        + Explain(outcome),
+                },
+            ],
+            RevisedPolicy = outcome.Operation.RevisedPolicy,
+            Rejection = RejectionOf(outcome),
+        };
     }
 
     private static StrategyDecision ToDecision(WarRoomOutcome outcome)

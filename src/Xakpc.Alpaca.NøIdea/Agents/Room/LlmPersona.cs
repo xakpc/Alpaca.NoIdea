@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text.Json.Serialization;
+using Anthropic.Models.Messages;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using ToonFormat;
@@ -255,6 +256,35 @@ public abstract class LlmPersona(
     }
 
     /// <summary>
+    /// The system block, with a prompt-cache breakpoint where the provider needs one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// OpenAI and xAI discount a repeated prefix by themselves. Anthropic does not: without an
+    /// explicit breakpoint there is no cache at all, which is why the Anthropic seat reported
+    /// 2,082,211 input tokens and 0 cached on 2026-09-02, for 52 percent of the run cost.
+    /// </para>
+    /// <para>
+    /// One marker at the end of the system block is sufficient. Anthropic orders a request as
+    /// tools, then system, then messages, and caches every prefix up to the marker, so the tool
+    /// schemas are covered as well. The lifetime is one hour because the win is between
+    /// sittings: sittings take 8 to 10 minutes and cycles are 20 minutes apart, so the
+    /// five-minute default would expire before the next seat asks the same question.
+    /// </para>
+    /// <para>
+    /// The breakpoint is written into <c>AdditionalProperties</c> and only the Anthropic client
+    /// reads it. Setting it for one provider keeps that fact visible at the call site.
+    /// </para>
+    /// </remarks>
+    private AIContent SystemContent(string systemPrompt)
+    {
+        var content = new TextContent(systemPrompt);
+        return Provider == ModelProvider.Anthropic
+            ? content.WithCacheControl(new CacheControlEphemeral { Ttl = Ttl.Ttl1h })
+            : content;
+    }
+
+    /// <summary>
     /// <b>The one path from this application to a model.</b> Every seat and every phase goes
     /// through here, so the transcript, the token ledger and the fault handling are written
     /// once and cannot differ between seats.
@@ -273,7 +303,7 @@ public abstract class LlmPersona(
     {
         ChatMessage[] messages =
         [
-            new(ChatRole.System, systemPrompt),
+            new(ChatRole.System, [SystemContent(systemPrompt)]),
             new(ChatRole.User, payload),
         ];
 

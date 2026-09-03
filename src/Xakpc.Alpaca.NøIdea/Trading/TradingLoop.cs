@@ -689,6 +689,7 @@ public sealed class TradingLoop(
                     "mandatory-exit",
                     reason,
                     cancellationToken);
+                LogCloseResult(position.Symbol, submitted);
                 result = result.Add(position.Symbol, submitted.Order);
             }
             catch (AuditPersistenceException)
@@ -752,9 +753,12 @@ public sealed class TradingLoop(
             }
 
             _logger.LogInformation(
-                "Closing {Symbol} on the agent's request: {Why}", symbol, action.Reasoning);
+                RunEvents.PositionClosed,
+                "{State} {Symbol} on the room's decision: {Why}",
+                DryRun ? "Would close (dry run)" : "Closing", symbol, action.Reasoning);
             var submitted = await CloseWithAuditAsync(
                 action, position, "position-review", action.Reasoning, cancellationToken);
+            LogCloseResult(symbol, submitted);
             return new CloseBatchResult().Add(symbol, submitted.Order);
         }
         finally
@@ -898,14 +902,15 @@ public sealed class TradingLoop(
                     continue;
                 }
 
-                _logger.LogInformation(
-                    "Closing {Symbol} on the room's decision: {Why}", position.Symbol, action.Reasoning);
-
+                // Through the gated path, not straight to the broker. The sitting took 8 to 10
+                // minutes and a hard exit may have closed this position while it ran, so the
+                // positions and pending orders are read again inside the gate.
                 try
                 {
-                    var submitted = await CloseWithAuditAsync(
-                        action, position, "position-review", action.Reasoning, cancellationToken);
-                    result = result.Add(position.Symbol, submitted.Order);
+                    if (await TryCloseAsync(action, cancellationToken) is { } closed)
+                    {
+                        result = result.Merge(closed);
+                    }
                 }
                 catch (AuditPersistenceException)
                 {
@@ -1318,6 +1323,24 @@ public sealed class TradingLoop(
             cancellationToken);
     }
 
+    /// <summary>
+    /// Reports what a close actually did, after the broker answered.
+    /// </summary>
+    /// <remarks>
+    /// Every close used to log its intent and nothing else, so the operator view showed that a
+    /// position was closed and never at what price. The fill is on the order the coordinator
+    /// returns; it was collected for the cycle counters and then discarded.
+    /// </remarks>
+    private void LogCloseResult(string symbol, OrderSubmissionResult submitted) =>
+        _logger.LogInformation(
+            RunEvents.PositionClosed,
+            "{Symbol} sell {Lifecycle}: {FilledQuantity} of {RequestedQuantity} at {FillPrice}.",
+            symbol,
+            submitted.Order.Lifecycle,
+            submitted.Order.FilledQuantity,
+            submitted.Order.RequestedQuantity,
+            submitted.Order.AverageFillPrice);
+
     private static bool HasPendingClose(
         string symbol, IReadOnlyList<OrderState> pendingOrders) =>
         pendingOrders.Any(order =>
@@ -1367,6 +1390,22 @@ public sealed class TradingLoop(
         public int ConfirmedClosed { get; init; }
         public int Rejected { get; init; }
         public IReadOnlySet<string> AttemptedSymbols { get; init; } = new HashSet<string>(StringComparer.Ordinal);
+
+        /// <summary>Folds another batch into this one.</summary>
+        public CloseBatchResult Merge(CloseBatchResult other)
+        {
+            ArgumentNullException.ThrowIfNull(other);
+
+            var attempted = new HashSet<string>(AttemptedSymbols, StringComparer.Ordinal);
+            attempted.UnionWith(other.AttemptedSymbols);
+            return this with
+            {
+                Submitted = Submitted + other.Submitted,
+                ConfirmedClosed = ConfirmedClosed + other.ConfirmedClosed,
+                Rejected = Rejected + other.Rejected,
+                AttemptedSymbols = attempted,
+            };
+        }
 
         public CloseBatchResult Add(string symbol, OrderState order)
         {

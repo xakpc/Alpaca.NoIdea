@@ -58,12 +58,13 @@ var log = loggerFactory.CreateLogger("Trader");
 log.LogInformation("Plain file log: {Path}", fileLogPath);
 
 if (!args.Contains("--smoke") && !args.Contains("--check-mcp")
-    && !args.Contains("--audit")
+    && !args.Contains("--audit") && !args.Contains("--recover-sittings")
     && !args.Contains("--live"))
 {
     log.LogInformation(
         "Nothing to do. Pass --smoke for the order path, --check-mcp for the read-only MCP "
-        + "connection, --audit to inspect the durable record, or --live to trade. "
+        + "connection, --audit to inspect the durable record, --recover-sittings to close "
+        + "sittings that a stopped process left open, or --live to trade. "
         + "Add --dry-run to decide everything and send "
         + "nothing, --once to run a single cycle out of hours, and --cheap to use the "
         + "low-cost model profile.");
@@ -76,6 +77,14 @@ if (!args.Contains("--smoke") && !args.Contains("--check-mcp")
 if (args.Contains("--audit"))
 {
     return await AuditAsync(log);
+}
+
+// Maintenance, not part of a session: it gives a sitting that a stopped process left open a
+// terminal status, so the integrity check reports what is unfinished instead of what is
+// broken. Do not run it while a live host is up.
+if (args.Contains("--recover-sittings"))
+{
+    return await RecoverSittingsAsync(log);
 }
 
 // The live trading session. It runs against the development paper account by default; the
@@ -303,12 +312,14 @@ if (args.Contains("--live"))
 
         log.LogInformation(
             "War room seated: proposer[{ProposerProvider}] + {Seats}. {Rounds} discussion round(s), "
-            + "new-trade threshold {NewTradeThreshold}, position-review threshold {ReviewThreshold}.",
+            + "new-trade threshold {NewTradeThreshold}, position-review threshold {ReviewThreshold}. "
+            + "An open needs an approving seat: {RequireApprovalToOpen}.",
             roomProposer.Provider,
             string.Join(", ", personas.Select(persona => $"{persona.Name}[{persona.Provider}]")),
             Math.Clamp(warRoomOptions.DiscussionRounds, 1, WarRoomOptions.MaximumDiscussionRounds),
             warRoomOptions.NewTradeApproveThreshold,
-            warRoomOptions.PositionReviewApproveThreshold);
+            warRoomOptions.PositionReviewApproveThreshold,
+            warRoomOptions.RequireApprovalToOpen);
     }
 
     var liveLoop = new TradingLoop(
@@ -632,6 +643,43 @@ static string DatabasePath(string repositoryRoot)
     var dataDirectory = Path.Combine(repositoryRoot, "data");
     Directory.CreateDirectory(dataDirectory);
     return Path.Combine(dataDirectory, "trader.db");
+}
+
+async Task<int> RecoverSittingsAsync(ILogger log)
+{
+    using var recoveryCancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+    var recoveryToken = recoveryCancellation.Token;
+
+    var recoveryStore = new TradingStore(TradingStore.ConnectionStringForFile(
+        DatabasePath(RepositoryRoot()), readOnly: false));
+    var schemaVersion = await recoveryStore.SchemaVersionAsync(recoveryToken);
+    if (schemaVersion != TradingStore.CurrentSchemaVersion)
+    {
+        log.LogError(
+            "Audit schema is {Actual}; expected {Expected}. Start with a clean database file.",
+            schemaVersion, TradingStore.CurrentSchemaVersion);
+        return 1;
+    }
+
+    var interrupted = await recoveryStore.InterruptedSittingsAsync(recoveryToken);
+    if (interrupted.Count == 0)
+    {
+        log.LogInformation("No sitting is open. Nothing to recover.");
+        return 0;
+    }
+
+    foreach (var proposalId in interrupted)
+    {
+        log.LogInformation("  Interrupted sitting {Proposal}.", proposalId);
+    }
+
+    var marked = await recoveryStore.RecoverInterruptedSittingsAsync(
+        DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        "The process stopped before the sitting completed. Recovered by --recover-sittings.",
+        recoveryToken);
+
+    log.LogInformation("Marked {Marked} sitting(s) abandoned. Run --audit to confirm.", marked);
+    return 0;
 }
 
 async Task<int> AuditAsync(ILogger log)

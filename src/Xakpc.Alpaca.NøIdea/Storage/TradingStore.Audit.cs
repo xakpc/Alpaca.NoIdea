@@ -158,6 +158,55 @@ public sealed partial class TradingStore
         await transaction.CommitAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Gives every interrupted sitting a terminal status.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A sitting is opened with status <c>running</c> and is completed at the end. A process
+    /// that stops between the two leaves the row as it was, and <c>--audit</c> then reports
+    /// <c>incomplete_sitting</c> forever. The record is not corrupt; it is unfinished, and
+    /// nothing could say so.
+    /// </para>
+    /// <para>
+    /// The row is updated and never deleted. <c>decision_events</c> and <c>agent_tool_calls</c>
+    /// carry a foreign key to <c>proposal_id</c>, and an interrupted sitting is evidence: an
+    /// audit that proves the record complete by erasing the inconvenient row proves nothing.
+    /// The <c>abandoned</c> status is terminal, so the two status-scoped checks that look for a
+    /// missing review pass and a missing decision correctly ignore it.
+    /// </para>
+    /// </remarks>
+    /// <returns>How many sittings were marked.</returns>
+    public async Task<int> RecoverInterruptedSittingsAsync(
+        long completedUtc,
+        string fault,
+        CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            UPDATE war_room_sittings
+            SET status = 'abandoned', completed_utc = @completedUtc, fault = @fault
+            WHERE status = 'running'
+            """;
+
+        await using var connection = await OpenAsync(cancellationToken);
+        return await connection.ExecuteAsync(new CommandDefinition(
+            sql, new { completedUtc, fault }, cancellationToken: cancellationToken));
+    }
+
+    /// <summary>The sittings that a recovery would mark.</summary>
+    public async Task<IReadOnlyList<string>> InterruptedSittingsAsync(
+        CancellationToken cancellationToken)
+    {
+        const string sql =
+            "SELECT proposal_id FROM war_room_sittings WHERE status = 'running' ORDER BY started_utc";
+
+        await using var connection = await OpenAsync(cancellationToken);
+        var rows = await connection.QueryAsync<string>(
+            new CommandDefinition(sql, cancellationToken: cancellationToken));
+        return [.. rows];
+    }
+
     public async Task<long> RecordDecisionEventAsync(
         DecisionEventRow decision,
         CancellationToken cancellationToken)
