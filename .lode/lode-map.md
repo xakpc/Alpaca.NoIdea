@@ -38,7 +38,9 @@ describe the current runtime.
 ## War room and LLM
 
 - [War-room summary](war-room/summary.md) - Proposal, review, discussion, and vote.
-- [LLM summary](llm/summary.md) - Model call and cost contracts.
+- [Votes to verdict](war-room/vote-and-verdict.md) - Tally, thresholds, the approval rule, and
+  the rejected hold.
+- [LLM summary](llm/summary.md) - Model call, prompt cache, and cost contracts.
 - [Call limits](llm/call-limits.md) - Deadline, seat, transport, and retry limits.
 - [Persona contracts](llm/persona-contracts.md) - Trust, forecasts, evidence, and voting meaning.
 
@@ -65,6 +67,7 @@ describe the current runtime.
 ## Research and plans
 
 - [Research summary](research/summary.md) - Retained negative model result.
+- [Session baselines](plans/session-baselines.md) - Measured cost, timing, and results per session.
 - [After-session improvements](plans/after-session-improvements.md) - Prioritized live-session repairs.
 - [Open strategy questions](plans/open-strategy-questions.md) - Questions for real trades.
 
@@ -73,7 +76,10 @@ describe the current runtime.
 - New session: [summary](summary.md) then [terminology](terminology.md).
 - Change execution: [live cycle](trading/live-cycle.md), then
   [risk guardrails](trading/risk-guardrails.md), then [schema](storage/schema.md).
-- Change agents: [war room](war-room/summary.md), then [LLM summary](llm/summary.md).
+- Change agents: [war room](war-room/summary.md), then
+  [votes to verdict](war-room/vote-and-verdict.md), then [LLM summary](llm/summary.md).
+- Judge a change: [session baselines](plans/session-baselines.md), then
+  [after-session improvements](plans/after-session-improvements.md).
 - Operate the host: [local development](operations/local-development.md), then
   [observability](operations/observability.md).
 

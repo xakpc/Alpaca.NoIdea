@@ -69,6 +69,7 @@ clients are fixed to `Environments.Paper`.
 | `--live` | Run the live market-clock loop and permit paper orders. |
 | `--live --dry-run` | Use live reads, write audit evidence, and intercept broker writes. |
 | `--audit` | Open SQLite read-only, print evidence, and return nonzero for integrity faults. |
+| `--recover-sittings` | Give every sitting a stopped process left open the `abandoned` status. |
 | `--check-mcp` | Connect, list, and validate read-only Alpaca MCP tools. |
 | `--smoke` | Submit a paper option buy, then cancel it or close a fill. This changes the paper account. |
 
@@ -87,9 +88,9 @@ flowchart TD
     F --> G[Run cycle]
 ```
 
-Live startup calls `CreateSchemaAsync`. It does not call `AuditIntegrityAsync`. Incomplete
-sittings remain in the database until the audit command reports them. The active improvement
-plan requires a clean integrity gate before live operation.
+Live startup calls `CreateSchemaAsync`. It does not call `AuditIntegrityAsync`. A sitting that a
+stopped process left open stays `running` until `--recover-sittings` marks it `abandoned`. Run
+that command, then `--audit`, between sessions. Do not run it while a live host is up.
 
 Alpaca is the source of truth for positions and broker orders. The host restores policy and
 position-review cursors from SQLite. It reconciles unsettled orders by client ID. An uncertain

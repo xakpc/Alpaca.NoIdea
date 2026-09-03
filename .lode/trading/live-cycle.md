@@ -110,6 +110,24 @@ A triggered position goes to the **same** `WarRoomSession` a new trade goes to, 
 `AllowedActions = [ClosePosition]`. `ADJUST` stays disabled until adjustment code is
 validated.
 
+A review ends in one of three ways.
+
+| Room result | Result for the position |
+|---|---|
+| An approved close | The position is sold at market, whole. |
+| A hold the room backs, or a tie | The position stays open. |
+| A hold the room votes down | The position is sold, from a complete vote with no faulted seat and a net below zero. |
+
+The third row exists because a rejected hold used to do nothing. A review that proposes no
+action is a hold, and on 2026-09-02 the room rejected the META hold 0 to 3, wrote the exit
+arithmetic, and left the position open, because nothing read the verdict. See
+[votes to verdict](../war-room/vote-and-verdict.md).
+
+Every close a review decides goes through `TryCloseAsync`, which reads positions and pending
+orders again inside the broker gate. The sitting took 8 to 10 minutes and a hard exit may have
+closed the position while it ran, so the lists the room saw are evidence and not a basis for
+sending an order.
+
 A review that fails leaves the position alone. It is still covered by the hard exits.
 Review time and the current news-count marker persist in SQLite. The news trigger does not yet
 compare stable headline IDs or publication times. This can miss replacement headlines in a
@@ -155,7 +173,8 @@ with symbol, type, expiration, strike bounds, and offset filters.
 
 See [war room](../war-room/summary.md). Propose, pre-validate, analyse independently, debate,
 rebut, vote privately, tally to a verdict and a size. A modified rebuttal creates version 2
-and gets a new independent analysis, discussion, and private vote.
+and gets a new independent analysis, discussion, and private vote. An open needs both a net
+above the threshold and one seat that voted Approve.
 
 The room reads two things the cycle itself does not use. `TradingConstraints` carries
 `PositionsExitAtUtc`, `HoursToForcedExit`, and `ExitIsAlwaysPreExpiry`, which name the moment

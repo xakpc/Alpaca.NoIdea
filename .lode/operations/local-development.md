@@ -68,6 +68,27 @@ Claude Haiku 4.5 and GPT-5.4-nano. It keeps Grok 4.6.
 dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live --dry-run --cheap
 ```
 
+## Between sessions
+
+```powershell
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --recover-sittings
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --audit --last 20
+```
+
+`--recover-sittings` opens the database read-write and gives every sitting a stopped process
+left open the `abandoned` status. It prints each proposal ID before it writes. Run it only when
+no live host is running, then confirm with `--audit`, which must exit zero.
+
+A full sitting can also be rehearsed out of hours. This reads live data, runs the room, and
+sends no order:
+
+```powershell
+dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live --dry-run --once --allow-stale-quotes
+```
+
+`--once` runs one cycle and ignores the market clock. It starts **no hard-exit loop**, so it is
+a rehearsal only and never a way to hold a position.
+
 ## Operator view
 
 `--live` starts the live display. It repaints one region in place, so the terminal keeps no

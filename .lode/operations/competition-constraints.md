@@ -7,10 +7,15 @@ code configuration, not a restatement of the public event schedule.
 ```mermaid
 timeline
     title Current application timing
-    2026-08-31 09:30 ET : Intended trading start
-    2026-09-03 15:30 ET : Forced flatten in code
+    2026-08-31 : First live session, no order
+    2026-09-02 : First trading day, 4 opens and 2 closes
+    2026-09-03 15:30 ET : Forced flatten in code, the last trading day
     2026-09-04 : Latest expiration date accepted by RiskGuard
 ```
+
+2026-09-03 is the final trading day. The host must be running at 19:30 UTC for the flatten to
+happen, because the exit loop lives inside the process. See
+[hard-exit loop](../trading/hard-exit-loop.md).
 
 ```json
 {

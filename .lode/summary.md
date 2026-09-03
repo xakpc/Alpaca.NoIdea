@@ -25,7 +25,8 @@ dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live --dry-run --cheap
 dotnet run --project src/Xakpc.Alpaca.NøIdea -- --audit --last 20
 ```
 
-The host supports `--live`, `--smoke`, `--check-mcp`, and read-only `--audit` operations.
+The host supports `--live`, `--smoke`, `--check-mcp`, read-only `--audit`, and the
+`--recover-sittings` maintenance operation.
 `--dry-run` replaces only the trading gateway. It still reads live data and writes the audit.
 The host has no data-import or market-simulation operation. A Spectre.Console operator view
 shows run, cycle, account, catalog, risk, order, war-room, and model-wait events in aligned
@@ -63,7 +64,10 @@ version `3`. `data/raw/` remains separate research input and is not read by the 
 - The typed Alpaca SDK is the only broker-write path.
 - `RiskGuard` validates every open action after the war-room vote, on an account snapshot read
   immediately before submission and not on the snapshot the room debated.
-- The deterministic exits run on a one-minute timer, separate from the 30-minute cycle. Alpaca
+- An open needs a room vote above the threshold and one seat that voted Approve. A position
+  review that votes against holding closes the position, but only from a complete vote with no
+  faulted seat.
+- The deterministic exits run on a one-minute timer, separate from the war-room cycle. Alpaca
   has no stop order type and no bracket order class for options, so no broker-side exit is
   possible. One broker gate stops the two loops from sending two sells for one position.
 - Open decisions and order reservations commit in one SQLite transaction.
@@ -80,17 +84,23 @@ version `3`. `data/raw/` remains separate research input and is not read by the 
 
 ## Current verification
 
-The solution has 186 passing tests. The 2026-09-01 live session is the current full-session
-baseline: 4 sittings, 4 rejections, 52 model calls, 5.6665 USD, no order. A single sitting
-takes about 8 minutes 30 seconds and 0.73 to 1.40 USD.
+The solution has 195 passing tests. The 2026-09-02 live session is the current full-session
+baseline and the first day the room traded: 13 sittings, 4 opens, 2 closes, and equity from
+100,000.00 to 100,199.84 for about 17 USD of model spend. A sitting costs 0.80 to 2.09 USD.
+See [session baselines](plans/session-baselines.md).
 
 A refusal that carries its reasons is a decision, not a fault. A standard that refuses every
-contract the system may buy is a fault, and that is what four unanimous rejections exposed. A
-new-trade reviewer now rejects only on a concrete contradiction and abstains otherwise, and
-the new-trade approve threshold is -0.15 while closes stay at 0. See
-[persona contracts](llm/persona-contracts.md) and [war-room summary](war-room/summary.md).
+contract the system may buy is a fault, and that is what four unanimous rejections exposed on
+2026-09-01. A new-trade reviewer now rejects only on a concrete contradiction and abstains
+otherwise, and the new-trade approve threshold is -0.15 while closes stay at 0.
 
-A refusal is now counted and stored as a rejection. The cycle count, the decision row, and the
+Dilution is not consent. Because the threshold is negative, a room where every seat abstains
+clears it on silence, which opened one position that no seat backed. A new trade now also needs
+one seat that voted Approve. A close keeps the threshold alone, because a position must stay
+easy to leave. See [persona contracts](llm/persona-contracts.md) and
+[war-room summary](war-room/summary.md).
+
+A refusal is counted and stored as a rejection. The cycle count, the decision row, and the
 review pass keep the option symbol, the probability, and the rejection code, so the refusal
 can be scored later. A proposal that never existed stays a hold and is not counted.
 
@@ -100,9 +110,9 @@ contract before the final risk check, and rejects the trade when it cannot. Numb
 proposer states are compared with the catalog before any seat is paid. See
 [war-room summary](war-room/summary.md) and [live cycle](trading/live-cycle.md).
 
-The database is audit-clean: `--audit` returns success over nine complete sittings. The
-`strategy_state` table holds no policy, so the policy defaults apply. Counterfactual scoring
-stays open. The vote phase has now run in four sittings, all rejections. See
+The database is audit-clean: `--audit` returns success. A sitting that a stopped process left
+open is given the `abandoned` status by `--recover-sittings`. The `strategy_state` table holds
+no policy, so the policy defaults apply. Counterfactual scoring stays open. See
 [after-session improvements](plans/after-session-improvements.md).
 
 ## Related lodes

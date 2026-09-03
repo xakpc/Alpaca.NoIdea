@@ -46,12 +46,17 @@ Market probability, news, premium rank, and a quality score do not select catalo
 Each removed contract is counted against the first gate that refused it. The cycle prints the
 counts under event `2007`. See [observability](../operations/observability.md).
 
-A measurement on 2026-09-01 out of hours examined 7,994 contracts and admitted none:
-`expires-after-flatten` 3,188, `over-per-trade-risk` 2,936, `quote-too-old` 802,
-`spread-too-wide` 668, `quote-not-two-sided` 400. The competition flatten date and the
+A measurement in hours on 2026-09-02 examined 7,974 contracts and admitted 847:
+`expires-after-flatten` 3,235, `over-per-trade-risk` 2,849, `spread-too-wide` 524,
+`quote-not-two-sided` 517, `already-held-or-pending` 2. The competition flatten date and the
 2-percent per-trade limit therefore remove more of the chain than any quote rule does. The
 scan window asks for up to 21 days to expiration while the flatten date permits four, so the
-loop reads thousands of contracts each cycle that no gate can admit.
+loop reads thousands of contracts each cycle that no gate can admit. Out of hours the same scan
+admits nothing, because `quote-too-old` then refuses every row.
+
+Once the day's opening limit is reached, `daily-new-position-limit` refuses the whole universe
+and the catalog is empty for the rest of the day. On 2026-09-02 that happened at 16:28, and
+five of the nine cycles that followed could only review open positions.
 
 The proposer receives full TOON when the payload is at most 60,000 characters. A larger
 catalog becomes an index. The local catalog tool reads the same immutable catalog in pages of

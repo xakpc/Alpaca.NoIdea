@@ -116,45 +116,14 @@ as a sunk cost. See [persona contracts](../llm/persona-contracts.md).
 
 ## Votes to size
 
-`VoteTally`, deterministic C#. No model touches it.
+`VoteTally` turns the votes into a verdict, a size, and a contract count. Two thresholds apply,
+a new trade also needs one approving seat, and a rejected hold closes the position under four
+guards. The full contract is in [votes to verdict](vote-and-verdict.md).
 
 ```text
-net = Σ(+confidence approve, −confidence reject, 0 abstain) ÷ every voter
-
-approved = quorum met AND net > threshold
-size     = approved ? clamp(net, 0, 1) : 0
+approved  = quorum met AND net > threshold AND (approvals > 0 for a new trade)
 contracts = approved ? clamp(round(desired × size), 1, desired) : 0
 ```
-
-**The verdict is `Approved`, never the size.** The two are separate because a negative
-threshold clears a proposal whose conviction is below zero, while the size floors at zero:
-nothing may size up on negative conviction. Reading the verdict from the size therefore turned
-every such approval back into a rejection and made a negative threshold impossible to use. A
-cleared proposal always trades at least one contract, and never more than the proposer asked
-for.
-
-A faulted voter dilutes conviction rather than vanishing, so a half-broken room cannot look
-unanimous, and under `RequireEveryVoter` a fault rejects outright whatever the threshold.
-
-### Two thresholds, not one
-
-| Purpose | Threshold | Flag |
-|---|---|---|
-| New trade | `-0.15` | `--new-trade-approve-threshold` |
-| Position review | `0`, fixed | none |
-
-They are separate because one number moves both doors at once. A bar low enough to open a
-position on weak conviction is equally low for the sitting that decides to close it, so the
-room could flatten the position it had just opened. Closing needs a real majority.
-
-At `-0.15` with four voters, one reject at 0.50 confidence still clears, one at 0.60 does not,
-and two rejects never do. A room that abstains unanimously has net 0 and opens one contract.
-That is the intended path: the reviewer standard sends a weak objection to abstention, and an
-abstention lowers conviction without blocking. `RiskGuard` still judges the trade afterwards
-and cannot be outvoted.
-
-`--approve-threshold` no longer exists. It fails startup rather than defaulting to 0 silently,
-because there is no unknown-argument check and 0 is exactly the setting that opened nothing.
 
 ## Failure behavior
 
@@ -210,7 +179,8 @@ The same session, a different request: `Purpose = PositionReview`, `AllowedActio
 Triggers are deterministic and live in `PositionReviewTriggers`. Five of the specification's
 sixteen are built: time to expiration, profit milestone, loss milestone, fresh news, and the
 scheduled interval. **Hard exits run first and consult nobody**, so a stop-loss never waits on
-a model answering.
+a model answering. A review that votes against holding produces a close: see
+[votes to verdict](vote-and-verdict.md).
 
 ## Related
 
@@ -219,3 +189,5 @@ a model answering.
 - [Risk guardrails](../trading/risk-guardrails.md)
 - [LLM summary](../llm/summary.md)
 - [Storage schema](../storage/schema.md)
+- [Votes to verdict](vote-and-verdict.md)
+- [Session baselines](../plans/session-baselines.md)

@@ -1,249 +1,127 @@
 # After-Session Improvements
 
-The 2026-08-31 live session is the current measured baseline for the war room. The zero-trade
-result protected capital. The decision process also exposed faults that can block a valid
-trade or hide an invalid process. This plan defines the repairs that must precede the next
-trusted live session.
+The open repairs. Measured numbers are in [session baselines](session-baselines.md); this file
+holds only what is not yet done and why it matters.
 
 ```mermaid
 flowchart TD
-    A[Check audit integrity] --> B[Build catalog]
-    B --> C[War-room sitting]
-    C --> D[Refresh selected quote]
-    D --> E[Validate and vote]
-    E --> F[RiskGuard]
-    F --> G[Submit or record rejection]
-    G --> H[Store counterfactual outcome]
+    A[Room decides] --> B{Who backed it?}
+    B -- Nobody --> C[No open]
+    B -- One seat or more --> D[RiskGuard]
+    D --> E[Order]
+    A --> F{Rejected hold?}
+    F -- Quorate and against --> G[Close]
+    F -- Faulted or tied --> H[Hold]
 ```
 
-## Measured baseline
+## Closed since 2026-09-02
 
-The 2026-09-01 live session is the current full-session baseline. It ran 13:46 to 16:00 ET,
-which is a partial day, and opened nothing.
+These were the four defects the first trading day exposed. All are repaired and covered by
+tests.
 
-| Item | Measured value |
-|---|---|
-| Sittings | 4 |
-| Verdicts | 4 rejected, each 0 approve, 3 reject, 1 abstain |
-| Net vote | -0.39 to -0.55 |
-| Model calls | 52 |
-| Tokens | 3,982,341 |
-| Estimated cost | 5.6665 USD |
-| Orders | 0 |
-
-Four causes were found and repaired: the reviewer standard rejected the entire eligible
-universe, a negative approve threshold could not execute, one threshold served both new trades
-and closes, and the skeptic lost an analysis to its output limit. The proposer's own profit
-probabilities were 0.46 to 0.54, so the room was not refusing a trade the proposer disowned.
-
-The single-cycle dry run below remains the timing and cost baseline for one sitting.
-
-| Item | Measured value |
-|---|---|
-| Sitting duration | 8:30 |
-| Proposal phase | 3:59 |
-| Parallel analysis | 1:20 |
-| One discussion round | 2:21 |
-| Rebuttal | 0:48 |
-| Model calls | 8 |
-| Tokens | 825,883 |
-| Estimated model cost | 0.7346 USD |
-| Orders | 0 |
-
-The proposer put forward a TSLA 370 call that expires on 2026-09-04. The skeptic rejected it
-at 75 percent and showed that the Cybercab move of 5.5 percent was public on 31 August and
-was already in the 6.63 premium, that break-even at 376.63 needs a further 2.32 percent, that
-time decay of 1.29 each day removes 3.87 of the premium in three days, and that the event
-occurs during the forced close instead of before it. The quant agreed at 50 percent and gave
-the same arithmetic independently. The proposer then wrote a change to the 367.50 strike,
-rejected its own change because the same problems remain, and withdrew.
-
-**This result is correct.** The room found a negative expected value of about -260 USD and
-refused the trade for 0.7346 USD. A refusal is a decision, not a fault.
-
-The 2026-08-31 session gave the earlier baseline: 3 cycles, 21 model calls, 2,555,755 tokens,
-4.6095 USD, and no order.
-
-Network timeouts are controlled by the transport limit and not by the per-call limit. The
-per-call limit only reports the fault after the retries finish. Grok seats lost 439.7, 474.2,
-and 540.1 seconds to transport retries because the SDK gave one HTTP request 100 seconds while
-a healthy Grok turn needs more. See [call limits](../llm/call-limits.md).
-
-## P0 - Require a clean audit at live startup
-
-The three live sittings are complete. The same database contains four older dry-run sittings
-with status `running`, no review pass, and no decision. The audit command reports four
-`incomplete_sitting` faults. Live startup creates the schema but does not run the integrity
-check. A live process can therefore start and exit with code zero while the durable record is
-already invalid.
-
-**Contract:** A live session must not start when `AuditIntegrityAsync` returns an issue. A
-separate recovery action must give an interrupted sitting a durable terminal status.
-
-```csharp
-var issues = await store.AuditIntegrityAsync(cancellationToken);
-if (issues.Count > 0)
-{
-    throw new AuditPersistenceException("The audit store is not complete.");
-}
-```
-
-**Order matters.** The gate cannot ship alone. The current database already holds
-`incomplete_sitting` faults, so enabling the gate first stops every live start. Build the
-recovery action first, clean the database with it, then enable the gate.
-
-## P0 - Make structured submission safe
-
-`submit_proposal` failed twice in cycle 2 and three times in cycle 3. The failed calls sent one
-JSON string instead of a structured argument object. One `submit_analysis` call also failed.
-The tools returned only `Error: Function failed.`
-
-The proposer then recorded a minimal proposal with thesis and reasoning set to `test`. It
-replaced that value with the real proposal. `ProposerPersona` keeps the last successful tool
-result, so a model stop after the test call could send meaningless data to the room.
-
-**Contract:** A proposal must contain a real thesis, at least one checkable condition, risks,
-and one allowed action. The tool must reject placeholders. The model must submit one accepted
-final proposal. A failure must return a useful validation message.
-
-```csharp
-if (captured is not null)
-{
-    throw new InvalidOperationException("A final proposal already exists.");
-}
-```
-
-The fabrication half of this item is closed: stated market numbers are now compared with the
-catalog and a difference above one percent returns `REJECT_FABRICATED_QUOTE`. The placeholder
-and duplicate-submission halves stay open. The tool still converts an empty thesis to
-`(no thesis given)` rather than refusing it.
-
-## Closed - Give the skeptic sufficient output tokens
-
-Done. The analysis phase has its own budget, `MaxAnalysisOutputTokens`, and the skeptic's is
-8,000. The seat reached the shared 3,000 limit twice on 2026-08-31 and again on 2026-09-01,
-each time spending its allowance on reasoning and never calling `submit_analysis`, which made
-the seat a fault and failed quorum. See [persona contracts](../llm/persona-contracts.md).
-
-## P1 - Use a fixed cycle schedule
-
-This item applies to the 30-minute war-room cycle only. The deterministic exits no longer use
-that cadence: they run on a separate one-minute timer. See
-[hard-exit loop](../trading/hard-exit-loop.md).
-
-The code waits 30 minutes after a cycle completes. The measured cycle starts were 38 and 41
-minutes apart because the sittings used 7 to 10 minutes. The Lode currently describes one
-cycle every 30 minutes.
-
-**Contract:** Choose one schedule and document it. A fixed schedule uses the next 30-minute
-boundary and skips, rather than queues, a boundary when the prior cycle is still active.
-
-```csharp
-var next = previousScheduledStart + options.CycleInterval;
-var delay = next - timeProvider.GetUtcNow();
-if (delay > TimeSpan.Zero)
-{
-    await Task.Delay(delay, timeProvider, cancellationToken);
-}
-```
-
-Starting at 18:07 UTC also limits the evidence to the last two hours of the US session. It is
-not a full-day strategy test.
+- **Silence bought.** An open needed only `net > threshold`, and a room of four abstentions has
+  a net of exactly zero. An open now also needs one seat that voted Approve. See
+  [war-room summary](../war-room/summary.md).
+- **A rejected hold did nothing.** A position review that voted against holding left the
+  position open. It now closes, under four guards. See [live cycle](../trading/live-cycle.md).
+- **No Anthropic cache.** The system block now carries a one-hour cache breakpoint. See
+  [LLM summary](../llm/summary.md).
+- **No way to end an interrupted sitting.** `--recover-sittings` gives it the `abandoned`
+  status. See [storage schema](../storage/schema.md).
 
 ## P1 - Score the rejected contract after the session
 
-A rejection now carries its evidence. The remaining work is the counterfactual: a later
-process must mark each rejected contract at the planned exit rule, and compare the seat
-probabilities with the observed result.
+A rejection carries its evidence: the option symbol, the quote, the seat probabilities, and the
+rejection code are on the decision row and the review pass. The counterfactual is still missing.
 
 **Contract:** A stored rejection must produce a counterfactual P&L and a Brier score for each
-seat without an order being sent. Use the option symbol, the quote, and the probabilities on
-the decision row and the review pass.
+seat, without an order being sent. A refusal that is never scored teaches the system nothing.
 
 ## P1 - Require an edge over cash
 
-The proposer selected the best available trade even when its own profit probability was at or
-below 0.50. A low win probability can still have positive expected value, but the proposal did
-not estimate payoff size or expected return.
+A proposal states a profit probability but does not estimate payoff size or expected return. On
+2026-09-02 two seats voted to abstain while they stated a probability of 0.41, and the room
+still opened the position. The approval rule stops that particular result, but the proposal
+contract is still weaker than it should be.
 
 **Contract:** A proposal must compare its expected value with cash. It must state the loss,
 base, and gain cases. `NO_TRADE` is required when the estimated edge does not pay for spread,
-theta, and likely volatility change.
-
-The proposer must also verify price-path claims from bars. The AMZN statement "no intraday
-bounce" was false. The market persona also called the Indicative option feed `OPRA` and called
-the 2026-09-03 flatten time "tomorrow" on 2026-08-31. Prompts must receive the feed name and
-exact remaining session count as typed context.
+time decay, and a likely change in volatility.
 
 ## P1 - Report the cost of a failed call
 
-`TokenLedger` records a call from its response. A failed call has no response, so it records
-nothing. The two failed runs on 2026-09-01 printed `Run cost 1 calls, 0 tokens, about
-0.0000 USD` although each retry sent a prompt of about 400,000 tokens and was billed.
+`TokenLedger` records a call from its response. A failed call has no response, so it counts the
+call and adds no tokens. A cycle can therefore report `0.0000 USD` for a seat that sent a large
+prompt and was billed.
 
-**Contract:** A cycle cost line must not report 0.0000 USD when a seat failed. Count the failed
-attempt, and mark the token total as incomplete when a call returns no usage.
+**Contract:** A cycle cost line must not report zero when a seat failed. Count the attempt, and
+mark the token total as incomplete when a call returns no usage.
 
-See [call limits](../llm/call-limits.md).
+## P1 - Count a failed analysis
 
-## P2 - Reduce cost after correctness repairs
+`VoteTally` counts a faulted vote, and one faulted vote fails quorum. A faulted **analysis** is
+counted nowhere. On 2026-09-02 the skeptic analysis failed on a JSON conversion after 72.4
+seconds and the verdict still read `0 faulted`. The room looked complete while a seat was
+missing from the phase that forms the independent opinion.
 
-The run used 2.56 million tokens for three hold decisions. The proposer used 1.20 million
-tokens and cost about 2.70 USD. Anthropic calls reported no cached input. Repeated structured
-submission failures resent the full context.
+**Contract:** A sitting must report how many seats lost a phase, not only how many lost a vote.
 
-After P0 and P1 are complete:
+## P2 - The daily budget is spent first-come
 
-1. Add supported cache breakpoints to stable prompts and tool schemas.
+`MaxNewPositionsPerDay` is 4. On 2026-09-02 it was consumed by 16:28, and the catalog then
+dropped the whole universe on `daily-new-position-limit` for the remaining five cycles. Nothing
+compares the quality of the fourth trade of the morning with a better one in the afternoon.
+
+**Contract, when a full day is available again:** decide whether the day's opens are a budget
+that any hour may spend, or a rate. Do not change the limit without that decision. See
+[risk guardrails](../trading/risk-guardrails.md).
+
+## P2 - No guard near the forced exit
+
+`MandatoryExitReason` sells at the flatten instant. Nothing stops an open one minute before it.
+A position bought at 19:29 UTC pays the full spread and is sold at 19:30.
+
+**Contract:** refuse a new open inside a stated period before the flatten. This is an accepted
+gap, not an invariant, until that period is chosen.
+
+## P2 - Reduce cost further
+
+After the cache breakpoint, in this order:
+
+1. Measure the cache hit rate for each seat over a full session.
 2. Limit tool-result size and repeated research.
 3. Keep Grok on the research-heavy proposer path, OpenAI on the market and quant seats, and
    Anthropic on the skeptic seat while measurements support this assignment.
 4. Measure total sitting time, tool calls, information gained, and cost for each seat before
    another role change or seat removal.
 
-## Behaviors to keep
-
-- Paper-only broker access and read-only agent tools worked.
-- Catalog admission and final stale-quote rejection failed closed.
-- The host stopped when the market closed.
-- Reviewers corrected the false AMZN price-path claim.
-- The quant compared premium, spread, delta, theta, and forced-exit timing.
-- The three live sittings have complete review passes and decisions.
-- Two seats on different providers found the same negative expected value independently.
-- The proposer examined two other strikes before it withdrew, and gave a reason for each.
-
 ## Required decisions
 
-Confirm whether a proposer withdrawal ends the sitting or whether reviewers must still
-vote on the last trade proposal. The current code lets the proposer end the sitting alone.
-
-Evidence from 2026-09-01: the withdrawal agreed with both reviewers, so a vote would have
-changed no outcome. A vote would add five scored probabilities for each refusal. The vote
-phase has not run in any observed sitting, so `VoteTally` quorum behaviour stays unmeasured.
+Confirm whether a proposer withdrawal ends the sitting or whether reviewers must still vote on
+the last trade proposal. The current code lets the proposer end the sitting alone. A withdrawal
+produces an empty tally, so it can never escalate to a close.
 
 ## Completion criteria
 
 ```mermaid
 flowchart LR
-    A[Audit clean] --> Q[Fresh selected quote]
-    Q --> T[Tools accept one valid result]
-    T --> S[Seats have sufficient output tokens]
-    S --> C[Counterfactual scoring]
-    C --> L[Supervised live session]
+    A[Audit clean] --> B[Counterfactual scoring]
+    B --> C[Edge over cash stated]
+    C --> D[Failed phases counted]
+    D --> E[Cost per decision measured]
 ```
 
-- `--audit` reports no integrity issue before and after the session.
-- A sitting that exceeds ten minutes can still use a newly refreshed valid quote.
-- No placeholder proposal can enter pre-validation.
-- No seat loses its analysis to its own output-token limit.
+- `--audit` reports no integrity issue before and after a session.
 - A rejected proposal produces a counterfactual P&L and a Brier score for each seat.
+- A proposal states its loss, base, and gain cases.
+- A sitting reports a lost analysis as clearly as it reports a lost vote.
 
 ## Related lodes
 
+- [Session baselines](session-baselines.md)
 - [Live cycle](../trading/live-cycle.md)
 - [Risk guardrails](../trading/risk-guardrails.md)
 - [War-room summary](../war-room/summary.md)
 - [Storage schema](../storage/schema.md)
-- [Observability](../operations/observability.md)
 - [LLM summary](../llm/summary.md)
 - [Open strategy questions](open-strategy-questions.md)

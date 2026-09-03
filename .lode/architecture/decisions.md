@@ -118,9 +118,27 @@ a missing timestamp, an incomplete quote, or a wide spread.
 Large proposer payloads use `Toon.Encode`. Stored evidence and data read back by the host stay
 JSON.
 
+## ADR-029: An open needs an approving seat
+
+A new trade needs `net > threshold` **and** one seat that voted Approve. The threshold measures
+conviction against a trade; below zero it is cleared by a room that says nothing, which opened
+a position no seat backed. A close keeps the threshold alone, because leaving a position must
+stay easy. See [votes to verdict](../war-room/vote-and-verdict.md).
+
+## ADR-030: A rejected hold closes the position
+
+A position review that proposes nothing is a hold, and a room that votes that hold down has
+decided to leave the position. `WarRoomAgent` returns a close for the reviewed symbol when the
+verdict is `Rejected`, quorum was met, no seat faulted, and the net is below zero. A faulted or
+withdrawn sitting produces an empty or incomplete tally and cannot close anything, because a
+half-broken room must never sell the book.
+
 ## Durable audit contracts
 
 - Schema version `3` has eight tables and does not migrate an obsolete database.
+- A sitting ends as `completed`, or as `abandoned` through `--recover-sittings`. The row is
+  updated and never deleted, because other tables point at its proposal ID and an interrupted
+  sitting is evidence.
 - `AuditPersistenceException` stops the live session. A mandatory close still gets one
   risk-reducing submit attempt after its first audit failure.
 - An accepted decision and its order reservation commit in one transaction before broker

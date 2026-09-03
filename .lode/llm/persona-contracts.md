@@ -37,7 +37,15 @@ universe can pass is not a judgement about the trade in front of the room. On 20
 seats applied that test four times out of four, and the system opened nothing all day.
 
 Abstention is not agreement. It lowers conviction and shrinks the position through the size
-multiplier, and it does not veto. See [war-room summary](../war-room/summary.md).
+multiplier, and it does not veto.
+
+**Abstention is also not consent.** A room where every seat abstains has a net of exactly zero,
+which clears the negative new-trade threshold. On 2026-09-02 that opened META for 1,392 USD,
+and two of the four seats sent `vote: abstain, confidence: 0, profit_probability: 0.41` — a
+trade the room stated 41 percent odds for and no seat asked for. A new trade therefore needs
+one seat that voted Approve as well. A seat that finds nothing false may still abstain and is
+not pushed toward a vote it does not hold; it only no longer buys by silence. See
+[votes to verdict](../war-room/vote-and-verdict.md).
 
 The position-review standard is unchanged and still marginal expected value, because closing is
 the risk-reducing direction and needs no encouragement.
@@ -54,6 +62,10 @@ var probability = purpose == WarRoomPurpose.NewTrade
 
 Profit probability does not set the vote. Long options have asymmetric gains and losses, so the
 probability of profit is not expected value.
+
+A new-trade vote that carries no probability becomes an abstention, whatever the seat wrote.
+The forecast is the record a refusal is scored against later, so a vote without one cannot be
+scored and must not count as conviction.
 
 ## Three cases, not one break-even
 
@@ -128,6 +140,10 @@ and the refusal was correct.
 A position review compares closing now with holding under the current exit policy. The entry
 premium is a sunk cost. A close action and every close review leave profit probability null
 because the unchosen hold result is not observed after the close.
+
+A review that proposes nothing is a hold, and a vote against that hold is a decision to leave
+the position. It now closes the position, so a seat that votes to reject a hold must be willing
+to sell. See [votes to verdict](../war-room/vote-and-verdict.md).
 
 ## Confidence
 

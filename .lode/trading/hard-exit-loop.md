@@ -63,6 +63,10 @@ pending-close rules change.
 - `RunHardExitsAsync` does not call `InitializeAsync`. That method guards itself with a plain
   boolean, which two threads must not enter. An uninitialised loop reports no work.
 - `--once` starts no exit loop. A diagnostic run must leave nothing that can reach the broker.
+- **The loop lives inside the process.** Nothing watches a position while the host is down, and
+  the host stops itself when the Alpaca clock reports the market closed. A host started while
+  the market is closed reads the clock, stops, and never runs one pass. The flatten therefore
+  happens only if the process is running at that minute.
 - A transient fault is logged and the loop continues. An `AuditPersistenceException` stops the
   session and is thrown from `RunAsync` after both loops stop.
 - A pass that closes nothing logs at Debug. Information each minute would hide the cycle

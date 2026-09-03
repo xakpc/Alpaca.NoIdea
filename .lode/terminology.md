@@ -28,6 +28,9 @@ flowchart LR
 - **Dry run** - Live market reads with a trading gateway that sends no broker order.
 - **Read-only MCP** - Research tools that cannot change the Alpaca account.
 - **Guardrail** - A hard C# rule that model output cannot change.
+- **Approving seat** - A reviewer that voted Approve. One is necessary to open a position.
+- **Rejected hold** - A position review that voted against holding. It closes the position.
+- **Abandoned sitting** - A sitting a stopped process left open, given a terminal status later.
 - **Brier score** - `(probability - outcome)^2`; lower is better.
 
 ```csharp

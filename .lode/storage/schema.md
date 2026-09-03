@@ -48,10 +48,25 @@ ORDER BY e.id DESC;
 
 `--audit` returns a nonzero exit code when any issue exists.
 
-An interruption after `BeginSittingAsync` can leave a sitting with status `running`. Live
-startup does not call `AuditIntegrityAsync` and does not repair that row. The audit command
-reports it. The active improvement plan requires a clean startup audit before later live
-operation.
+A sitting has three statuses. `BeginSittingAsync` writes `running`, `CompleteSittingAsync`
+writes `completed`, and `--recover-sittings` writes `abandoned` with the reason in the `fault`
+column. An interruption after `BeginSittingAsync` leaves the row at `running` forever, which
+the integrity check reports as an unfinished sitting; the recovery command is what ends it.
+
+```sql
+UPDATE war_room_sittings
+SET status = 'abandoned', completed_utc = @completedUtc, fault = @fault
+WHERE status = 'running'
+```
+
+The row is updated and never deleted. `decision_events` and `agent_tool_calls` hold a foreign
+key to `proposal_id`, and an interrupted sitting is evidence: an audit that proves the record
+complete by erasing the inconvenient row proves nothing. `abandoned` is terminal, so the two
+checks that look for a missing review pass and a missing decision correctly ignore it, and they
+are scoped to `completed` for that reason.
+
+Live startup does not call `AuditIntegrityAsync` and does not repair anything. Run
+`--recover-sittings` and then `--audit` between sessions.
 
 ## Proposal and order evidence
 

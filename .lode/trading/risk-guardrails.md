@@ -46,8 +46,18 @@ gives no information.
 | Maximum quote age | 10 minutes |
 | Competition flatten | 2026-09-03 19:30 UTC |
 
+Every value above is a compile-time default in `RiskOptions`. There is no configuration file
+and no environment binding. `--allow-stale-quotes`, which is valid only with a dry run, is the
+one flag that changes any of them.
+
 The opening policy defaults to 1–10 DTE, 50 percent take profit, 60 percent stop loss, and
 one contract. `StrategyPolicy.ClampTo` keeps every revision inside the hard limits.
+
+The daily opening limit is a count of filled buy orders for the US market day, so it survives a
+restart and is shared by every process that trades that day. Once it is reached the catalog is
+empty until the next day: `daily-new-position-limit` refuses every row. It is a first-come
+budget, and nothing compares the fourth trade of the morning with a better one in the
+afternoon.
 
 The stop is wide on purpose. A contract bought two days from expiration at a delta near 0.65
 gives back 40 percent of its premium on an ordinary adverse move plus one day of decay, so a
@@ -89,6 +99,11 @@ break-even-at-expiry arguments do not apply.
 
 A seat that judges expiration payoff rejects the entire eligible universe, because no contract
 can pass. Three consecutive live cycles produced no order for this reason.
+
+**Nothing refuses an open near the flatten.** `MandatoryExitReason` fires at the flatten
+instant, so a position opened one minute before it is legal and is sold 60 seconds later at the
+full spread. This is an accepted gap and not an invariant. See
+[after-session improvements](../plans/after-session-improvements.md).
 
 `StrategyPolicy.MinDaysToExpiration` is 1. `ClampTo(risk, today)` additionally lowers the floor
 to fit the flatten, because the floor is persisted in `strategy_state` and a saved value inside

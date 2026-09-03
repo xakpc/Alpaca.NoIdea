@@ -46,8 +46,14 @@ The plain file is the complete investigation record. The console is a curated li
 The console does not show information-level prompts, model prose, tool arguments, or tool
 results. The file still shows them. A warning or error always reaches the console.
 
-Only `--live` starts the live display. `--smoke`, `--check-mcp`, `--audit`, and any redirected
-or non-ANSI output print a static stream instead.
+Only `--live` starts the live display. `--smoke`, `--check-mcp`, `--audit`,
+`--recover-sittings`, and any redirected or non-ANSI output print a static stream instead.
+
+Every close carries event `2005`, whether a hard exit, the room, or the agent asked for it, and
+each one is followed by a second `2005` line with the lifecycle, the filled quantity, and the
+average fill price. A close used to log its intent only, from an unnumbered line the operator
+view dropped to a generic row, so the record showed that a position was closed and never at
+what price.
 
 For the layout, the symbol sets, and the terminal-safety rules, see
 [console rendering](console-rendering.md).
