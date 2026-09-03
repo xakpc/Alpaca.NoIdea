@@ -23,6 +23,9 @@ flowchart LR
 | `third-day.png` | The original uncropped capture. Kept as the source. |
 | `Pavel Osadchuk, resume 2026.pdf` | Source for the author and ask slides. Not embedded. |
 
+The public repository is `https://github.com/xakpc/Alpaca.NoIdea`, linked from the title and
+closing slides. `presentation/` is gitignored, so the deck and the script are not in it.
+
 The published copy is at `https://claude.ai/code/artifact/3981f3c5-75e0-4e79-8923-6a02f5720da5`.
 It is generated from `index.html` by removing the standalone document wrapper, because the host
 supplies its own. Change `index.html` first, then regenerate:

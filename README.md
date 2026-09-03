@@ -33,13 +33,13 @@ SQLite before any money moves.
 
 ## The premise
 
-I don't know how to trade options. So the judgement is delegated to frontier models, and the
-permission to spend money stays in ordinary, testable C#.
+I don't know how to trade options. So I gave the judgement to frontier models and kept the
+permission to spend money in ordinary, testable C#.
 
 A model can propose anything it likes. `RiskGuard` decides what reaches the broker, it runs on an
-account snapshot read *after* the debate ends, and no vote can outrank it. The models hold
-read-only research tools and no broker tool at all — the typed `Alpaca.Markets` SDK is the only
-write path in the process.
+account snapshot read after the debate ends, and no vote can outrank it. The models hold read-only
+research tools and no broker tool at all. The typed `Alpaca.Markets` SDK is the only write path in
+the process.
 
 ## How it works
 
@@ -55,12 +55,12 @@ flowchart LR
     B --> D
 ```
 
-Two timers run during regular US market hours, and they are deliberately independent:
+Two independent timers run during regular US market hours:
 
 | Loop | Interval | What it does |
 |---|---|---|
 | Cycle | 30 min | Build the catalog, review open positions, run new-trade sittings |
-| Hard exit | 1 min | Stop-loss, take-profit, and the forced flatten — **consults no model** |
+| Hard exit | 1 min | Stop-loss, take-profit, and the forced flatten. No model in the path. |
 
 The exit loop is separate because Alpaca offers no stop order type and no bracket order class for
 options. At the cycle cadence a stop-loss would be sampled once every ~40 minutes, which does not
@@ -68,8 +68,8 @@ save a one-to-three-day option.
 
 ## The war room
 
-One sitting is five phases: **propose → pre-validate → independent analysis → discussion →
-rebuttal → private vote.**
+One sitting runs propose → pre-validate → independent analysis → discussion → rebuttal →
+private vote.
 
 | Seat | Provider | Role |
 |---|---|---|
@@ -79,20 +79,21 @@ rebuttal → private vote.**
 | `market` | OpenAI | Judges price action, market context, news, scheduled events. |
 | `exposure` | **none** | Portfolio arithmetic in plain C#. Costs nothing and cannot hallucinate. |
 
-Three properties are enforced by types and tests, not by prompt wording:
+Types and tests enforce three properties that prompt wording alone would not hold:
 
 - **Independence.** Analyses form in parallel; no reviewer sees another's before writing its own.
   A room that agrees because the first speaker anchored it is pure cost.
-- **Privacy.** `RoomContext` *has no votes field*, so no future edit can leak one seat's vote into
+- **Privacy.** `RoomContext` has no votes field, so no future edit can leak one seat's vote into
   another seat's prompt. A test asserts the property does not exist.
-- **Stated numbers are checked, not trusted.** The proposer copies the bid, ask, underlying price,
-  delta and IV it reasoned from into typed fields. `ProposalPreValidator` compares each against the
-  catalog and returns `REJECT_FABRICATED_QUOTE` beyond 1% drift — before any reviewer is paid.
+- **Arithmetic.** Stated numbers are checked, not trusted. The proposer copies the bid, ask,
+  underlying price, delta and IV it reasoned from into typed fields. `ProposalPreValidator` compares
+  each against the catalog and returns `REJECT_FABRICATED_QUOTE` beyond 1% drift, before any
+  reviewer is paid.
 
-A new trade needs the vote net above threshold **and** at least one seat that actually voted
-Approve. An earlier build let a room of unanimous abstentions clear a negative threshold and open a
-position no seat backed; dilution is not consent. A close needs only the threshold, because a
-position must stay easy to leave.
+A new trade needs the vote net above threshold and at least one seat that actually voted Approve.
+An earlier build let a room of unanimous abstentions clear a negative threshold and open a position
+no seat backed; dilution is not consent. A close needs only the threshold, because a position must
+stay easy to leave.
 
 ## Guardrails
 
@@ -138,10 +139,10 @@ dotnet run --project src/Xakpc.Alpaca.NøIdea -- --live
 dotnet run --project src/Xakpc.Alpaca.NøIdea -- --audit --last 20
 ```
 
-`.env` needs the Alpaca paper keys and **three** model keys — `ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, `XAI_API_KEY`. The seats sit on three providers on purpose: a room of one model
-arguing with itself shares that model's blind spots. Startup fails and names any missing key,
-because a seat without a key is a dead seat and that failure belongs before the open, not at 09:31.
+`.env` needs the Alpaca paper keys and three model keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`XAI_API_KEY`. The seats sit on three providers on purpose, because a room of one model arguing
+with itself shares that model's blind spots. Startup fails and names any missing key, because a
+seat without a key is a dead seat and that failure belongs before the open, not at 09:31.
 `--agent stub` needs none of them. `KEENABLE_API_KEY` adds web research and is optional.
 
 `--cheap` swaps in Claude Haiku 4.5 and GPT-5.4-nano; the standard profile is Claude Sonnet 5 and
@@ -163,22 +164,21 @@ cannot spend model tokens tomorrow. Start a new process for the next session.
 
 ## The audit trail
 
-`data/trader.db` is evidence, not a log. Six audit tables — `war_room_sittings`,
-`proposal_review_passes`, `agent_tool_calls`, `decision_events`, `orders`, `equity_snapshots` —
-plus `strategy_state` and `position_review_state` for restart. `--audit` returns failure on an
-incomplete sitting, a missing tool result, a missing decision link, or an unlinked order, so "the
-run went fine" is a checkable claim rather than a recollection.
+`data/trader.db` holds the evidence for every run. Six audit tables (`war_room_sittings`,
+`proposal_review_passes`, `agent_tool_calls`, `decision_events`, `orders`, `equity_snapshots`),
+plus `strategy_state` and `position_review_state` for restart. `--audit` opens the database
+read-only and exits nonzero on an incomplete sitting, a missing tool result, a missing decision
+link, or an unlinked order.
 
-A refusal that carries its reasons is a decision, not a fault: rejections are stored with the
-option symbol, the forecast probability, and a kebab-case rejection code, so a refusal can be
-scored later against what the contract actually did.
+A refusal is stored with its reasons: the option symbol, the forecast probability, and a
+kebab-case rejection code, so it can be scored later against what the contract actually did.
 
 ## What the first trading day showed
 
 2026-09-02, the first day the room traded: 13 sittings, 4 opens, 2 closes, equity 100,000.00 →
-**100,199.84**, for about **17 USD** of real model spend. A sitting costs 0.80–2.09 USD and 11
-model calls. Two days of paper trading is not a track record. What the audit trail does support is
-*which part of the system* produced the result:
+100,199.84, for about 17 USD of real model spend. A sitting costs 0.80–2.09 USD and 11 model
+calls. Two days of paper trading is not a track record. The audit trail does show which part of
+the system produced the result:
 
 - **The deterministic exit produced the day.** NVDA was bought at 4.59 and the 60-second exit loop
   sold it at +54%, with no model in the path. That single exit is larger than the day's net.
@@ -211,9 +211,9 @@ docker/, compose.dev.yaml    Read-only MCP server for local development
 DEVELOPMENT.md               Full workstation setup and troubleshooting
 ```
 
-The operator view is read-only Spectre.Console. Every line that tells the story of a run carries
-an event id from `Observability/RunEvents.cs`, and each process also writes the complete log to a
-timestamped plain file under `data/logs/`. A console fault cannot stop trading or the audit write.
+The operator view is read-only Spectre.Console. Each run line carries an event id from
+`Observability/RunEvents.cs`, and every process also writes the complete log to a timestamped
+plain file under `data/logs/`. A console fault cannot stop trading or the audit write.
 
 ```bash
 dotnet test Xakpc.Alpaca.NøIdea.slnx --nologo
@@ -223,7 +223,7 @@ Built for the [Alpaca AI Trading Agents hackathon](https://lablab.ai/ai-hackatho
 Alpaca Basic market data: IEX for stocks, the free Indicative feed for option chains. All SDK
 clients are fixed to `Environments.Paper`.
 
-**This is not financial advice and not a product.** It trades a paper account, and the numbers
-above are two days of paper results, not a track record. Point it at real money at your own risk.
+It trades a paper account, and the numbers above are two days of paper results. This is not
+financial advice. Point it at real money at your own risk.
 
 Licensed under the [MIT License](LICENSE) · Pavel Osadchuk · [github.com/xakpc](https://github.com/xakpc)
