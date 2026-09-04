@@ -142,5 +142,5 @@ See [hard-exit loop](../trading/hard-exit-loop.md).
 - [Storage summary](summary.md)
 - [Hard-exit loop](../trading/hard-exit-loop.md)
 - [Operations](../operations/summary.md)
-- [Research summary](../research/summary.md)
-- [After-session improvements](../plans/after-session-improvements.md)
+- [Dropped designs](../architecture/dropped-designs.md)
+- [Improvements](../plans/improvements.md)

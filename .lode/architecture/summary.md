@@ -53,6 +53,35 @@ read-only operator view.
 - A normal process stops when the market is closed. A deployed image starts one Alpaca MCP
   child over `stdio`. Development uses one HTTP container on `127.0.0.1:8100`.
 
+## Non-goals
+
+These were decided at the start and are still true. Do not add one without a decision record.
+
+- No web interface, no hosted application, and no interactive terminal application.
+- No Semantic Kernel and no agent framework above `Microsoft.Extensions.AI`.
+- No Python or Node service in the runtime. The pinned MCP server is the one external process.
+- No market simulation, no data import, and no historical forecaster in the decision path.
+- No broker tool for a model, and no second MCP connection that can write.
+
+Designs that were planned and then rejected are in [dropped designs](dropped-designs.md).
+
+## Standing risks
+
+The architecture answers none of these. They are named so that a measurement, and not a hope,
+closes them.
+
+- **No proven edge.** No session has produced a profit that came from a war-room open. Every
+  dollar so far came from a deterministic exit. See
+  [session results](../operations/session-results.md).
+- **The spread and the decay are the first opponent.** A long option bought at the ask and sold
+  at the bid loses before the underlying moves. A short horizon makes this worse.
+- **Free data is indicative.** Option quotes come from the Indicative feed and stock quotes from
+  IEX. They are enough to admit or refuse a contract. They are not a consolidated tape.
+- **A model provider is a single point of failure.** A seat that cannot answer stops the room,
+  because a faulted vote breaks quorum.
+- **The pinned MCP server can change.** An upgrade can rename a tool or change a result shape.
+  The pin and the allowlist make this visible at startup instead of during a cycle.
+
 ## Technology
 
 The main dependencies are `Alpaca.Markets`, `Microsoft.Extensions.AI`, the Anthropic and
@@ -66,6 +95,7 @@ logging, and xUnit. Spectre renders event-based panels, tables, colors, and acti
 ## Related lodes
 
 - [Architecture decisions](decisions.md)
+- [Dropped designs](dropped-designs.md)
 - [Project summary](../summary.md)
 - [Live cycle](../trading/live-cycle.md)
 - [Alpaca integration](../alpaca/mcp-integration.md)

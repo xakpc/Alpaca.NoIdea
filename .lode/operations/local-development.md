@@ -49,17 +49,28 @@ the command stops with `no configuration file provided: not found`.
 `.env` holds the Alpaca paper keys and **three** model keys. The room seats its four models
 on three providers on purpose (ADR-020), so one key is not enough:
 
-| Variable | Seats |
-|---|---|
-| `ANTHROPIC_API_KEY` | `proposer`, `skeptic` |
-| `OPENAI_API_KEY` | `quant` |
-| `XAI_API_KEY` | `market` (Grok 4.6) |
+| Variable | Seats | Model |
+|---|---|---|
+| `XAI_API_KEY` | `proposer` | Grok 4.6 |
+| `ANTHROPIC_API_KEY` | `skeptic` | Claude Sonnet 5 |
+| `OPENAI_API_KEY` | `quant`, `market` | GPT-5.6-terra |
+
+The provider of a seat is a property of its class: `ProposerPersona.Provider` is `Grok`,
+`SkepticPersona.Provider` is `Anthropic`, and the quant and market seats are `OpenAi`.
 
 `KEENABLE_API_KEY` is optional. Without it, the host logs a warning and gives the seats no
 web-search tools. A missing required model key stops LLM-mode startup.
 
 `ChatClientFactory.MissingKeys` fails startup and names what is missing. A seat without a key
 is a dead seat, so the failure belongs before the open. `--agent stub` needs none of them.
+
+## The debug profile is not the default
+
+`Properties/launchSettings.json` starts the host with `--live --rounds 1
+--new-trade-approve-threshold -0.15 --cycle-minutes 20`. The compiled defaults are 2 discussion
+rounds, a threshold of 0, and a 30-minute cycle. Every measured session used the profile. When
+you compare a measurement with the code, read the flags first. See
+[session results](session-results.md).
 
 The standard profile uses Claude Sonnet 5, GPT-5.6-terra, and Grok 4.6. `--cheap` selects
 Claude Haiku 4.5 and GPT-5.4-nano. It keeps Grok 4.6.
@@ -147,7 +158,8 @@ The build context for every image is the **repository root**, because the images
 
 `.env` is git-ignored and holds `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`,
 `ALPACA_PAPER_TRADE=true`, and the three model keys above. Use the **development** paper
-account here, not the official competition account. See [operations summary](summary.md).
+account here, not an account that holds recorded results. See
+[operations summary](summary.md).
 
 ## Related
 

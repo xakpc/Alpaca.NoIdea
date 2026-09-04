@@ -43,4 +43,4 @@ var options = new OptionChainRequest(symbol) { OptionsFeed = OptionsFeed.Indicat
 - [Trading summary](../trading/summary.md)
 - [Risk guardrails](../trading/risk-guardrails.md)
 - [Alpaca summary](summary.md)
-- [Research summary](../research/summary.md)
+- [Dropped designs](../architecture/dropped-designs.md)

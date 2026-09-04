@@ -246,4 +246,4 @@ converts the result to a hold. The active improvement plan records that defect.
 - [Risk guardrails](risk-guardrails.md)
 - [Trading summary](summary.md)
 - [Storage schema](../storage/schema.md)
-- [After-session improvements](../plans/after-session-improvements.md)
+- [Improvements](../plans/improvements.md)

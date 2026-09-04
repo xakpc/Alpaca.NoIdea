@@ -190,4 +190,4 @@ a model answering. A review that votes against holding produces a close: see
 - [LLM summary](../llm/summary.md)
 - [Storage schema](../storage/schema.md)
 - [Votes to verdict](vote-and-verdict.md)
-- [Session baselines](../plans/session-baselines.md)
+- [Session results](../operations/session-results.md)

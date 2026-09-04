@@ -79,7 +79,7 @@ private static OpenAIClientOptions Transport(TimeSpan requestTimeout, Uri? endpo
 `TokenLedger` records a call from its response. A failed call has no response, so it records no
 tokens. A sitting that fails in the transport therefore prints `0 tokens, about 0.0000 USD`
 although the provider billed each attempt. The printed cost is too low when a seat fails. See
-[after-session improvements](../plans/after-session-improvements.md).
+[improvements](../plans/improvements.md).
 
 ## Related lodes
 

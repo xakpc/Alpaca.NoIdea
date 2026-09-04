@@ -6,7 +6,7 @@ How to run this project on a workstation.
 
 - Docker Desktop
 - .NET 10 SDK
-- An Alpaca **development** paper account (not the official competition account)
+- An Alpaca **development** paper account (not an account that holds recorded results)
 
 ## First-time setup
 
@@ -22,9 +22,9 @@ ALPACA_API_KEY=...
 ALPACA_SECRET_KEY=...
 ALPACA_PAPER_TRADE=true
 
-ANTHROPIC_API_KEY=...   # proposer and skeptic
-OPENAI_API_KEY=...      # quant
-XAI_API_KEY=...         # market (Grok 4.6)
+XAI_API_KEY=...         # proposer (Grok 4.6)
+ANTHROPIC_API_KEY=...   # skeptic (Claude Sonnet 5)
+OPENAI_API_KEY=...      # quant and market (GPT-5.6-terra)
 ```
 
 **All three model keys are needed, not just the first.** The war room runs its seats on
@@ -117,6 +117,11 @@ dotnet run --project src/Xakpc.Alpaca.NøIdea -- --audit --last 20
 
 `--smoke` is not read-only. It submits an option buy to the paper account. It then cancels an
 unfilled order or closes a fill. Use `--check-mcp` for a read-only MCP diagnostic.
+
+**The Visual Studio profile is not the default.** `Properties/launchSettings.json` starts the
+host with `--live --rounds 1 --new-trade-approve-threshold -0.15 --cycle-minutes 20`, while the
+compiled defaults are two discussion rounds, a threshold of 0, and a 30-minute cycle. Every
+recorded session used the profile, so read the flags before you compare a run with the code.
 
 A normal live process stops when the Alpaca market clock reports a closed market. Start a new
 process for the next session. `--once` is the explicit diagnostic override for an out-of-hours

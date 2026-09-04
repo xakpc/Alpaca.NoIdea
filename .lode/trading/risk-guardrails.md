@@ -50,6 +50,24 @@ Every value above is a compile-time default in `RiskOptions`. There is no config
 and no environment binding. `--allow-stale-quotes`, which is valid only with a dry run, is the
 one flag that changes any of them.
 
+## Compiled constants that fix the horizon
+
+| Constant | Value | Where |
+|---|---|---|
+| Forced flatten | 2026-09-03 19:30 UTC | `RiskOptions.CompetitionFlattenUtc` |
+| Latest accepted expiration | 2026-09-04 | `RiskGuard.CheckContract` |
+| Environment | `Environments.Paper` | every typed Alpaca client |
+| Universe | 13 fixed symbols | `TradingOptions.TrackedSymbols` |
+| Opening structures | long calls and long puts only | opening strategy |
+| Starting equity | 100,000 USD | `TradingOptions` |
+
+> **The flatten instant is in the past.** A new live run flattens at once and admits no
+> contract, because both dates above are historical. Choose a new horizon before the next run.
+> See [improvements](../plans/improvements.md).
+
+The difference between the accepted Friday expiration and the Thursday forced close is an open
+policy decision. Do not document an earlier-expiration invariant that the code does not enforce.
+
 The opening policy defaults to 1–10 DTE, 50 percent take profit, 60 percent stop loss, and
 one contract. `StrategyPolicy.ClampTo` keeps every revision inside the hard limits.
 
@@ -103,7 +121,7 @@ can pass. Three consecutive live cycles produced no order for this reason.
 **Nothing refuses an open near the flatten.** `MandatoryExitReason` fires at the flatten
 instant, so a position opened one minute before it is legal and is sold 60 seconds later at the
 full spread. This is an accepted gap and not an invariant. See
-[after-session improvements](../plans/after-session-improvements.md).
+[improvements](../plans/improvements.md).
 
 `StrategyPolicy.MinDaysToExpiration` is 1. `ClampTo(risk, today)` additionally lowers the floor
 to fit the flatten, because the floor is persisted in `strategy_state` and a saved value inside
@@ -129,4 +147,4 @@ other quote-quality failures still reject.
 - [Live cycle](live-cycle.md)
 - [Storage schema](../storage/schema.md)
 - [Fault and recovery behavior](../operations/summary.md)
-- [Open strategy questions](../plans/open-strategy-questions.md)
+- [Improvements](../plans/improvements.md)

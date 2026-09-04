@@ -38,12 +38,26 @@ for.
 A faulted voter dilutes conviction rather than vanishing, so a half-broken room cannot look
 unanimous, and under `RequireEveryVoter` a fault rejects outright whatever the threshold.
 
+**A broken seat therefore closes the door for the whole session.** On 2026-09-03 two seats
+failed on every call. Seven complete sittings were rejected as `1 approve, 0 reject, 1 abstain,
+2 faulted`, and each row was stored with the code `ROOM_VOTE`. The rule is correct: a half-broken
+room must not trade. The report is wrong, because a quorum failure is not an opinion about the
+contract, and nothing stopped the room from sitting again. See
+[session results](../operations/session-results.md) and
+[improvements](../plans/improvements.md).
+
 ### Two thresholds, not one
 
-| Purpose | Threshold | Flag |
-|---|---|---|
-| New trade | `-0.15` | `--new-trade-approve-threshold` |
-| Position review | `0`, fixed | none |
+| Purpose | Compiled default | Flag | Value used in every measured session |
+|---|---|---|---|
+| New trade | `0` | `--new-trade-approve-threshold` | `-0.15` |
+| Position review | `0`, fixed | none | `0` |
+
+**The compiled default is 0, not -0.15.** `Program.cs` starts `newTradeThreshold` at `0m` and
+only the flag lowers it. `Properties/launchSettings.json` passes `-0.15`, so every session in
+[session results](../operations/session-results.md) ran under a negative threshold that no
+default reproduces. The examples below use `-0.15` for that reason. Which of the two becomes the
+standing value is an open decision. See [improvements](../plans/improvements.md).
 
 They are separate because one number moves both doors at once. A bar low enough to open a
 position on weak conviction is equally low for the sitting that decides to close it, so the
@@ -102,4 +116,4 @@ because there is no unknown-argument check and 0 is exactly the setting that ope
 - [War-room summary](summary.md)
 - [Persona contracts](../llm/persona-contracts.md)
 - [Live cycle](../trading/live-cycle.md)
-- [Session baselines](../plans/session-baselines.md)
+- [Session results](../operations/session-results.md)

@@ -59,8 +59,9 @@ return Provider == ModelProvider.Anthropic
 
 One marker is sufficient. Anthropic orders a request as tools, then system, then messages, and
 caches every prefix up to the marker, so the tool schemas are covered as well. The lifetime is
-one hour, because a sitting takes 8 to 10 minutes and cycles are 20 minutes apart: the
-five-minute default expires before the next seat asks the same question.
+one hour, because a sitting takes 8 to 10 minutes and a cycle is 20 or 30 minutes long: the
+five-minute default expires before the next seat asks the same question. The compiled cycle is
+30 minutes and the debug profile passes `--cycle-minutes 20`. The one-hour lifetime covers both.
 
 The win is larger than one hit per sitting. `FunctionInvokingChatClient` sends the whole prefix
 again on every turn of the tool loop, so the turns after the first read the cache the first one
@@ -90,4 +91,4 @@ model-text, tool-call, and tool-result events. It does not hide warnings or erro
 - [Persona contracts](persona-contracts.md)
 - [Alpaca integration](../alpaca/mcp-integration.md)
 - [Storage schema](../storage/schema.md)
-- [Session baselines](../plans/session-baselines.md)
+- [Session results](../operations/session-results.md)

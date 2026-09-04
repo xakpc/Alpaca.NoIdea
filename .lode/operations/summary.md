@@ -37,30 +37,11 @@ Development uses one permanent read-only MCP container over streamable HTTP on
 `127.0.0.1:8100`. Keenable is a separate external HTTPS MCP service. See
 [local development](local-development.md) and [Alpaca integration](../alpaca/mcp-integration.md).
 
-## Submission
-
-A **hosted application is not required.** The agent runs autonomously and only places
-orders, so a GitHub repository is a sufficient submission. A hosted link is needed only for
-a demo application that the judges must open. Per
-[KISS and YAGNI](../practices.md), do not build one.
-
-The repository can stay private during the hackathon.
-
-Pre-event infrastructure, boilerplate, and existing libraries can be reused. **Pre-event
-work used in the submission must be disclosed.** The submission must also state the use of
-the free Indicative options feed.
-
 ## Accounts
 
-Use two paper accounts:
-
-| Account | Use |
-|---|---|
-| Development paper account | All integration tests and all rehearsal trades. |
-| Official $100,000 paper account | The competition window only. No development trades. |
-
-The Alpaca MCP server and typed SDK receive the selected paper-account credentials. The SDK
-clients are fixed to `Environments.Paper`.
+The host trades one Alpaca paper account. The Alpaca MCP server and the typed SDK receive the
+same paper credentials, and every SDK client is fixed to `Environments.Paper`. A second paper
+account is the safe place for a rehearsal that must not touch the recorded one.
 
 ## Commands and effects
 
@@ -122,12 +103,12 @@ The deterministic suite currently has 195 passing tests.
 
 ## Human-facing documents
 
-The repository root holds three documents for a person. No code reads them. Each one is a view
+The repository root holds four documents for a person. No code reads them. Each one is a view
 of the lode, so a change to a contract must also change the document that states it.
 
 | File | Reader | Content |
 |---|---|---|
-| `README.md` | A visitor to the repository | Premise, architecture diagram, the seats, the hard limits, the commands, the first trading day, and the known limits. |
+| `README.md` | A visitor to the repository | Premise, architecture diagram, the AI logic, the risk gates, the Alpaca implementation, the commands, the measured sessions, and the known limits. |
 | `DEVELOPMENT.md` | A developer on a workstation | Prerequisites, keys, the MCP container, the run commands, and the common faults. |
 | `AGENTS.md` | A coding agent | Repository instructions. |
 | `LICENSE` | A visitor to the repository | MIT, Pavel Osadchuk, 2026. The `README.md` footer links to it. |
@@ -135,23 +116,20 @@ of the lode, so a change to a contract must also change the document that states
 `README.md` states no number that the lode does not support. Its sources are
 [risk guardrails](../trading/risk-guardrails.md), [war-room summary](../war-room/summary.md),
 [trading summary](../trading/summary.md), [storage schema](../storage/schema.md), and
-[session baselines](../plans/session-baselines.md). Its "Known limits" section is the public
-view of [after-session improvements](../plans/after-session-improvements.md).
+[session results](session-results.md). Its "Known limits" section is the public view of
+[improvements](../plans/improvements.md).
 
-`docs/console.png` is the one image the README shows. It is a copy of
-`presentation/third-day-console.png`, because `presentation/` is git-ignored and a README image
-must be tracked. It shows cycles 8 and 9 of the 2026-09-02 session and the run summary, so its
-figures must stay equal to the second process row in
-[session baselines](../plans/session-baselines.md): 9 cycles, 77 calls, 5,824,097 tokens,
-9.3829 USD, and 100,199.84 USD of equity. Replace both files together.
+`docs/console.png` is the one image the README shows. It is a tracked copy of
+`presentation/room-sitting.png`, because `presentation/` is git-ignored and a README image must
+be tracked. It shows one complete war-room sitting from a 2026-09-03 dry run. Replace both files
+together, and state no run figure in the README that this image alone must prove.
 
 `DEVELOPMENT.md` and [local development](local-development.md) must agree.
-[Presentation](presentation.md) covers the separate submission deck in `presentation/`.
 
 ## Related
 
-- [Competition constraints](competition-constraints.md)
 - [Local development](local-development.md)
 - [Observability](observability.md)
+- [Session results](session-results.md)
 - [Storage schema](../storage/schema.md)
-- [After-session improvements](../plans/after-session-improvements.md)
+- [Improvements](../plans/improvements.md)

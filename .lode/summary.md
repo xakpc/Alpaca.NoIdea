@@ -84,15 +84,30 @@ version `3`. `data/raw/` remains separate research input and is not read by the 
 
 ## Current verification
 
-The solution has 195 passing tests. The 2026-09-02 live session is the current full-session
-baseline and the first day the room traded: 13 sittings, 4 opens, 2 closes, and equity from
-100,000.00 to 100,199.84 for about 17 USD of model spend. A sitting costs 0.80 to 2.09 USD.
-See [session baselines](plans/session-baselines.md).
+The solution has 195 passing tests. The account moved from 100,000.00 to 101,274.64 over four
+live days for about 41 USD of model spend. A sitting costs 0.80 to 2.09 USD. Every measured
+session ran from the debug profile: `--rounds 1 --new-trade-approve-threshold -0.15
+--cycle-minutes 20`. The compiled defaults are 2 rounds, a threshold of 0, and a 30-minute
+cycle. See [session results](operations/session-results.md).
+
+**Every dollar came from a deterministic exit.** The hard-exit loop produced the 2026-09-02 net
+and the whole 2026-09-03 result. No war-room open has yet produced a profit.
+
+The last day, 2026-09-03, traded nothing. Two of four seats failed on every call from 16:05 UTC,
+and `RequireEveryVoter` makes one faulted seat an outright rejection, so seven complete sittings
+could not be approved. Four earlier cycles were lost because a failed proposer call is recorded
+as a legitimate `NO_TRADE`. The rules held and the room could not work. See
+[improvements](plans/improvements.md).
+
+The forced flatten instant, 2026-09-03 19:30 UTC, and the latest accepted expiration,
+2026-09-04, are both in the past. A new live run needs a new horizon before it can admit any
+contract.
 
 A refusal that carries its reasons is a decision, not a fault. A standard that refuses every
 contract the system may buy is a fault, and that is what four unanimous rejections exposed on
 2026-09-01. A new-trade reviewer now rejects only on a concrete contradiction and abstains
-otherwise, and the new-trade approve threshold is -0.15 while closes stay at 0.
+otherwise. The new-trade approve threshold was -0.15 in every measured session, and a close
+keeps the fixed threshold of 0.
 
 Dilution is not consent. Because the threshold is negative, a room where every seat abstains
 clears it on silence, which opened one position that no seat backed. A new trade now also needs
@@ -113,7 +128,7 @@ proposer states are compared with the catalog before any seat is paid. See
 The database is audit-clean: `--audit` returns success. A sitting that a stopped process left
 open is given the `abandoned` status by `--recover-sittings`. The `strategy_state` table holds
 no policy, so the policy defaults apply. Counterfactual scoring stays open. See
-[after-session improvements](plans/after-session-improvements.md).
+[improvements](plans/improvements.md).
 
 ## Related lodes
 
@@ -121,4 +136,5 @@ no policy, so the policy defaults apply. Counterfactual scoring stays open. See
 - [Live cycle](trading/live-cycle.md)
 - [Audit schema](storage/schema.md)
 - [Observability](operations/observability.md)
-- [Research summary](research/summary.md)
+- [Session results](operations/session-results.md)
+- [Improvements](plans/improvements.md)

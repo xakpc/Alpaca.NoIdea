@@ -17,6 +17,11 @@ flowchart LR
 - **Strike** - The exercise price in an option contract.
 - **Expiration** - The date when the option contract ends.
 - **OCC symbol** - A contract symbol with underlying, expiration, type, and strike.
+- **DTE** - Days to expiration. The catalog and the policy both use this count.
+- **Delta** - The expected change of the option price for a change of 1.00 in the underlying.
+- **Implied volatility** - The volatility that explains the current option price.
+- **In the money** - A call with a strike below the underlying price, or a put above it.
+- **Time decay** - The loss of option value that comes from the passage of time alone.
 - **Tradeable catalog** - Contracts that pass current mechanical and hard-risk checks.
 - **War-room sitting** - One propose, review, discuss, rebut, and vote process.
 - **Proposal ID** - A unique identifier for one sitting.

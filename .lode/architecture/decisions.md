@@ -1,7 +1,8 @@
 # Architecture Decisions
 
-This file contains active decisions only. The identifiers keep their original meanings
-because source comments use them as stable references.
+This file contains active decisions only. An identifier in the list keeps its meaning, because
+source comments cite it as a stable reference. A withdrawn identifier is listed at the end of
+the file and is never used a second time.
 
 ```mermaid
 flowchart LR
@@ -61,7 +62,9 @@ as one `stdio` child. Exactly one transport configuration must exist.
 ## ADR-013: Do not use the historical model for trade edge
 
 The measured model did not beat the option-price reference. The runtime has no historical
-forecaster or replay path. Text and current market evidence remain the strategy inputs.
+forecaster or replay path. Text and current market evidence remain the strategy inputs. The
+measurement and the acceptance contract for a future model are in
+[dropped designs](dropped-designs.md).
 
 ## ADR-014: Use project-owned gateway records
 
@@ -133,6 +136,23 @@ verdict is `Rejected`, quorum was met, no seat faulted, and the net is below zer
 withdrawn sitting produces an empty or incomplete tally and cannot close anything, because a
 half-broken room must never sell the book.
 
+## Withdrawn decisions
+
+Eight identifiers are absent from the list above. A withdrawn identifier is not used again.
+Most of these rules did not die: they became a contract in another file, and only the number
+was retired. This table stops a future session from re-opening a settled question.
+
+| ADR | Its last meaning | Where it is now |
+|---|---|---|
+| 007 | Do not migrate an obsolete database | Still true. Durable audit contracts below, and [schema](../storage/schema.md). |
+| 009 | Link authorization to execution in one transaction | Still true. Durable audit contracts below. |
+| 010 | Preserve measured negative evidence | Still true. [Dropped designs](dropped-designs.md), with ADR-013. |
+| 015 | A replay reads a bar by availability, never by its timestamp | Gone with the replay engine. [Dropped designs](dropped-designs.md). |
+| 016 | The agent directs the strategy and C# bounds it | Superseded by ADR-019. The principle is in ADR-006 and [practices](../practices.md). |
+| 018 | One agent room with a decider that speaks last | Superseded by ADR-019 and ADR-021. The decider became a private vote. |
+| 026 | The loop writes the audit and records a rejection | Still true. [Schema](../storage/schema.md); the tables it named were replaced in version 3. |
+| 027 | The log holds the whole conversation with a model | Folded into ADR-024. |
+
 ## Durable audit contracts
 
 - Schema version `3` has eight tables and does not migrate an obsolete database.
@@ -151,7 +171,7 @@ await store.RecordDecisionAndReserveAsync(decision, order, cancellationToken);
 ## Related lodes
 
 - [Architecture summary](summary.md)
+- [Dropped designs](dropped-designs.md)
 - [War room](../war-room/summary.md)
 - [Risk guardrails](../trading/risk-guardrails.md)
 - [Storage schema](../storage/schema.md)
-- [Research summary](../research/summary.md)
