@@ -238,11 +238,13 @@ result, and where it failed:
   re-read the quote and the fill was 13.92. The stale number never authorised money.
 - **A delayed close costs money.** A GOOGL close was proposed at a bid of 4.90 and rejected on a net
   of exactly 0.00. The same close was approved two hours later and filled near 4.43.
-- **A half-dead room cannot trade, and it does not notice.** On the last day two of four seats
-  failed on every call from the first cycle. A faulted seat is an outright rejection, so seven
-  complete sittings, each with a real proposal and an approving skeptic, were rejected on quorum.
-  The run spent 10 USD proving it. Four earlier cycles were lost silently, because a failed
-  proposer call is recorded as a legitimate `NO_TRADE`.
+- **A half-dead room cannot trade, and it does not notice.** On the last day all three providers
+  refused service at some point: xAI answered `429 Too Many Requests` for 74 minutes, and the
+  OpenAI and Anthropic keys hit their spend limits. A faulted seat is an outright rejection, so
+  seven complete sittings, each with a real proposal and an approving skeptic, were rejected on
+  quorum, and the run spent 10 USD proving it. Four earlier cycles were lost silently, because a
+  failed proposer call is recorded as a legitimate `NO_TRADE`. The outages were not the system's
+  fault. Having no retry, no breaker, and no degraded quorum was.
 
 Per-session numbers, per-seat costs, and sitting durations are in
 [`.lode/operations/session-results.md`](.lode/operations/session-results.md). Every measured
@@ -255,8 +257,9 @@ Kept here on purpose rather than in an issue tracker nobody opens:
 
 - **A failed model call can look like a decision.** A proposer transport fault or timeout is
   recorded as `NO_TRADE` with no retry, so the audit cannot tell a refusal from a broken call.
-- **A repeated provider fault has no breaker.** The same quota error came back 42 times in four
-  hours and the loop kept calling.
+- **A repeated provider fault has no breaker, and no fault is classified.** The same quota error
+  came back 42 times in four hours and the loop kept calling. A `429` from a busy endpoint gets
+  the same treatment as a `429` for an empty credit balance, which is no retry and no stop.
 - **A room that cannot reach quorum still sits.** Nothing checks that the seats which must vote
   can answer before the proposer is paid, and a quorum failure is stored as a room vote.
 - **A cost line reports zero for a seat that failed.** Token counts come from a response and a

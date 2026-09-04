@@ -46,11 +46,27 @@ The hard-exit loop then closed both positions at 14:33:29 UTC with no model in t
 
 Equity moved from 100,199.84 to 101,274.64. That is the whole result of the last day.
 
+### Every model provider failed on this day
+
+The seats did not fail because of a defect in this repository. All three providers refused
+service at some point, in three different ways:
+
+| Provider | Seats | Window | Answer |
+|---|---|---|---|
+| xAI | proposer | 14:33-15:47 | `HTTP 429 (Too Many Requests)` three times, then two calls that passed the 9-minute limit. No billing text. A capacity fault. |
+| Anthropic | skeptic | 07:30 | `BadRequest`: the specified monthly usage limit was reached, with access to return on 2026-10-01. The limit was raised before the afternoon run. |
+| OpenAI | quant, market | 16:11-19:08 | `HTTP 429 (insufficient_quota: credit_balance_exhausted)`, 42 times. |
+| Anthropic | skeptic | 19:07-19:08 | `BadRequest`: the credit balance is too low. |
+
+Two of the four faults are a spend limit and one is provider capacity. The system cannot prevent
+either. **The defect is that it cannot survive them.** There is no retry with backoff for a
+capacity fault, no breaker for a terminal billing fault, no degraded quorum, and no way to tell
+the operator that the room is dead before it pays for another sitting.
+
 ### The room made no trade
 
-Two of four seats failed on every call from 16:05 UTC to the close: `HTTP 429
-(insufficient_quota: credit_balance_exhausted)`, 42 times. `RequireEveryVoter` makes one faulted
-seat an outright rejection, so no proposal could be approved after the first failed call.
+Two of four seats failed on every call from 16:11 UTC to the close. `RequireEveryVoter` makes one
+faulted seat an outright rejection, so no proposal could be approved after the first failed call.
 
 | Cycle | Contract | Verdict |
 |---|---|---|
@@ -66,15 +82,16 @@ seat an outright rejection, so no proposal could be approved after the first fai
 Each row is stored with the code `ROOM_VOTE`, which reads as a decision of the room. The true
 cause is a quorum that could not be met. Do not score these seven rows as refusals.
 
-Cycle 7 also lost the skeptic twice with `Status Code: BadRequest`. That fault has no known
-cause and no retry.
+Cycle 7 lost the skeptic as well, when the Anthropic credit ran out. That cycle shows
+`3 faulted`, which is the whole room except the deterministic seat.
 
 ### Four cycles were lost before that
 
-Between 14:33 and 15:47 UTC the proposer failed five times: three times with `Service request
-failed` and twice at the 9-minute call limit. Each failure was recorded as `Hold - the proposer
-found no trade` with `0 rejected` and a cost of `0.0000 USD`. In the audit these cycles cannot
-be told apart from a deliberate refusal.
+Between 14:33 and 15:47 UTC the xAI endpoint refused the proposer five times: three answers of
+`429 Too Many Requests` and two calls that passed the 9-minute limit. Each failure was recorded
+as `Hold - the proposer found no trade` with `0 rejected` and a cost of `0.0000 USD`. In the
+audit these cycles cannot be told apart from a deliberate refusal. A retry with backoff is the
+normal answer to a 429, and there is none.
 
 ### What each seat cost on 2026-09-03
 

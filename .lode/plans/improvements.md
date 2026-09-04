@@ -21,23 +21,31 @@ flowchart TD
 new run flattens immediately and admits no contract. Choose a new horizon, or make the horizon
 a daily rule instead of a fixed instant. See [risk guardrails](../trading/risk-guardrails.md).
 
-## P0 - A failed model call must not look like a decision
+## P0 - Survive a provider that refuses service
 
-**A failed proposer call is recorded as `NO_TRADE`.** On 2026-09-03 the proposer failed five
-times between 14:33 and 15:47 UTC. Each failure produced `Hold - the proposer found no trade`,
-`0 rejected`, and `0.0000 USD`. Four cycles of the last trading day cannot be told apart from a
-deliberate refusal in the audit.
+On 2026-09-03 all three model providers refused service at some point: xAI answered
+`429 Too Many Requests` for 74 minutes, and the OpenAI and Anthropic keys reached their spend
+limits. The room cannot prevent any of that. It must be able to continue through it, or stop and
+say so. See [session results](../operations/session-results.md).
 
-**Contract:** a transport fault, a timeout, and a refusal are three different outcomes. Store
-the fault with its own status. Retry the call at least once. Never write a decision row that
-claims the model chose.
+**A failed model call is recorded as a decision.** Five failed proposer calls produced
+`Hold - the proposer found no trade`, `0 rejected`, and `0.0000 USD`. Four cycles of the last
+trading day cannot be told apart from a deliberate refusal in the audit.
 
-**A repeated provider fault has no breaker.** The same `HTTP 429 (insufficient_quota)` answer
-came back 42 times over four hours, and cycle 9 called out exactly like cycle 1.
+**Contract:** a transport fault, a timeout, and a refusal are three different outcomes. Store the
+fault with its own status. Never write a decision row that claims the model chose.
 
-**Contract:** count identical faults for one provider. A quota or authorization fault is
-permanent, so stop the seat after the second one. Then reseat the room or stop the run, and say
-which in the log.
+**A fault is not classified, so the response is always the same.** A `429` from a busy endpoint
+and a `429` for an empty credit balance need opposite answers.
+
+**Contract:** classify the fault. Retry a capacity fault with backoff, because it usually clears.
+Stop the seat on the second billing or authorization fault, because it never clears inside the
+session. Then reseat the room or stop the run, and say which in the log.
+
+**A repeated provider fault has no breaker.** The same quota answer came back 42 times over four
+hours, and cycle 9 called out exactly like cycle 1.
+
+**Contract:** count faults for each provider, and make the count visible to the operator.
 
 **A room that cannot reach quorum must not sit.** `RequireEveryVoter` makes one faulted seat an
 outright rejection. With two dead seats, seven complete sittings on 2026-09-03 could not

@@ -93,11 +93,13 @@ cycle. See [session results](operations/session-results.md).
 **Every dollar came from a deterministic exit.** The hard-exit loop produced the 2026-09-02 net
 and the whole 2026-09-03 result. No war-room open has yet produced a profit.
 
-The last day, 2026-09-03, traded nothing. Two of four seats failed on every call from 16:05 UTC,
-and `RequireEveryVoter` makes one faulted seat an outright rejection, so seven complete sittings
-could not be approved. Four earlier cycles were lost because a failed proposer call is recorded
-as a legitimate `NO_TRADE`. The rules held and the room could not work. See
-[improvements](plans/improvements.md).
+The last day, 2026-09-03, traded nothing, because every model provider refused service at some
+point in the day. Two of four seats failed on every call from 16:11 UTC, and `RequireEveryVoter`
+makes one faulted seat an outright rejection, so seven complete sittings could not be approved.
+Four earlier cycles were lost to an xAI capacity fault, because a failed proposer call is
+recorded as a legitimate `NO_TRADE`. The rules held. The system has no way to continue through a
+provider outage or a spend limit, and no way to report one. See
+[session results](operations/session-results.md) and [improvements](plans/improvements.md).
 
 The forced flatten instant, 2026-09-03 19:30 UTC, and the latest accepted expiration,
 2026-09-04, are both in the past. A new live run needs a new horizon before it can admit any
